@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
+<title>پنل مدیریت ShopVPN</title>
+
+<!-- PWA: قابلیت نصب روی هوم‌اسکرین (اندروید + آیفون). href با ?b=... همان
+     صفحه ست می‌شود تا بعد از نصب، آیکون به پنل همان نماینده باز شود. -->
+<link rel="manifest" id="pwa-manifest-link" href="/manifest.json">
+<meta name="theme-color" content="#0B0C14">
+
+<!-- آیفون (سافاری از manifest.json پشتیبانی کامل ندارد؛ این متاتگ‌ها لازم‌اند) -->
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="ShopVPN">
+<link rel="apple-touch-icon" href="/assets/icons/apple-touch-icon.png">
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Vazirmatn:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&family=Chakra+Petch:wght@500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/assets/style.css">
+<script>
+(function(){
+  // manifest باید همان query string صفحه (مثلا ?b=xyz برای نماینده) را داشته باشد
+  var link = document.getElementById('pwa-manifest-link');
+  if (link && location.search) link.href = '/manifest.json' + location.search;
+})();
+</script>
+<script>
+(function(){
+  try{
+    var t = JSON.parse(localStorage.getItem('sv-theme') || 'null') || { theme:'bento', mode:'light' };
+    document.documentElement.setAttribute('data-theme', t.theme || 'bento');
+    document.documentElement.setAttribute('data-mode', t.mode || 'light');
+  }catch(e){
+    document.documentElement.setAttribute('data-theme','bento');
+    document.documentElement.setAttribute('data-mode','light');
+  }
+})();
+</script>
+</head>
+<body>
+
+<div class="bg-blobs" aria-hidden="true"><i></i><i></i><i></i></div>
+
+<!-- ===================== صفحه‌ی ورود ===================== -->
+<div id="login-screen" class="login-screen">
+  <form id="login-form" class="login-card">
+    <div class="login-brand">
+      <div class="login-logo">SV</div>
+      <h1 id="login-title">پنل مدیریت ShopVPN</h1>
+      <p id="login-subtitle">برای ورود، اطلاعات حساب پنل وب را وارد کن</p>
+    </div>
+    <label class="field">
+      <span>یوزرنیم</span>
+      <input type="text" id="login-username" autocomplete="username" required>
+    </label>
+    <label class="field">
+      <span>پسورد</span>
+      <input type="password" id="login-password" autocomplete="current-password" required>
+    </label>
+    <div id="login-error" class="login-error" hidden></div>
+    <button type="submit" class="btn btn-primary btn-block" id="login-submit">ورود</button>
+  </form>
+</div>
+
+<!-- ============== صفحه‌ی راه‌اندازی اولیه‌ی پنل نمایندگی ============== -->
+<div id="setup-screen" class="login-screen" hidden>
+  <form id="setup-form" class="login-card">
+    <div class="login-brand">
+      <div class="login-logo">SV</div>
+      <h1>راه‌اندازی پنل نمایندگی</h1>
+      <p id="setup-subtitle">یک یوزرنیم و پسورد برای پنل وب خودت انتخاب کن</p>
+    </div>
+    <div id="setup-fields">
+      <label class="field">
+        <span>یوزرنیم (حداقل ۳ کاراکتر)</span>
+        <input type="text" id="setup-username" autocomplete="username" required>
+      </label>
+      <label class="field">
+        <span>پسورد (حداقل ۸ کاراکتر)</span>
+        <input type="password" id="setup-password" autocomplete="new-password" required>
+      </label>
+      <div id="setup-error" class="login-error" hidden></div>
+      <button type="submit" class="btn btn-primary btn-block" id="setup-submit">ساخت حساب و ورود</button>
+    </div>
+  </form>
+</div>
+
+<!-- ===================== اپ اصلی ===================== -->
+<div id="app" class="app" hidden>
+  <aside class="sidebar">
+    <div class="sidebar-brand">
+      <div class="brand-mark">SV</div>
+      <div class="brand-text">
+        <strong>ShopVPN</strong>
+        <span>پنل مدیریت</span>
+      </div>
+    </div>
+
+    <nav class="nav-tunnel" id="nav-tunnel">
+      <!-- nav items injected by app.js -->
+    </nav>
+
+    <div class="sidebar-footer">
+      <div class="me-card" id="me-card">
+        <div class="me-avatar" id="me-avatar">?</div>
+        <div class="me-info">
+          <strong id="me-username">—</strong>
+          <span id="me-role">—</span>
+        </div>
+      </div>
+      <button class="btn btn-ghost btn-block" id="logout-btn">
+        <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path><polyline points="16 17 21 12 16 7"></polyline><line x1="21" y1="12" x2="9" y2="12"></line></svg>
+        خروج
+      </button>
+    </div>
+  </aside>
+
+  <div class="sidebar-overlay" id="sidebar-overlay"></div>
+
+  <div class="main">
+    <header class="topbar">
+      <div class="topbar-right">
+        <button class="hamburger" id="hamburger-btn" aria-label="باز کردن منو">
+          <span></span><span></span><span></span>
+        </button>
+        <h2 id="page-title">داشبورد</h2>
+      </div>
+      <div class="topbar-actions">
+        <button class="btn btn-sm" id="topbar-mode-toggle" title="روشن/تیره" style="display:none">🌙</button>
+        <button class="btn btn-sm" id="install-app-btn" title="نصب پنل به عنوان اپلیکیشن" style="display:none">📲</button>
+        <button class="btn btn-sm" id="push-toggle-btn" title="اعلان مرورگر (Push)">🔔</button>
+        <span class="live-dot" title="اتصال زنده"></span>
+        <span class="topbar-clock" id="topbar-clock"></span>
+      </div>
+    </header>
+
+    <main class="content" id="content">
+      <!-- page content injected by app.js -->
+    </main>
+  </div>
+</div>
+
+<div id="toast-root" class="toast-root"></div>
+
+<script src="/assets/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,115 @@
+# -*- coding: utf-8 -*-
+"""ارسال پیام ساده به کاربر از طریق Bot API؛ برای اطلاع‌رسانی تایید/رد سفارش
+و شارژ کیف پول وقتی این کارها از داخل پنل وب مستقل (نه خودِ بات) انجام می‌شوند."""
+
+import os
+import json
+import logging
+
+import aiohttp
+
+logger = logging.getLogger("admin_panel.telegram_notify")
+
+
+async def send_message(bot_token: str, chat_id: int, text: str, parse_mode: str = None, reply_markup: dict = None) -> bool:
+    if not bot_token:
+        return False
+    url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+    payload = {"chat_id": chat_id, "text": text}
+    if parse_mode:
+        payload["parse_mode"] = parse_mode
+    if reply_markup:
+        payload["reply_markup"] = json.dumps(reply_markup, ensure_ascii=False)
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                url, json=payload, timeout=aiohttp.ClientTimeout(total=10)
+            ) as resp:
+                return resp.status == 200
+    except Exception:
+        logger.exception("ارسال پیام تلگرام به %s ناموفق بود", chat_id)
+        return False
+
+
+async def send_photo(bot_token: str, chat_id: int, photo_bytes: bytes, filename: str = "photo.png", caption: str = "") -> bool:
+    """ارسال عکس (مثلاً QR کد کانفیگ) به کاربر تلگرامی، بدون وابستگی به aiogram."""
+    if not bot_token:
+        return False
+    url = f"https://api.telegram.org/bot{bot_token}/sendPhoto"
+    try:
+        form = aiohttp.FormData()
+        form.add_field("chat_id", str(chat_id))
+        if caption:
+            form.add_field("caption", caption)
+        form.add_field("photo", photo_bytes, filename=filename, content_type="image/png")
+        async with aiohttp.ClientSession() as session:
+            async with session.post(url, data=form, timeout=aiohttp.ClientTimeout(total=20)) as resp:
+                return resp.status == 200
+    except Exception:
+        logger.exception("ارسال عکس تلگرام به %s ناموفق بود", chat_id)
+        return False
+
+
+_RECEIPT_CONTENT_TYPES = {
+    "jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png",
+    "webp": "image/webp", "gif": "image/gif", "pdf": "application/pdf",
+}
+
+
+async def fetch_telegram_file(bot_token: str, file_id: str):
+    """دریافت بایت‌های یک فایل تلگرامی (رسید پرداخت کارت‌به‌کارت) با file_id، برای
+    نمایش داخل پنل وب مستقل (که خودش نمونه‌ی Bot در اختیار ندارد).
+    خروجی: تاپل (bytes, content_type) یا None در صورت هر خطایی."""
+    if not bot_token or not file_id:
+        return None
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(
+                f"https://api.telegram.org/bot{bot_token}/getFile",
+                params={"file_id": file_id},
+                timeout=aiohttp.ClientTimeout(total=10),
+            ) as resp:
+                data = await resp.json()
+            if not data.get("ok"):
+                return None
+            file_path = data["result"]["file_path"]
+
+            async with session.get(
+                f"https://api.telegram.org/file/bot{bot_token}/{file_path}",
+                timeout=aiohttp.ClientTimeout(total=20),
+            ) as resp:
+                if resp.status != 200:
+                    return None
+                content = await resp.read()
+
+        ext = file_path.rsplit(".", 1)[-1].lower() if "." in file_path else ""
+        content_type = _RECEIPT_CONTENT_TYPES.get(ext, "application/octet-stream")
+        return content, content_type
+    except Exception:
+        logger.exception("دریافت فایل رسید از تلگرام ناموفق بود (file_id=%s)", file_id)
+        return None
+
+
+async def send_document(bot_token: str, chat_id: int, file_path: str, caption: str = "") -> bool:
+    """ارسال فایل (مثلاً بکاپ دیتابیس) به یک ادمین تلگرامی، بدون وابستگی به aiogram
+    (پنل وب یک نمونه‌ی Bot در دسترس ندارد، پس مستقیم با Bot API خام کار می‌کند)."""
+    if not bot_token:
+        return False
+    url = f"https://api.telegram.org/bot{bot_token}/sendDocument"
+    try:
+        with open(file_path, "rb") as f:
+            file_bytes = f.read()
+        form = aiohttp.FormData()
+        form.add_field("chat_id", str(chat_id))
+        if caption:
+            form.add_field("caption", caption)
+        form.add_field(
+            "document", file_bytes,
+            filename=os.path.basename(file_path), content_type="application/octet-stream",
+        )
+        async with aiohttp.ClientSession() as session:
+            async with session.post(url, data=form, timeout=aiohttp.ClientTimeout(total=60)) as resp:
+                return resp.status == 200
+    except Exception:
+        logger.exception("ارسال فایل تلگرام به %s ناموفق بود", chat_id)
+        return False
