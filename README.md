@@ -2,6 +2,8 @@
 
 # 🛰️ Shopvpn — بات فروش هوشمند کانفیگ V2Ray
 
+نسخهٔ `4.1.0` — انتشار S-UI-X only با ایمن‌سازی ساخت client
+
 **فروش خودکار کانفیگ V2Ray در تلگرام، همراه با Mini App اختصاصی، دو پنل مدیریت کامل (بات + وب) و سیستم نمایندگی**
 
 [![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?style=for-the-badge&logo=python&logoColor=white)](https://www.python.org/)
