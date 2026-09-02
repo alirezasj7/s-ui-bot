@@ -4,7 +4,7 @@
 # پنل مدیریت متنی بات فروش کانفیگ V2Ray
 #
 # Run directly (no prior install):
-#   bash <(curl -fsSL https://raw.githubusercontent.com/USERNAME/v2ray-bot/main/manage.sh)
+#   bash <(curl -fsSL https://raw.githubusercontent.com/alirezasj7/s-ui-bot/main/manage.sh)
 #
 # Run after install:
 #   bash ~/v2ray_bot/manage.sh
@@ -13,29 +13,21 @@
 # ---------------------------------------------------------------------------
 # Customizable settings / تنظیمات قابل شخصی‌سازی
 # ---------------------------------------------------------------------------
-REPO_URL="${REPO_URL:-https://github.com/alirezasj7/s-ui-bot.git}"
+# The source is fixed to the owner's public repository.  Updates use a
+# tarball download instead of git, so no GitHub login prompt can appear.
+PROJECT_ARCHIVE_URL="https://github.com/alirezasj7/s-ui-bot/archive/refs/heads/main.tar.gz"
 INSTALL_DIR="$HOME/v2ray_bot"
 SERVICE_NAME="v2raybot"
 BRAND_NAME="SHOP VPN"
 
-# Version is computed automatically from git (commit count + short hash)
-# so that every update (git pull) shows the correct running version.
-# It's read from the VERSION file (bumped only for real, notable changes,
-# not for every raw commit). The short git hash is shown next to it for
-# exact build identification. If VERSION is missing, falls back to the
-# old commit-count method so the banner is never empty.
+# Version is read from the VERSION file.  The installer deliberately does not
+# create a git checkout on the VPS.
 get_version() {
-    local base hash
+    local base
     if [ -f "$INSTALL_DIR/VERSION" ]; then
         base="v$(cat "$INSTALL_DIR/VERSION" 2>/dev/null | tr -d '[:space:]')"
-    elif [ -d "$INSTALL_DIR/.git" ]; then
-        base="v$(git -C "$INSTALL_DIR" rev-list --count HEAD 2>/dev/null)"
     else
         base="v1.0"
-    fi
-    if [ -d "$INSTALL_DIR/.git" ]; then
-        hash=$(git -C "$INSTALL_DIR" rev-parse --short HEAD 2>/dev/null)
-        [ -n "$hash" ] && base="${base} (${hash})"
     fi
     echo "$base"
 }
@@ -103,12 +95,12 @@ MSG_EN[figlet_failed]="⚠️ figlet installation failed, showing a simple banne
 MSG_FA[figlet_failed]="⚠️ نصب figlet انجام نشد، بنر ساده نمایش داده می‌شود."
 
 # install_bot
-MSG_EN[installing_prereqs]="📦 Checking and installing prerequisites (git, python3, pip, venv, figlet)..."
-MSG_FA[installing_prereqs]="📦 بررسی و نصب پیش‌نیازها (git, python3, pip, venv, figlet)..."
+MSG_EN[installing_prereqs]="📦 Checking and installing prerequisites (curl, python3, pip, venv, figlet)..."
+MSG_FA[installing_prereqs]="📦 بررسی و نصب پیش‌نیازها (curl, python3, pip, venv, figlet)..."
 MSG_EN[already_installed_pulling]="⚠️ Project is already installed. Fetching the latest version..."
 MSG_FA[already_installed_pulling]="⚠️ پروژه از قبل نصب شده است. در حال دریافت آخرین نسخه..."
-MSG_EN[cloning_project]="📥 Cloning the project from GitHub..."
-MSG_FA[cloning_project]="📥 دریافت پروژه از گیت‌هاب..."
+MSG_EN[downloading_project]="📥 Downloading the public project package..."
+MSG_FA[downloading_project]="📥 دریافت بستهٔ عمومی پروژه..."
 MSG_EN[preparing_python]="🐍 Preparing the Python environment..."
 MSG_FA[preparing_python]="🐍 آماده‌سازی محیط پایتون..."
 MSG_EN[enter_bot_info]="🔑 Enter the bot info:"
@@ -117,6 +109,12 @@ MSG_EN[prompt_bot_token]="Bot token (from BotFather): "
 MSG_FA[prompt_bot_token]="توکن بات (از BotFather): "
 MSG_EN[prompt_owner_id]="Admin numeric ID: "
 MSG_FA[prompt_owner_id]="آیدی عددی ادمین: "
+MSG_EN[invalid_bot_token]="⛔️ Bot token cannot be empty."
+MSG_FA[invalid_bot_token]="⛔️ توکن بات نمی‌تواند خالی باشد."
+MSG_EN[invalid_owner_id]="⛔️ Owner ID must contain digits only."
+MSG_FA[invalid_owner_id]="⛔️ آیدی مالک باید فقط عدد باشد."
+MSG_EN[download_failed]="⛔️ Project download failed. Check network access and try again."
+MSG_FA[download_failed]="⛔️ دریافت پروژه ناموفق بود؛ اتصال اینترنت را بررسی و دوباره تلاش کن."
 MSG_EN[env_created]="✅ .env file created."
 MSG_FA[env_created]="✅ فایل .env ساخته شد."
 MSG_EN[env_exists]="✅ .env file already exists, left unchanged."
@@ -183,10 +181,10 @@ MSG_EN[saved_restarting]="✅ Saved. Restarting..."
 MSG_FA[saved_restarting]="✅ ذخیره شد. در حال ری‌استارت..."
 
 # setup_miniapp / setup_admin_panel (shared)
-MSG_EN[miniapp_dir_missing]="⛔️ miniapp folder not found. Update the project code first (git pull/update)."
-MSG_FA[miniapp_dir_missing]="⛔️ پوشه miniapp پیدا نشد. اول باید کد مینی‌اپ را داخل پروژه بیاوری (git pull/آپدیت)."
-MSG_EN[panel_dir_missing]="⛔️ admin_panel folder not found. Update the project code first (option 2)."
-MSG_FA[panel_dir_missing]="⛔️ پوشه admin_panel پیدا نشد. اول باید کد پروژه را آپدیت کنی (گزینه ۲)."
+MSG_EN[miniapp_dir_missing]="⛔️ miniapp folder not found. Download the project package first (option 1/2)."
+MSG_FA[miniapp_dir_missing]="⛔️ پوشه miniapp پیدا نشد. ابتدا بستهٔ پروژه را دریافت کن (گزینهٔ ۱/۲)."
+MSG_EN[panel_dir_missing]="⛔️ admin_panel folder not found. Download the project package first (option 1/2)."
+MSG_FA[panel_dir_missing]="⛔️ پوشه admin_panel پیدا نشد. ابتدا بستهٔ پروژه را دریافت کن (گزینهٔ ۱/۲)."
 MSG_EN[prompt_domain_miniapp]="Enter the domain pointing to this server's IP (e.g. shop.example.com): "
 MSG_FA[prompt_domain_miniapp]="دامنه‌ای که به IP همین سرور اشاره می‌کند را وارد کن (مثلاً shop.example.com): "
 MSG_EN[prompt_domain_panel]="Enter the domain pointing to this server's IP (e.g. panel.example.com): "
@@ -409,22 +407,88 @@ pause() {
 }
 
 # ---------------------------------------------------------------------------
+# Download the project without creating a git checkout or asking for GitHub
+# credentials.  Runtime state is kept while source files are refreshed.
+# ---------------------------------------------------------------------------
+download_project_archive() {
+    local tmp_dir extracted state_dir state_item
+    tmp_dir=$(mktemp -d) || return 1
+    if ! curl --fail --location --silent --show-error --retry 3 "$PROJECT_ARCHIVE_URL" \
+        -o "$tmp_dir/project.tar.gz"; then
+        rm -rf "$tmp_dir"
+        return 1
+    fi
+    if ! tar -xzf "$tmp_dir/project.tar.gz" -C "$tmp_dir"; then
+        rm -rf "$tmp_dir"
+        return 1
+    fi
+    extracted=$(find "$tmp_dir" -mindepth 1 -maxdepth 1 -type d -name 's-ui-bot-*' -print -quit)
+    if [ -z "$extracted" ]; then
+        rm -rf "$tmp_dir"
+        return 1
+    fi
+
+    mkdir -p "$INSTALL_DIR" || { rm -rf "$tmp_dir"; return 1; }
+    state_dir=$(mktemp -d) || { rm -rf "$tmp_dir"; return 1; }
+    for state_item in .env venv bot_database.db reseller_dbs; do
+        if [ -e "$INSTALL_DIR/$state_item" ]; then
+            mv "$INSTALL_DIR/$state_item" "$state_dir/$state_item" || {
+                rm -rf "$tmp_dir" "$state_dir"
+                return 1
+            }
+        fi
+    done
+    find "$INSTALL_DIR" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
+    if ! cp -a "$extracted/." "$INSTALL_DIR/"; then
+        rm -rf "$INSTALL_DIR"
+        mkdir -p "$INSTALL_DIR"
+        cp -a "$state_dir/." "$INSTALL_DIR/" 2>/dev/null || true
+        rm -rf "$tmp_dir" "$state_dir"
+        return 1
+    fi
+    for state_item in .env venv bot_database.db reseller_dbs; do
+        if [ -e "$state_dir/$state_item" ]; then
+            mv "$state_dir/$state_item" "$INSTALL_DIR/$state_item" || true
+        fi
+    done
+    rm -rf "$tmp_dir" "$state_dir"
+    return 0
+}
+
+# ---------------------------------------------------------------------------
 # Action: full initial install / عملیات: نصب اولیه کامل
 # ---------------------------------------------------------------------------
 install_bot() {
+    local env_already_exists=0
+    if [ -f "$INSTALL_DIR/.env" ]; then
+        env_already_exists=1
+        echo -e "${GREEN}$(t env_exists)${RESET}"
+    else
+        echo ""
+        echo -e "${YELLOW}${BOLD}$(t enter_bot_info)${RESET}"
+        read -rsp "$(t prompt_bot_token)" BOT_TOKEN_INPUT
+        echo ""
+        read -rp "$(t prompt_owner_id)" OWNER_ID_INPUT
+        if [ -z "$BOT_TOKEN_INPUT" ]; then
+            echo -e "${RED}$(t invalid_bot_token)${RESET}"
+            return
+        fi
+        if ! [[ "$OWNER_ID_INPUT" =~ ^-?[0-9]+$ ]]; then
+            echo -e "${RED}$(t invalid_owner_id)${RESET}"
+            return
+        fi
+    fi
+
     echo -e "${CYAN}$(t installing_prereqs)${RESET}"
     sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a NEEDRESTART_SUSPEND=1 apt-get update -qq
-    timeout 120 sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a NEEDRESTART_SUSPEND=1 apt-get install -y -qq git python3 python3-pip python3-venv figlet > /dev/null
+    timeout 120 sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a NEEDRESTART_SUSPEND=1 apt-get install -y -qq curl ca-certificates tar python3 python3-pip python3-venv figlet > /dev/null
 
-    if [ -d "$INSTALL_DIR/.git" ]; then
-        echo -e "${YELLOW}$(t already_installed_pulling)${RESET}"
-        cd "$INSTALL_DIR"
-        git pull
-    else
-        echo -e "${CYAN}$(t cloning_project)${RESET}"
-        git clone "$REPO_URL" "$INSTALL_DIR"
-        cd "$INSTALL_DIR"
+    echo -e "${CYAN}$(t downloading_project)${RESET}"
+    if ! download_project_archive; then
+        echo -e "${RED}$(t download_failed)${RESET}"
+        return
     fi
+    cd "$INSTALL_DIR" || return
 
     echo -e "${CYAN}$(t preparing_python)${RESET}"
     if [ ! -d "venv" ]; then
@@ -434,11 +498,7 @@ install_bot() {
     pip install -r requirements.txt --quiet
     deactivate
 
-    if [ ! -f "$INSTALL_DIR/.env" ]; then
-        echo ""
-        echo -e "${YELLOW}${BOLD}$(t enter_bot_info)${RESET}"
-        read -rp "$(t prompt_bot_token)" BOT_TOKEN_INPUT
-        read -rp "$(t prompt_owner_id)" OWNER_ID_INPUT
+    if [ "$env_already_exists" -eq 0 ]; then
         cat > "$INSTALL_DIR/.env" <<EOF
 BOT_TOKEN=$BOT_TOKEN_INPUT
 OWNER_ID=$OWNER_ID_INPUT
@@ -482,13 +542,16 @@ EOF
 # Action: update / عملیات: آپدیت
 # ---------------------------------------------------------------------------
 update_bot() {
-    if [ ! -d "$INSTALL_DIR/.git" ]; then
+    if [ ! -d "$INSTALL_DIR" ]; then
         echo -e "${RED}$(t bot_not_installed)${RESET}"
         return
     fi
     cd "$INSTALL_DIR"
     echo -e "${CYAN}$(t fetching_latest)${RESET}"
-    git pull
+    if ! download_project_archive; then
+        echo -e "${RED}$(t download_failed)${RESET}"
+        return
+    fi
     echo -e "${CYAN}$(t updating_packages)${RESET}"
     source venv/bin/activate
     pip install -r requirements.txt --quiet
@@ -523,13 +586,16 @@ update_miniapp() {
         echo -e "${RED}$(t miniapp_not_installed)${RESET}"
         return
     fi
-    if [ ! -d "$INSTALL_DIR/.git" ]; then
+    if [ ! -d "$INSTALL_DIR" ]; then
         echo -e "${RED}$(t bot_not_installed)${RESET}"
         return
     fi
     cd "$INSTALL_DIR"
     echo -e "${CYAN}$(t fetching_latest)${RESET}"
-    git pull
+    if ! download_project_archive; then
+        echo -e "${RED}$(t download_failed)${RESET}"
+        return
+    fi
     echo -e "${CYAN}$(t updating_packages)${RESET}"
     source venv/bin/activate
     pip install -r requirements.txt --quiet
@@ -898,13 +964,16 @@ update_admin_panel() {
         echo -e "${RED}$(t panel_not_installed_yet)${RESET}"
         return
     fi
-    if [ ! -d "$INSTALL_DIR/.git" ]; then
+    if [ ! -d "$INSTALL_DIR" ]; then
         echo -e "${RED}$(t bot_not_installed)${RESET}"
         return
     fi
     cd "$INSTALL_DIR"
     echo -e "${CYAN}$(t fetching_latest)${RESET}"
-    git pull
+    if ! download_project_archive; then
+        echo -e "${RED}$(t download_failed)${RESET}"
+        return
+    fi
     echo -e "${CYAN}$(t updating_packages)${RESET}"
     source venv/bin/activate
     pip install -r requirements.txt --quiet

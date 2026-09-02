@@ -1,10 +1,9 @@
 #!/bin/bash
 # اسکریپت نصب/آپدیت خودکار بات فروش کانفیگ V2Ray
 #
-# استفاده (بعد از اینکه این فایل را در مخزن گیت‌هاب خودت گذاشتی و REPO_URL را
-# با آدرس ریپازیتوری خودت جایگزین کردی):
+# استفاده (ریپازیتوری ثابت و عمومی خودت):
 #
-#   bash <(curl -fsSL https://raw.githubusercontent.com/USERNAME/v2ray-bot/main/install.sh)
+#   bash <(curl -fsSL https://raw.githubusercontent.com/alirezasj7/s-ui-bot/main/install.sh)
 #
 # این اسکریپت هم برای نصب اولیه کار می‌کند و هم برای آپدیت‌های بعدی (idempotent است).
 
@@ -16,10 +15,11 @@ export NEEDRESTART_MODE=a
 export NEEDRESTART_SUSPEND=1
 
 # ============================================================================
-# This installer always pulls the S-UI-X-only release from the maintained repo.
-# Override REPO_URL before running if you intentionally use a private mirror.
+# This installer always pulls the S-UI-X-only release from the owner's public
+# archive.  It intentionally does not use git clone, so GitHub never prompts
+# for a username/password on the VPS.
 # ============================================================================
-REPO_URL="${REPO_URL:-https://github.com/alirezasj7/s-ui-bot.git}"
+PROJECT_ARCHIVE_URL="https://github.com/alirezasj7/s-ui-bot/archive/refs/heads/main.tar.gz"
 INSTALL_DIR="$HOME/v2ray_bot"
 SERVICE_NAME="v2raybot"
 
@@ -27,27 +27,70 @@ echo "🚀 شروع نصب/آپدیت بات فروش کانفیگ V2Ray"
 echo "──────────────────────────────────────────"
 
 # ----------------------------------------------------------------------------
-# ۱. نصب پیش‌نیازهای سیستمی
+# ۱. گرفتن اطلاعات BotFather پیش از نصب
 # ----------------------------------------------------------------------------
-echo "📦 بررسی و نصب پیش‌نیازها (git, python3, pip, venv)..."
-sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a NEEDRESTART_SUSPEND=1 apt-get update -qq
-timeout 120 sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a NEEDRESTART_SUSPEND=1 apt-get install -y -qq git python3 python3-pip python3-venv > /dev/null
-
-# ----------------------------------------------------------------------------
-# ۲. دریافت یا آپدیت کد از گیت‌هاب
-# ----------------------------------------------------------------------------
-if [ -d "$INSTALL_DIR/.git" ]; then
-    echo "🔄 مخزن از قبل موجود است، در حال دریافت آخرین تغییرات..."
-    cd "$INSTALL_DIR"
-    git pull
+# BotFather issues the bot token, not the owner's Telegram ID.  The ID must be
+# entered once (for example from @userinfobot); accepting arbitrary text here
+# would make the bot fail during startup.
+ENV_ALREADY_EXISTS=0
+if [ -f "$INSTALL_DIR/.env" ]; then
+    ENV_ALREADY_EXISTS=1
+    echo "✅ فایل .env از قبل موجود است؛ اطلاعات BotFather دست‌نخورده می‌ماند."
 else
-    echo "📥 دریافت پروژه از گیت‌هاب..."
-    git clone "$REPO_URL" "$INSTALL_DIR"
-    cd "$INSTALL_DIR"
+    echo ""
+    echo "🔑 ابتدا اطلاعات بات را از BotFather آماده کن:"
+    read -rsp "توکن بات (از BotFather): " BOT_TOKEN_INPUT
+    echo ""
+    read -rp "آیدی عددی مالک (از @userinfobot): " OWNER_ID_INPUT
+    if [ -z "$BOT_TOKEN_INPUT" ]; then
+        echo "⛔️ توکن بات نمی‌تواند خالی باشد."
+        exit 1
+    fi
+    if ! [[ "$OWNER_ID_INPUT" =~ ^-?[0-9]+$ ]]; then
+        echo "⛔️ آیدی مالک باید فقط عدد باشد."
+        exit 1
+    fi
 fi
 
 # ----------------------------------------------------------------------------
-# ۳. ساخت virtual environment و نصب پکیج‌ها
+# ۲. نصب پیش‌نیازهای سیستمی (بدون git)
+# ----------------------------------------------------------------------------
+echo "📦 بررسی و نصب پیش‌نیازها (curl, python3, pip, venv)..."
+sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a NEEDRESTART_SUSPEND=1 apt-get update -qq
+timeout 120 sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a NEEDRESTART_SUSPEND=1 apt-get install -y -qq curl ca-certificates tar python3 python3-pip python3-venv > /dev/null
+
+# ----------------------------------------------------------------------------
+# ۳. دریافت کد از آرشیو عمومی گیت‌هاب (بدون clone/احراز هویت)
+# ----------------------------------------------------------------------------
+echo "📥 دریافت بستهٔ عمومی پروژه..."
+TMP_PROJECT_DIR=$(mktemp -d)
+cleanup_tmp_project() { rm -rf "$TMP_PROJECT_DIR"; }
+trap cleanup_tmp_project EXIT
+curl --fail --location --silent --show-error --retry 3 "$PROJECT_ARCHIVE_URL" \
+    -o "$TMP_PROJECT_DIR/project.tar.gz"
+tar -xzf "$TMP_PROJECT_DIR/project.tar.gz" -C "$TMP_PROJECT_DIR"
+EXTRACTED_PROJECT=$(find "$TMP_PROJECT_DIR" -mindepth 1 -maxdepth 1 -type d -name 's-ui-bot-*' -print -quit)
+if [ -z "$EXTRACTED_PROJECT" ]; then
+    echo "⛔️ ساختار بستهٔ پروژه معتبر نیست."
+    exit 1
+fi
+
+mkdir -p "$INSTALL_DIR"
+STATE_DIR=$(mktemp -d)
+if [ -f "$INSTALL_DIR/.env" ]; then mv "$INSTALL_DIR/.env" "$STATE_DIR/.env"; fi
+if [ -d "$INSTALL_DIR/venv" ]; then mv "$INSTALL_DIR/venv" "$STATE_DIR/venv"; fi
+if [ -f "$INSTALL_DIR/bot_database.db" ]; then mv "$INSTALL_DIR/bot_database.db" "$STATE_DIR/bot_database.db"; fi
+if [ -d "$INSTALL_DIR/reseller_dbs" ]; then mv "$INSTALL_DIR/reseller_dbs" "$STATE_DIR/reseller_dbs"; fi
+find "$INSTALL_DIR" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
+cp -a "$EXTRACTED_PROJECT/." "$INSTALL_DIR/"
+for state_item in .env venv bot_database.db reseller_dbs; do
+    if [ -e "$STATE_DIR/$state_item" ]; then mv "$STATE_DIR/$state_item" "$INSTALL_DIR/$state_item"; fi
+done
+rm -rf "$STATE_DIR"
+cd "$INSTALL_DIR"
+
+# ----------------------------------------------------------------------------
+# ۴. ساخت virtual environment و نصب پکیج‌ها
 # ----------------------------------------------------------------------------
 echo "🐍 آماده‌سازی محیط پایتون..."
 if [ ! -d "venv" ]; then
@@ -58,13 +101,9 @@ pip install -r requirements.txt --quiet
 deactivate
 
 # ----------------------------------------------------------------------------
-# ۴. تنظیم فایل .env (فقط دفعه اول، چون این فایل هیچ‌وقت در گیت نیست)
+# ۵. تنظیم فایل .env (فقط دفعه اول)
 # ----------------------------------------------------------------------------
-if [ ! -f "$INSTALL_DIR/.env" ]; then
-    echo ""
-    echo "🔑 فایل .env پیدا نشد. اطلاعات زیر را وارد کن:"
-    read -rp "توکن بات (از BotFather): " BOT_TOKEN_INPUT
-    read -rp "آیدی عددی ادمین (مثلاً از @userinfobot): " OWNER_ID_INPUT
+if [ "$ENV_ALREADY_EXISTS" -eq 0 ]; then
     cat > "$INSTALL_DIR/.env" <<EOF
 BOT_TOKEN=$BOT_TOKEN_INPUT
 OWNER_ID=$OWNER_ID_INPUT

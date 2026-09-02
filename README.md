@@ -2,7 +2,7 @@
 
 # 🛰️ Shopvpn — بات فروش هوشمند کانفیگ V2Ray
 
-نسخهٔ `4.1.0` — انتشار S-UI-X only با ایمن‌سازی ساخت client
+نسخهٔ `4.2.0` — انتشار S-UI-X only با نصب بدون clone و احراز هویت GitHub
 
 **فروش خودکار کانفیگ V2Ray در تلگرام، همراه با Mini App اختصاصی، دو پنل مدیریت کامل (بات + وب) و سیستم نمایندگی**
 
@@ -196,11 +196,13 @@ bash <(curl -fsSL https://raw.githubusercontent.com/alirezasj7/s-ui-bot/main/ins
 
 این اسکریپت به‌صورت خودکار:
 
-1. ✅ پیش‌نیازهای سیستمی (`git`, `python3`, `pip`, `venv`) را نصب می‌کند
-2. ✅ پروژه را از گیت‌هاب کلون می‌کند (یا در صورت وجود، آپدیت می‌کند)
+1. ✅ پیش‌نیازهای سیستمی (`curl`, `python3`, `pip`, `venv`) را نصب می‌کند
+2. ✅ بستهٔ پروژه را مستقیماً از ریپازیتوری خودت دریافت می‌کند (بدون `git clone` و بدون درخواست Username/Password)
 3. ✅ محیط مجازی پایتون را می‌سازد و پکیج‌ها را نصب می‌کند
-4. ✅ توکن بات و آیدی عددی ادمین را از تو می‌پرسد و فایل `.env` را می‌سازد
+4. ✅ در ابتدای نصب توکن BotFather و آیدی عددی مالک را می‌پرسد و فایل `.env` را می‌سازد
 5. ✅ یک سرویس `systemd` می‌سازد تا بات همیشه در حال اجرا بماند و بعد از ری‌استارت سرور هم خودکار بالا بیاید
+
+> نکته: BotFather فقط توکن بات را صادر می‌کند و آیدی عددی مالک را ارائه نمی‌دهد؛ آیدی خودت را یک‌بار از `@userinfobot` بگیر و در نصب وارد کن.
 
 بعد از پایان نصب می‌توانی با دستورهای زیر وضعیت بات را مدیریت کنی:
 
@@ -232,10 +234,10 @@ bash <(curl -fsSL https://raw.githubusercontent.com/alirezasj7/s-ui-bot/main/man
 
 اگر ترجیح می‌دهی مراحل را دستی و قدم‌به‌قدم انجام دهی:
 
-**۱. کلون کردن پروژه**
+**۱. دریافت پروژه از ریپازیتوری خودت (بدون احراز هویت GitHub)**
 ```bash
-git clone https://github.com/alirezasj7/s-ui-bot.git
-cd s-ui-bot
+mkdir -p s-ui-bot && cd s-ui-bot
+curl -fsSL https://github.com/alirezasj7/s-ui-bot/archive/refs/heads/main.tar.gz | tar -xz --strip-components=1
 ```
 
 **۲. ساخت محیط مجازی و نصب پکیج‌ها**
@@ -306,7 +308,7 @@ nohup python main.py > bot.log 2>&1 &
 یک پنل متنی رنگی و تعاملی برای مدیریت کامل بات بدون نیاز به یادآوری دستورات:
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/mehdirafatpanah/Shopvpn/main/manage.sh)
+bash <(curl -fsSL https://raw.githubusercontent.com/alirezasj7/s-ui-bot/main/manage.sh)
 ```
 
 | گزینه | عملکرد |
