@@ -77,6 +77,23 @@ S-UI را روی HTTP اجرا کنید، پورت‌های وب و Subscription
 
 **منابع پیشنهادی:** ۲ گیگ رم و ۲ هسته CPU · Ubuntu 22.04+
 
+### نصب یک‌خطی S-UI بدون دامنه و SSL
+
+روی سرور Ubuntu این دستور را اجرا کنید؛ مخزن فورک دریافت می‌شود، PostgreSQL،
+Python، وابستگی‌ها و سرویس پنل نصب می‌شوند و سپس لینک ویزارد اولیه نمایش داده می‌شود:
+
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/alirezasj7/PGClockBot-SUI/main/install-sui.sh)
+```
+
+در ویزارد، آدرس S-UI، توکن API v2، آدرس Subscription با IP، توکن ربات و رمز ورود
+پنل را وارد کنید. نصب پیش‌فرض روی HTTP، پورت `9000` و polling است؛ دامنه و گواهی لازم
+نیست. برای اجرای مستقیم bootstrap هم می‌توانید بنویسید:
+
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/alirezasj7/PGClockBot-SUI/main/get.sh) install-main
+```
+
 ### قبل از نصب این‌ها را آماده کنید
 1. **دامنه** متصل به آی‌پی سرور
 2. **توکن ربات**، **یوزرنیم ربات** و **آیدی ادمین** تلگرام
@@ -87,13 +104,13 @@ S-UI را روی HTTP اجرا کنید، پورت‌های وب و Subscription
 
 ### یک‌خطی (کانال پایدار / `main`)
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/Mrclocks/PGClockBot/main/get.sh)
+bash <(curl -fsSL https://raw.githubusercontent.com/alirezasj7/PGClockBot-SUI/main/get.sh) install-main
 ```
 
 نصب پیش‌فرض از **`main` (پایدار 0.5)** است. برای کانال توسعه:
 
 ```bash
-PGCLOCK_CHANNEL=dev bash <(curl -fsSL https://raw.githubusercontent.com/Mrclocks/PGClockBot/dev/get.sh)
+PGCLOCK_CHANNEL=dev bash <(curl -fsSL https://raw.githubusercontent.com/alirezasj7/PGClockBot-SUI/dev/get.sh) install-dev
 ```
 
 بعد از نصب، راه‌اندازی در مرورگر کامل می‌شود: `http://SERVER_IP:9000/` (یا دامنهٔ شما).

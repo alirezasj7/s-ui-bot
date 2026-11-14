@@ -294,14 +294,14 @@
 <p>همه نقش‌ها — مخصوصاً کسی که ربات را روی سرور نصب می‌کند یا اولین‌بار وارد وب‌پنل می‌شود. بعد از نصب، مالک معمولاً ویزارد را کامل می‌کند؛ بقیه نقش‌ها بیشتر برای ورود روزانه به همین صفحه مراجعه می‌کنند.</p>
 <h2 id="نصب-سریع">نصب سریع</h2>
 <p>روی اوبونتو ۲۲٫۰۴ یا جدیدتر:</p>
-<pre><code class="language-bash">bash &lt;(curl -fsSL https://raw.githubusercontent.com/Mrclocks/PGClockBot/main/get.sh)</code></pre>
-<p>منوی انگلیسی باز می‌شود. گزینهٔ <strong>Install</strong> را بزنید و صبر کنید تا سرویس بالا بیاید. سپس در مرورگر ویزارد اولیه را کامل کنید.</p>
+<pre><code class="language-bash">bash &lt;(curl -fsSL https://raw.githubusercontent.com/alirezasj7/PGClockBot-SUI/main/install-sui.sh)</code></pre>
+<p>دستور، مخزن فورک S-UI را دریافت و نصب را شروع می‌کند. پورت پیش‌فرض ۹۰۰۰ و حالت نصب بدون دامنه/SSL است؛ سپس ویزارد اولیه را کامل کنید.</p>
 <h3 id="مثال-واقعی">مثال واقعی</h3>
 <p>فرض کنید IP سرور شما <code>203.0.113.10</code> است:</p>
-<ol><li>نصب را تمام کنید.</li><li>بروید به <code>http://203.0.113.10:9000/</code></li><li>در ویزارد: یوزر/رمز وب، توکن ربات تلگرام، و اتصال پاسارگارد را پر کنید.</li><li><strong>Finish</strong> بزنید و با همان یوزر وارد پنل شوید.</li><li>پاورقی منو را ببینید: برای حساب ریشه معمولاً برچسب <strong>مالک</strong> است (نقش نشست همچنان <code>admin</code>).</li></ol>
+<ol><li>نصب را تمام کنید.</li><li>بروید به <code>http://203.0.113.10:9000/</code></li><li>در ویزارد: یوزر/رمز وب، توکن ربات تلگرام، آدرس S-UI، توکن API v2 و آدرس Subscription با IP را پر کنید.</li><li><strong>Finish</strong> بزنید و با همان یوزر وارد پنل شوید.</li><li>پاورقی منو را ببینید: برای حساب ریشه معمولاً برچسب <strong>مالک</strong> است (نقش نشست همچنان <code>admin</code>).</li></ol>
 <div class="guide-callout guide-callout--info"><strong class="guide-callout-label">راهنما</strong><p>پورت پیش‌فرض وب‌پنل <strong>۹۰۰۰</strong> است. اگر پشت فایروال یا کلود هستید، این پورت باید باز باشد (یا از ریورس‌پراکسی با دامنه استفاده کنید).</p></div>
 <h2 id="اگر-پروژه-از-قبل-روی-سرور-هست">اگر پروژه از قبل روی سرور هست</h2>
-<pre><code class="language-bash">cd PGClockBot
+<pre><code class="language-bash">cd PGClockBot-SUI
 bash get.sh
 # یا
 bash pgclock.sh</code></pre>

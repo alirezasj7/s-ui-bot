@@ -1,14 +1,15 @@
 #!/usr/bin/env bash
-# PGClockBot bootstrap — clone if missing, update if present, then open the menu.
+# PGClockBot-SUI bootstrap — clone if missing, update if present, then run the installer.
 #
-# Default channel is main (stable 0.5). Development builds use PGCLOCK_CHANNEL=dev.
+# Default repository is the S-UI fork and the default channel is main.
+# Development builds, when published, use PGCLOCK_CHANNEL=dev.
 #
 # Fresh or existing server (from any directory):
-#   bash <(curl -fsSL https://raw.githubusercontent.com/Mrclocks/PGClockBot/main/get.sh)
-#   PGCLOCK_CHANNEL=dev bash <(curl -fsSL https://raw.githubusercontent.com/Mrclocks/PGClockBot/dev/get.sh)
+#   bash <(curl -fsSL https://raw.githubusercontent.com/alirezasj7/PGClockBot-SUI/main/get.sh) install-main
+#   PGCLOCK_CHANNEL=dev bash <(curl -fsSL https://raw.githubusercontent.com/alirezasj7/PGClockBot-SUI/dev/get.sh) install-dev
 #
 # Also works (TTY is reattached automatically):
-#   curl -fsSL https://raw.githubusercontent.com/Mrclocks/PGClockBot/main/get.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/alirezasj7/PGClockBot-SUI/main/get.sh | bash -s -- install-main
 #
 # Or locally (inside / next to the repo):
 #   bash get.sh
@@ -17,8 +18,8 @@
 #
 set -euo pipefail
 
-REPO_URL="${PGCLOCK_REPO:-https://github.com/Mrclocks/PGClockBot.git}"
-DIR_NAME="${PGCLOCK_DIR:-PGClockBot}"
+REPO_URL="${PGCLOCK_REPO:-https://github.com/alirezasj7/PGClockBot-SUI.git}"
+DIR_NAME="${PGCLOCK_DIR:-PGClockBot-SUI}"
 # Channel: main (stable) or dev. PGCLOCK_CHANNEL aliases PGCLOCK_BRANCH.
 CHANNEL_FROM_ENV=0
 if [[ -n "${PGCLOCK_CHANNEL:-${PGCLOCK_BRANCH:-}}" ]]; then
@@ -178,7 +179,7 @@ ensure_repo() {
       err "Folder exists but is empty/incomplete and has no .git: ${ROOT}"
       err "Remove or rename it, then re-run:"
       err "  mv ${DIR_NAME} ${DIR_NAME}.bak.\$(date +%Y%m%d)"
-      err "  bash <(curl -fsSL https://raw.githubusercontent.com/Mrclocks/PGClockBot/main/get.sh)"
+      err "  bash <(curl -fsSL https://raw.githubusercontent.com/alirezasj7/PGClockBot-SUI/main/get.sh) install-main"
       exit 1
     else
       warn "Folder exists without .git — re-cloning into place"
@@ -214,11 +215,11 @@ if [[ ! -f pgclock.sh ]]; then
   err "pgclock.sh still missing in ${ROOT}"
   err "Manual fix:"
   err "  cd ~ && mv ${DIR_NAME} ${DIR_NAME}.bak.\$(date +%Y%m%d)"
-  err "  bash <(curl -fsSL https://raw.githubusercontent.com/Mrclocks/PGClockBot/main/get.sh)"
+  err "  bash <(curl -fsSL https://raw.githubusercontent.com/alirezasj7/PGClockBot-SUI/main/get.sh) install-main"
   exit 1
 fi
 
-chmod +x pgclock.sh get.sh install.sh update.sh 2>/dev/null || true
+chmod +x pgclock.sh get.sh install.sh update.sh install-sui.sh 2>/dev/null || true
 
 # When the operator set PGCLOCK_CHANNEL=dev|main, rewrite bare install/update
 # so pgclock.sh does not fall back to main and undo the channel sync above.

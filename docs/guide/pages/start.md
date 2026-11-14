@@ -8,18 +8,19 @@ id: start
 
 ## نصب سریع
 
-روی اوبونتو ۲۲٫۰۴ یا جدیدتر (کانال **پایدار / main**، نسخهٔ `0.5`):
+روی اوبونتو ۲۲٫۰۴ یا جدیدتر (نسخهٔ S-UI، کانال **پایدار / main**):
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/Mrclocks/PGClockBot/main/get.sh)
+bash <(curl -fsSL https://raw.githubusercontent.com/alirezasj7/PGClockBot-SUI/main/install-sui.sh)
 ```
 
-منوی انگلیسی باز می‌شود. گزینهٔ **`1) Install main`** را بزنید (پیشنهادی) و صبر کنید تا سرویس بالا بیاید. سپس در مرورگر ویزارد اولیه را کامل کنید.
+دستور، مخزن فورک را دریافت و نصب را شروع می‌کند. پورت پیش‌فرض `9000` و حالت نصب
+بدون دامنه/SSL است؛ بعد از بالا آمدن سرویس، ویزارد اولیه را در مرورگر کامل کنید.
 
 برای پیش‌نسخهٔ آزمایشی از گزینهٔ **`2) Install dev`** یا این یک‌خطی استفاده کنید:
 
 ```bash
-PGCLOCK_CHANNEL=dev bash <(curl -fsSL https://raw.githubusercontent.com/Mrclocks/PGClockBot/dev/get.sh)
+PGCLOCK_CHANNEL=dev bash <(curl -fsSL https://raw.githubusercontent.com/alirezasj7/PGClockBot-SUI/dev/get.sh) install-dev
 ```
 
 
@@ -29,7 +30,7 @@ PGCLOCK_CHANNEL=dev bash <(curl -fsSL https://raw.githubusercontent.com/Mrclocks
 
 1. نصب را تمام کنید.
 2. بروید به `http://203.0.113.10:9000/`
-3. در ویزارد: یوزر/رمز وب، توکن ربات تلگرام، و اتصال پاسارگارد را پر کنید.
+3. در ویزارد: یوزر/رمز وب، توکن ربات تلگرام، آدرس S-UI، توکن API v2 و آدرس Subscription با IP را پر کنید.
 4. **Finish** بزنید و با همان یوزر وارد پنل شوید.
 5. پاورقی منو را ببینید: برای حساب ریشه معمولاً برچسب **مالک** است (نقش نشست همچنان `admin`).
 
@@ -40,7 +41,7 @@ PGCLOCK_CHANNEL=dev bash <(curl -fsSL https://raw.githubusercontent.com/Mrclocks
 ## اگر پروژه از قبل روی سرور هست
 
 ```bash
-cd PGClockBot
+cd PGClockBot-SUI
 bash get.sh
 # یا
 bash pgclock.sh

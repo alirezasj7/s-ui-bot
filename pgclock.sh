@@ -66,6 +66,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 SERVICE_NAME="pgclockbot"
 SERVICE_PATH="/etc/systemd/system/${SERVICE_NAME}.service"
+PANEL_REPO_URL="${PGCLOCK_REPO:-https://github.com/alirezasj7/PGClockBot-SUI.git}"
 PY="${SCRIPT_DIR}/.venv/bin/python"
 PIP="${SCRIPT_DIR}/.venv/bin/pip"
 
@@ -1331,9 +1332,9 @@ sync_code_to_channel() {
   fi
   info "Syncing code to origin/${ch}…"
   git remote get-url origin >/dev/null 2>&1 || \
-    git remote add origin "https://github.com/Mrclocks/PGClockBot.git" 2>/dev/null || true
+    git remote add origin "$PANEL_REPO_URL" 2>/dev/null || true
   # Prefer the public repo URL (drop stale mirrors / dead remotes).
-  git remote set-url origin "https://github.com/Mrclocks/PGClockBot.git" 2>/dev/null || true
+  git remote set-url origin "$PANEL_REPO_URL" 2>/dev/null || true
   # A single-branch clone only has +refs/heads/main:… in remote.origin.fetch.
   # Plain `git fetch origin dev` then lands on FETCH_HEAD and never creates
   # refs/remotes/origin/dev — Update then dies with "origin/dev not found".
@@ -1401,6 +1402,12 @@ write_env_file() {
   BOT_TOKEN="$BOT_TOKEN" \
   BOT_USERNAME="$BOT_USERNAME" \
   ADMIN_IDS="$ADMIN_IDS" \
+  PANEL_BACKEND="${PANEL_BACKEND:-sui}" \
+  SUI_BASE_URL="${SUI_BASE_URL:-}" \
+  SUI_API_TOKEN="${SUI_API_TOKEN:-}" \
+  SUI_SUBSCRIPTION_BASE_URL="${SUI_SUBSCRIPTION_BASE_URL:-}" \
+  SUI_INBOUND_IDS="${SUI_INBOUND_IDS:-}" \
+  SUI_ADMIN_USERNAME="${SUI_ADMIN_USERNAME:-s-ui}" \
   PG_BASE_URL="$PG_BASE_URL" \
   PG_USERNAME="$PG_USERNAME" \
   PG_PASSWORD="$PG_PASSWORD" \
@@ -1418,6 +1425,12 @@ payload = {
     "BOT_TOKEN": os.environ["BOT_TOKEN"],
     "BOT_USERNAME": os.environ["BOT_USERNAME"],
     "ADMIN_IDS": os.environ["ADMIN_IDS"],
+    "PANEL_BACKEND": os.environ.get("PANEL_BACKEND", "sui").strip() or "sui",
+    "SUI_BASE_URL": os.environ.get("SUI_BASE_URL", "").strip(),
+    "SUI_API_TOKEN": os.environ.get("SUI_API_TOKEN", "").strip(),
+    "SUI_SUBSCRIPTION_BASE_URL": os.environ.get("SUI_SUBSCRIPTION_BASE_URL", "").strip(),
+    "SUI_INBOUND_IDS": os.environ.get("SUI_INBOUND_IDS", "").strip(),
+    "SUI_ADMIN_USERNAME": os.environ.get("SUI_ADMIN_USERNAME", "s-ui").strip() or "s-ui",
     "PG_BASE_URL": os.environ["PG_BASE_URL"],
     "PG_USERNAME": os.environ["PG_USERNAME"],
     "PG_PASSWORD": os.environ["PG_PASSWORD"],
@@ -2173,7 +2186,7 @@ cmd_uninstall() {
   printf '%s==========================================%s\n' "$G" "$N" > /dev/tty
   printf '  Removed: %s\n' "$root" > /dev/tty
   printf '  Reinstall:\n' > /dev/tty
-  printf '    bash <(curl -fsSL https://raw.githubusercontent.com/Mrclocks/PGClockBot/main/get.sh)\n' > /dev/tty
+  printf '    bash <(curl -fsSL https://raw.githubusercontent.com/alirezasj7/PGClockBot-SUI/main/install-sui.sh)\n' > /dev/tty
   printf '%s==========================================%s\n\n' "$G" "$N" > /dev/tty
   exit 0
 }
@@ -2331,9 +2344,9 @@ cmd_help() {
     pgclock backup|restore|migrate|doctor [--json]
     sudo bash scripts/install_global_cli.sh
 
-  One-liner (clone OR update existing folder, then menu):
-    bash <(curl -fsSL https://raw.githubusercontent.com/Mrclocks/PGClockBot/main/get.sh)
-    PGCLOCK_BRANCH=dev bash <(curl -fsSL https://raw.githubusercontent.com/Mrclocks/PGClockBot/dev/get.sh)
+  One-liner (clone OR update existing folder, then install):
+    bash <(curl -fsSL https://raw.githubusercontent.com/alirezasj7/PGClockBot-SUI/main/install-sui.sh)
+    bash <(curl -fsSL https://raw.githubusercontent.com/alirezasj7/PGClockBot-SUI/main/get.sh) install-main
 
   Inside the project:
     bash get.sh
