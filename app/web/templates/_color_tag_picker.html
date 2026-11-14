@@ -1,0 +1,14 @@
+{# Fixed 4-level risk-color palette. Expects: selected_color, field_name (default color_tag) #}
+{% set field_name = field_name or 'color_tag' %}
+{% set selected_color = selected_color or 'green' %}
+{% set color_tags = color_tags or [] %}
+<div class="color-tag-picker" role="radiogroup" aria-label="تگ ریسک" data-color-tag-picker>
+  {% for t in color_tags %}
+  <label class="color-tag-option{% if selected_color == t.key %} is-selected{% endif %}"
+         style="--tag-color: {{ t.hex }}">
+    <input type="radio" name="{{ field_name }}" value="{{ t.key }}"
+           {% if selected_color == t.key %}checked{% endif %} />
+    <span class="color-tag-label">{{ t.title_fa }}</span>
+  </label>
+  {% endfor %}
+</div>

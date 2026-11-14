@@ -1,0 +1,161 @@
+/* List editors use the panel's control, menu and spacing tokens. */
+.list-input-field {
+  min-width: 0;
+}
+.list-input-field > label {
+  margin-bottom: var(--space-1);
+}
+.list-editor {
+  width: 100%;
+  min-width: 0;
+  font-weight: 400;
+}
+.list-editor-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-1);
+  width: 100%;
+  min-height: var(--btn-h);
+  padding-block: 0;
+  padding-inline: var(--space-2);
+  box-sizing: border-box;
+  border: 1px solid var(--border);
+  border-radius: var(--control-radius);
+  background: var(--control-bg);
+  color: var(--foreground);
+  font: inherit;
+  text-align: start;
+  cursor: pointer;
+}
+.list-editor-toggle:hover {
+  background: var(--control-bg-hover);
+}
+.list-editor-toggle:focus-visible,
+.list-editor.is-open > .list-editor-toggle {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+.list-editor.is-invalid > .list-editor-toggle {
+  border-color: var(--destructive);
+}
+.list-editor-toggle:disabled {
+  opacity: .5;
+  cursor: default;
+}
+.list-editor-summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-0);
+  min-width: 0;
+}
+.list-editor-chip {
+  max-width: min(100%, 180px);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: var(--space-0) var(--space-1);
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--control-radius);
+  font-size: 13px;
+}
+/* Same up/down chevron as the panel's select, drawn as an image so it centres exactly. */
+.list-editor-caret {
+  flex: 0 0 auto;
+  width: 14px;
+  height: 14px;
+  background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 16 16' fill='none'%3E%3Cpath d='M4.5 6L8 3l3.5 3' stroke='%23a1a1aa' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3Cpath d='M4.5 10L8 13l3.5-3' stroke='%23a1a1aa' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") center / 14px 14px no-repeat;
+  transition: transform var(--motion-fast);
+}
+.list-editor.is-open .list-editor-caret {
+  transform: rotate(180deg);
+}
+/* Keep the editor in the form's flow so modal scrolling and mobile keyboards
+   cannot clip its interactive rows or detach them from their field. */
+.list-editor-panel {
+  margin-top: var(--space-1);
+  padding: var(--space-1_5);
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--menu-radius);
+}
+.list-editor-panel[hidden],
+.list-editor-panel [hidden] {
+  display: none;
+}
+.list-editor-draft-label {
+  margin-bottom: var(--space-1);
+}
+.list-editor-entry {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1);
+}
+.list-editor-entry > input {
+  flex: 1 1 140px;
+  width: 0;
+  min-width: 0;
+  margin: 0;
+  font-size: var(--control-fs);
+}
+.list-editor-entry > .icon-btn,
+.list-editor-actions > .icon-btn {
+  flex: 0 0 auto;
+  width: var(--space-4_5);
+  height: var(--space-4_5);
+  min-height: var(--space-4_5);
+  margin: 0;
+}
+.list-editor .icon-btn:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+.list-editor-items {
+  display: grid;
+  gap: var(--space-0);
+  max-height: 240px;
+  margin: var(--space-1) 0;
+  padding: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  list-style: none;
+}
+.list-editor-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1);
+  padding: var(--space-0) var(--space-1);
+  background: var(--control-bg);
+  border-radius: var(--menu-item-radius);
+}
+.list-editor-value {
+  flex: 1 1 80px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-size: 14px;
+}
+.list-editor-actions {
+  display: flex;
+  gap: var(--space-0);
+  margin-inline-start: auto;
+}
+.list-editor-confirm {
+  flex-basis: 100%;
+  color: var(--destructive-fg);
+  font-size: 12px;
+}
+.list-editor-empty {
+  margin: var(--space-1) 0;
+  font-size: 12px;
+}
+.list-editor-panel > small.muted {
+  display: block;
+  font-size: 11px;
+}
+@media (prefers-reduced-motion: reduce) {
+  .list-editor-caret { transition: none; }
+}

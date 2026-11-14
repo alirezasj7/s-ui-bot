@@ -1,0 +1,99 @@
+{% extends "base.html" %}
+{% from "macros.html" import page_title %}
+{% from "_panel_settings_tabs.html" import panel_settings_tabs %}
+{% block title %}امنیت{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div>
+    {{ page_title('panel-settings', 'تنظیمات وب پنل', 'neutral', help='settings-panel') }}
+  </div>
+</div>
+
+{% if staff.role == 'admin' %}
+{{ panel_settings_tabs('security') }}
+{% endif %}
+
+{% if identity_help %}
+{# Phase D4 Q4: role-channel identity guidance #}
+<div class="card settings-card" id="identity-help">
+  <h2>{{ identity_help.title }}</h2>
+  <ul class="muted muted-list">
+    {% for line in identity_help.lines %}
+    <li>{{ line }}</li>
+    {% endfor %}
+  </ul>
+</div>
+{% endif %}
+
+<form method="post" action="/security/credentials" class="settings-form" autocomplete="off" id="security-credentials-form">
+  <div class="card settings-card">
+    <h2>تغییر نام کاربری و رمز</h2>
+    <p class="muted update-card-caption">
+      یوزر فعلی:
+      <strong dir="ltr">{{ current_username }}</strong>.
+      برای تغییر، یوزر و رمز قدیم را خودتان وارد کنید؛ سپس مقادیر جدید را بنویسید.
+      {% if staff.role == 'reseller' %}نام کاربری نماینده باید با قوانین پاسارگارد سازگار باشد (۳ تا ۱۲۸ کاراکتر؛ حروف انگلیسی، عدد و - _ @ .؛ بدون دو نماد پشت‌سرهم) و معمولاً حروف کوچک است. اگر ادمین پاسارگارد دارید، یوزر باید همان یوزر پاسارگارد بماند و تغییر رمز هر دو پنل را یکی می‌کند.{% else %}نام کاربری باید با قوانین پاسارگارد سازگار باشد: ۳ تا ۱۲۸ کاراکتر؛ فقط حروف انگلیسی، عدد و - _ @ .؛ بدون دو نماد پشت‌سرهم.{% endif %}
+      رمز جدید طبق پاسارگارد: حداقل ۱۲ کاراکتر، دو رقم، دو حرف بزرگ، دو حرف کوچک و یک کاراکتر خاص.
+    </p>
+    <div class="settings-grid">
+      <div class="setting-item">
+        <label>یوزر قدیم
+          <input name="old_username" required minlength="3" maxlength="64" dir="ltr"
+                 value="" placeholder="user_name" autocomplete="off" autocapitalize="off"
+                 autocorrect="off" spellcheck="false" />
+          <small class="muted">همان نام کاربری فعلی ورود</small>
+        </label>
+      </div>
+      <div class="setting-item">
+        <label>رمز قدیم
+          <div class="pw-field">
+            <input id="sec-old-pass" name="current_password" type="password" required autocomplete="current-password" dir="ltr" placeholder="••••••••" />
+            <button type="button" class="pw-toggle" data-pw-for="sec-old-pass" aria-label="نمایش رمز" aria-pressed="false">
+              <svg class="pw-ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg>
+            </button>
+          </div>
+          <small class="muted">رمز فعلی پنل</small>
+        </label>
+      </div>
+      <div class="setting-item">
+        <label>یوزر جدید
+          <input name="new_username" required minlength="3" maxlength="64" dir="ltr"
+                 value="" placeholder="new_user" autocomplete="off" autocapitalize="off"
+                 autocorrect="off" spellcheck="false"
+                 pattern="[A-Za-z0-9_]+" title="فقط حروف انگلیسی، عدد و _" />
+          <small class="muted">فقط حروف انگلیسی، عدد و _</small>
+        </label>
+      </div>
+      <div class="setting-item">
+        <label>رمز جدید
+          <div class="pw-field">
+            <input id="sec-new-pass" name="new_password" type="password" required minlength="12" autocomplete="new-password" dir="ltr" placeholder="••••••••" />
+            <button type="button" class="pw-toggle" data-pw-for="sec-new-pass" aria-label="نمایش رمز" aria-pressed="false">
+              <svg class="pw-ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg>
+            </button>
+          </div>
+          <small class="muted">حداقل ۱۲ کاراکتر، دو رقم، دو حرف بزرگ/کوچک و کاراکتر خاص</small>
+        </label>
+      </div>
+    </div>
+  </div>
+  <div class="actions sticky-actions">
+    <button class="btn" type="submit">ذخیره تغییرات</button>
+  </div>
+</form>
+<script>
+(function(){
+  document.querySelectorAll('.pw-toggle[data-pw-for]').forEach((btn) => {
+    const input = document.getElementById(btn.getAttribute('data-pw-for'));
+    if (!input) return;
+    btn.addEventListener('click', () => {
+      const show = input.type === 'password';
+      input.type = show ? 'text' : 'password';
+      btn.classList.toggle('is-visible', show);
+      btn.setAttribute('aria-pressed', show ? 'true' : 'false');
+      btn.setAttribute('aria-label', show ? 'مخفی کردن رمز' : 'نمایش رمز');
+    });
+  });
+})();
+</script>
+{% endblock %}

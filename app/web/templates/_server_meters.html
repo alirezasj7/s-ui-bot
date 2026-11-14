@@ -1,0 +1,23 @@
+{# CPU and RAM of one server as two meters. Expects: host (gauge dict), title, optional metrics_url
+   (overview-live.js polls it); without one the page's own poller fills the meters. #}
+{% from "macros.html" import card_title %}
+<section class="card ov-server" aria-label="{{ title }}" data-server-meters{% if metrics_url %} data-metrics-url="{{ metrics_url }}"{% endif %}>
+  <header class="ov-head">
+    {{ card_title('server', title) }}
+    <span class="ov-live"><i aria-hidden="true"></i>زنده</span>
+  </header>
+  <div class="ov-server-grid">
+    {% set cpu = host.cpu_percent if host.cpu_percent is number else none %}
+    <div class="ov-meter" data-meter="cpu" data-tone="{{ host.cpu_tone or 'neutral' }}">
+      <div class="ov-meter-top"><small>پردازنده</small><strong data-meter-val>{% if cpu is not none %}{{ '%.0f'|format(cpu) }}٪{% else %}—{% endif %}</strong></div>
+      <div class="ov-track" role="meter" aria-label="مصرف پردازنده" aria-valuemin="0" aria-valuemax="100" aria-valuenow="{{ (cpu or 0)|round|int }}"><i class="ov-fill" style="--p: {{ cpu or 0 }}"></i></div>
+      <p class="muted" data-meter-hint>{% if host.cpu_cores %}{{ host.cpu_cores }} هسته{% else %}&nbsp;{% endif %}</p>
+    </div>
+    {% set mem = host.memory_percent if host.memory_percent is number else none %}
+    <div class="ov-meter" data-meter="mem" data-tone="{{ host.mem_tone or 'neutral' }}">
+      <div class="ov-meter-top"><small>حافظه</small><strong data-meter-val>{% if mem is not none %}{{ '%.0f'|format(mem) }}٪{% else %}—{% endif %}</strong></div>
+      <div class="ov-track" role="meter" aria-label="مصرف حافظه" aria-valuemin="0" aria-valuemax="100" aria-valuenow="{{ (mem or 0)|round|int }}"><i class="ov-fill" style="--p: {{ mem or 0 }}"></i></div>
+      <p class="muted num-ratio" dir="ltr" data-meter-hint>{{ host.memory_ratio_text or ((host.memory_used_text or '') ~ (' / ' if host.memory_total_text else '') ~ (host.memory_total_text or '')) or '—' }}</p>
+    </div>
+  </div>
+</section>

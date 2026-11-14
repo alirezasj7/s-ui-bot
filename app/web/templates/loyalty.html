@@ -1,0 +1,179 @@
+{% extends "base.html" %}
+{% from "macros.html" import page_title, modal_title %}
+{% from "_marketing_tabs.html" import marketing_tabs %}
+{% block title %}باشگاه مشتریان{% endblock %}
+{% block content %}
+{% set tab = tab or 'overview' %}
+<div class="page-head">
+  <div>
+    {{ page_title('loyalty', 'باشگاه مشتریان', help='loyalty') }}
+  </div>
+  <div class="page-head-actions">
+    <button type="button" class="btn btn-ghost" data-modal-open="modal-loyalty-settings">تنظیمات</button>
+  </div>
+</div>
+
+{{ marketing_tabs(marketing_sections|default(()), 'club_transactions' if tab == 'transactions' else 'club') }}
+
+{% if tab == 'overview' %}
+<div class="home-panels loyalty-overview">
+  <section class="home-panel home-panel-neutral">
+    <div class="home-panel-head">
+      <div class="home-panel-title">
+        <svg class="home-panel-ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l2.2 4.5 5 .7-3.6 3.5.9 5L12 14.8 7.5 16.7l.9-5L4.8 8.2l5-.7L12 3z"/></svg>
+        <h2 class="home-panel-h">خلاصه باشگاه</h2>
+      </div>
+    </div>
+    <div class="home-panel-grid">
+      <div class="stat">
+        <div class="stat-top">
+          <span class="stat-ico" aria-hidden="true">
+            <svg viewBox="0 0 24 24"><circle cx="8" cy="9" r="3"/><circle cx="16" cy="9" r="3"/><path d="M2.8 19a5.2 5.2 0 0 1 10.4 0M10.8 19a5.2 5.2 0 0 1 10.4 0"/></svg>
+          </span>
+          <span>کل دعوت‌ها</span>
+        </div>
+        <strong>{{ metrics.total_referrals | num }}</strong>
+      </div>
+      <div class="stat">
+        <div class="stat-top">
+          <span class="stat-ico" aria-hidden="true">
+            <svg viewBox="0 0 24 24"><path d="M9 12l2 2 4-4"/><path d="M12 3 4.5 6.5v5.2c0 4.7 3.2 8 7.5 9.3 4.3-1.3 7.5-4.6 7.5-9.3V6.5L12 3z"/></svg>
+          </span>
+          <span>واجد شرایط</span>
+        </div>
+        <strong>{{ metrics.qualified_referrals | num }}</strong>
+      </div>
+      <div class="stat">
+        <div class="stat-top">
+          <span class="stat-ico" aria-hidden="true">
+            <svg viewBox="0 0 24 24"><path d="M12 3l2.2 4.5 5 .7-3.6 3.5.9 5L12 14.8 7.5 16.7l.9-5L4.8 8.2l5-.7L12 3z"/></svg>
+          </span>
+          <span>امتیاز صادرشده</span>
+        </div>
+        <strong>{{ metrics.points_issued | num }}</strong>
+      </div>
+      <div class="stat">
+        <div class="stat-top">
+          <span class="stat-ico" aria-hidden="true">
+            <svg viewBox="0 0 24 24"><path d="M12 3l2.2 4.5 5 .7-3.6 3.5.9 5L12 14.8 7.5 16.7l.9-5L4.8 8.2l5-.7L12 3z"/><path d="M8 12h8"/></svg>
+          </span>
+          <span>امتیاز مصرف‌شده</span>
+        </div>
+        <strong>{{ metrics.points_redeemed | num }}</strong>
+      </div>
+      <div class="stat">
+        <div class="stat-top">
+          <span class="stat-ico" aria-hidden="true">
+            <svg viewBox="0 0 24 24"><rect x="3" y="6" width="18" height="12" rx="2"/><path d="M3 10h18M7 14h4"/></svg>
+          </span>
+          <span>اعتبار کیف جوایز</span>
+        </div>
+        <strong dir="ltr">{{ metrics.wallet_credits_issued | money }}</strong>
+      </div>
+      <div class="stat">
+        <div class="stat-top">
+          <span class="stat-ico" aria-hidden="true">
+            <svg viewBox="0 0 24 24"><path d="M12 8v8M8 12h8"/><rect x="3" y="5" width="18" height="14" rx="2"/></svg>
+          </span>
+          <span>جوایز فعال</span>
+        </div>
+        <strong>{{ metrics.active_rewards | num }}</strong>
+      </div>
+      <div class="stat">
+        <div class="stat-top">
+          <span class="stat-ico" aria-hidden="true">
+            <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 3v9l6 3"/></svg>
+          </span>
+          <span>چرخ شانس</span>
+        </div>
+        {% set wm = wheel_metrics if wheel_metrics is defined and wheel_metrics else {} %}
+        <strong>{% if wm.get('wheel_enabled') %}{{ wm.get('active_prizes', 0) | num }} بخش · {{ wm.get('total_spins', 0) | num }} چرخش{% else %}خاموش{% endif %}</strong>
+      </div>
+    </div>
+  </section>
+</div>
+
+<div class="card card-flush">
+  <div class="card-flush-head"><h2>برترین معرف‌ها</h2></div>
+  <div class="table-wrap loyalty-referrers">
+  <table class="table-compact" data-sortable>
+    <thead><tr><th data-sort-type="text">کاربر</th><th class="col-count" data-sort-type="num">تعداد دعوت</th></tr></thead>
+    <tbody>
+    {% for r in metrics.top_referrers %}
+      <tr>
+        <td data-sort-value="{{ r.label }}">{{ r.label }}</td>
+        <td class="mono col-count" data-sort-value="{{ r.count }}">{{ r.count | num }}</td>
+      </tr>
+    {% else %}
+      <tr><td colspan="2" class="muted">هنوز دعوتی ثبت نشده</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  </div>
+</div>
+{% endif %}
+
+{% if tab == 'transactions' %}
+<div class="loyalty-stack">
+  {% if can_adjust_platform_points|default(false) %}
+  <div class="card settings-card">
+    <h2>تعدیل دستی امتیاز</h2>
+    <p class="muted update-card-caption">فقط ادمین — دلیل الزامی است و در دفترکل ثبت می‌شود.</p>
+    <form method="post" action="/loyalty/adjust" class="form-stack">
+      <input type="hidden" name="nonce" value="{{ owner_points_nonce }}" />
+      <div class="form-row">
+        <label class="form-field">شناسه کاربر<input name="user_id" type="number" min="1" required dir="ltr" /></label>
+        <label class="form-field">تغییر امتیاز (+/-)<input name="delta" type="number" required dir="ltr" /></label>
+      </div>
+      <label class="form-field">دلیل<textarea name="reason" rows="2" required maxlength="255"></textarea></label>
+      <div class="actions"><button class="btn" type="submit">ثبت تعدیل</button></div>
+    </form>
+  </div>
+  {% endif %}
+  {% if can_adjust_shop_points|default(false) %}
+  <div class="card settings-card">
+    <h2>تغییر دستی امتیاز مشتری</h2>
+    <p class="muted update-card-caption">فقط امتیاز همین فروشگاه تغییر می‌کند. هر بار حداکثر {{ shop_points_max | num }} امتیاز و روزانه برای کل فروشگاه {{ shop_points_daily | num }} امتیاز. علت در گزارش کارکنان ثبت می‌شود.</p>
+    <form method="post" action="/loyalty/shop-adjust" class="form-stack"
+          data-confirm="امتیاز این مشتری در فروشگاه شما تغییر کند؟ این کار در گزارش کارکنان ثبت می‌شود."
+          data-confirm-title="تأیید تغییر امتیاز" data-confirm-label="اعمال">
+      <input type="hidden" name="nonce" value="{{ shop_points_nonce }}" />
+      <div class="form-row">
+        <label class="form-field">شناسه کاربر<input name="user_id" type="number" min="1" required dir="ltr" /></label>
+        <label class="form-field">امتیاز<input name="points" type="number" min="1" max="{{ shop_points_max }}" required dir="ltr" /></label>
+      </div>
+      <label class="form-field">علت<input name="reason" type="text" required minlength="3" maxlength="200" /></label>
+      <div class="actions">
+        <button class="btn btn-ghost" type="submit" name="mode" value="debit">کسر امتیاز</button>
+        <button class="btn" type="submit" name="mode" value="credit">افزودن امتیاز</button>
+      </div>
+    </form>
+  </div>
+  {% endif %}
+  <div class="card card-flush">
+    <div class="card-flush-head"><h2>آخرین تراکنش‌های امتیاز</h2></div>
+    <div class="table-wrap">
+    <table class="table-compact table-list-sm" data-sortable>
+      <thead><tr><th class="col-id" data-sort-type="num" data-list-sort-label="جدیدترین" data-list-sort-dir="descending" data-list-sort-order="1">#</th><th class="col-user" data-sort-type="num">کاربر</th><th class="col-amount" data-sort-type="num" data-list-sort-label="بیشترین مقدار" data-list-sort-dir="descending" data-list-sort-order="2">مقدار</th><th class="col-amount" data-sort-type="num">مانده</th><th class="col-text" data-sort-type="text">شرح</th><th class="col-time" data-sort-type="text">زمان</th><th class="li-head" scope="col"><span class="li-count">تراکنش‌ها</span><select class="select-sm li-sort" data-list-sort aria-label="مرتب‌سازی" hidden></select></th></tr></thead>
+      <tbody>
+      {% for t in txs %}
+        <tr>
+          <td class="mono" data-sort-value="{{ t.id }}">{{ t.id }}</td>
+          <td class="li-title" data-sort-value="{{ t.user_label }}"><span dir="auto">{{ t.user_label }}</span> <span class="li-only li-id" dir="ltr">(#{{ t.id }})</span></td>
+          <td class="mono li-value li-tone-{{ 'none' if t.amount > 0 else 'danger' }}" data-sort-value="{{ t.amount }}" dir="ltr">{% if t.amount > 0 %}+{% endif %}{{ t.amount | num }}</td>
+          <td class="mono li-badge" data-sort-value="{{ t.balance_after }}"><span class="li-only">مانده&nbsp;</span>{{ t.balance_after | num }}</td>
+          <td class="li-sub" data-sort-value="{{ t.description }}"><span dir="auto">{{ t.description }}</span> <span class="li-only">· <bdi dir="ltr">{{ (t.created_at|string)[:16] }}</bdi></span></td>
+          <td class="muted mono" data-sort-value="{{ t.created_at }}">{{ t.created_at }}</td>
+        </tr>
+      {% else %}
+        <tr><td colspan="6" class="muted">تراکنشی نیست</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    </div>
+  </div>
+</div>
+{% endif %}
+
+{% include "_modal_loyalty_settings.html" %}
+{% endblock %}

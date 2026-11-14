@@ -1,0 +1,30 @@
+<div class="card settings-card">
+  <h2>لینک‌های سریع ربات</h2>
+  {% if bot_username %}
+  <p class="muted update-card-caption">
+    ربات: <span dir="ltr">@{{ bot_username }}</span> — لینک را برای کاربر بفرستید تا مستقیم وارد همان بخش شود.
+  </p>
+  {% else %}
+  <p class="flash warn">یوزرنیم ربات مشخص نیست — اول اتصال ربات را در تب «ربات و اتصال» درست کنید.</p>
+  {% endif %}
+  <div class="form-stack magic-links-stack">
+    {% for key, label in [('renew','تمدید'),('wallet','کیف پول'),('support','پشتیبانی'),('config','دریافت مجدد کانفیگ'),('gift','کد هدیه')] %}
+    <div class="magic-link-item">
+      <span class="magic-link-label" id="ml-label-{{ key }}">{{ label }}</span>
+      <div class="magic-link-field{% if links.get(key) %} has-copy{% endif %}" dir="ltr">
+        <input class="magic-link-input" type="text" readonly
+               value="{{ links.get(key) or '—' }}" id="ml-{{ key }}"
+               title="{{ links.get(key) or '' }}"
+               aria-labelledby="ml-label-{{ key }}" />
+        {% if links.get(key) %}
+        <button type="button" class="magic-link-copy"
+                data-copy="{{ links.get(key) }}"
+                data-copy-from="#ml-{{ key }}"
+                data-copy-idle="کپی"
+                aria-label="کپی لینک {{ label }}">کپی</button>
+        {% endif %}
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+</div>

@@ -1,0 +1,161 @@
+{% extends "base.html" %}
+{% from "macros.html" import page_title %}
+{% block title %}وضعیت اتصال{% endblock %}
+{% block head %}<link rel="stylesheet" href="/static/connection-status.css?v={{ app_version }}">{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div>{{ page_title('activity', 'وضعیت اتصال', help='connection-status') }}</div>
+  <div class="actions"><a class="btn btn-ghost" href="/connection-status">تازه‌سازی</a></div>
+</div>
+
+<div class="flash warn" role="note"><div class="flash-copy"><strong>⚠️ این قابلیت در حال توسعه است و هنوز کامل نشده است.</strong> بعضی بخش‌ها ممکن است تغییر کنند یا درست کار نکنند؛ برای تصمیم مهم به نتیجه‌هایش تکیه نکنید.</div></div>
+<div class="flash info" role="note"><div class="flash-copy">این نتیجه فقط اتصال از سرور ربات را نشان می‌دهد و دسترسی کاربران داخل ایران را تأیید نمی‌کند.</div></div>
+{% if request.query_params.get('error') %}<div class="flash warn" role="alert"><div class="flash-copy">{{ request.query_params.get('error') }}</div></div>{% endif %}
+{% if request.query_params.get('saved') == '1' %}<div class="flash ok" role="status"><div class="flash-copy">انجام شد. نتیجه‌های جدید بعد از اجرای تست نمایش داده می‌شوند.</div></div>{% endif %}
+
+<div class="connection-setup">
+  <section class="card" aria-labelledby="test-user-title">
+    <div class="connection-card-head">
+      <h2 id="test-user-title">کاربر تست</h2>
+      <span class="badge {{ 'ok' if page.settings.has_account else 'neutral' }}">{{ 'تنظیم شده' if page.settings.has_account else 'تنظیم نشده' }}</span>
+    </div>
+    <p class="muted">یک کاربر فعال در پاسارگارد انتخاب کنید که مال هیچ مشتری نباشد. لازم نیست حساب مالک باشد؛ فقط ربات باید به آن دسترسی داشته باشد.</p>
+    <form method="post" action="/connection-status/account" class="form-stack"
+          data-confirm="ثبت کاربر تست، تست‌های فعلی را متوقف و کانفیگ‌ها را از فهرست کاربران مخفی می‌کند. ادامه می‌دهید؟" data-confirm-title="ثبت کاربر تست" data-confirm-label="ثبت">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <label class="form-field" for="monitor-username">نام کاربری در پاسارگارد
+        <input id="monitor-username" name="username" dir="ltr" minlength="3" maxlength="128" required autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false"
+               data-focus-guard data-lpignore="true" data-1p-ignore value="{{ page.settings.username or '' }}" placeholder="MattDev" aria-describedby="monitor-account-help">
+        <small class="muted" id="monitor-account-help">فقط نام کاربری را بنویسید؛ رمز عبور، توکن یا لینک اشتراک وارد نکنید.</small>
+      </label>
+      <div class="actions"><button class="btn" type="submit">ثبت کاربر تست</button></div>
+    </form>
+  </section>
+
+  <section class="card" aria-labelledby="test-runtime-title">
+    <div class="connection-card-head">
+      <h2 id="test-runtime-title">تست خودکار</h2>
+      <span class="badge {{ 'ok' if page.settings.enabled else 'neutral' }}">{{ 'روشن' if page.settings.enabled else 'خاموش' }}</span>
+    </div>
+    <p class="muted">بعد از ثبت کاربر تست و انتخاب کانفیگ‌ها، تست‌ها را روشن کنید. بررسی تقریباً هر دقیقه انجام می‌شود و «تازه‌سازی» فقط آخرین نتیجه را نشان می‌دهد.</p>
+    {% if not binary_configured %}
+    <div class="flash warn" role="status">
+      <div class="flash-copy">
+        <strong>هستهٔ Xray هنوز آماده نیست</strong>
+        <span>نصب و آپدیت با اسکریپت آن را خودکار آماده می‌کند. برای نصب قبلی یا تلاش دوباره، روی سرور این دستور را اجرا کنید:</span>
+        <code class="connection-command" dir="ltr">bash pgclock.sh xray</code>
+      </div>
+    </div>
+    {% else %}<p class="muted">هستهٔ Xray تنظیم شده است؛ معتبر بودن فایل هنگام شروع تست‌ها بررسی می‌شود.</p>{% endif %}
+    <form method="post" action="/connection-status/runtime" class="form-stack"{% if page.settings.enabled %} data-confirm="تست‌ها متوقف و همهٔ کانفیگ‌ها از فهرست کاربران مخفی می‌شوند. ادامه می‌دهید؟" data-confirm-title="توقف تست‌ها" data-confirm-danger="1" data-confirm-label="توقف"{% endif %}>
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <input type="hidden" name="enabled" value="{{ '0' if page.settings.enabled else '1' }}">
+      <div class="actions"><button class="btn {{ 'btn-danger' if page.settings.enabled else '' }}" type="submit"{% if not page.settings.enabled and (not page.settings.has_account or not binary_configured) %} disabled{% endif %}>{{ 'توقف تست‌ها' if page.settings.enabled else 'شروع تست‌ها' }}</button></div>
+    </form>
+    <small class="muted">روشن کردن دوبارهٔ تست‌ها، کانفیگ‌ها را خودکار به کاربران نشان نمی‌دهد.</small>
+  </section>
+</div>
+
+<section class="card" id="host-picker" aria-labelledby="host-picker-title">
+  <div class="connection-card-head">
+    <h2 id="host-picker-title">انتخاب کانفیگ‌های اشتراک</h2>
+  </div>
+  <p class="muted">نام و ترتیب کانفیگ‌ها مثل اشتراک کاربر تست است. کانفیگ تازه اول فقط برای ادمین دیده می‌شود. در هر دور حداکثر ۱۲ کانفیگ تست می‌شود.</p>
+  {% if host_error %}<div class="flash warn" role="alert"><div class="flash-copy">{{ host_error }}</div></div>{% endif %}
+  {% if page.settings.has_account %}
+  <div class="actions"><a class="btn btn-ghost" href="/connection-status?hosts=1#host-picker">دریافت کانفیگ‌ها از اشتراک</a></div>
+  {% else %}<small class="muted">ابتدا کاربر تست را ثبت کنید.</small>{% endif %}
+  {% if hosts is not none %}
+  <div class="connection-config-summary"><span class="badge neutral">{{ hosts.total_count | num }} کانفیگ</span><span class="muted">به ترتیب اشتراک · جزئیات اتصال بدون نمایش اطلاعات محرمانه</span></div>
+  <ol class="connection-config-list" aria-label="کانفیگ‌های اشتراک" role="list">
+    {% for host in hosts.choices %}<li class="connection-config-row" value="{{ host.position + 1 }}">
+      <span class="connection-config-rank" aria-label="ردیف {{ (host.position + 1) | num }}">{{ (host.position + 1) | num }}</span>
+      <div class="connection-config-body">
+        <h3><bdi dir="auto">{{ host.name }}</bdi></h3>
+        <div class="connection-config-details" dir="ltr" aria-label="پروتکل و نوع اتصال">
+          <span class="badge connection-config-protocol">{{ host.details.protocol }}</span>
+          <span class="badge neutral">{{ host.details.transport }}</span>
+          {% if host.details.security %}<span class="badge neutral">{{ host.details.security }}</span>{% endif %}
+          {% if host.details.port %}<span class="muted connection-config-port">پورت {{ host.details.port }}</span>{% endif %}
+        </div>
+        {% if host.issue %}<p class="muted connection-config-note" id="config-issue-{{ host.position }}">{{ reason_labels.get(host.issue, 'این کانفیگ فعلاً قابل تست نیست.') }}</p>{% else %}<p class="muted connection-config-note">آمادهٔ انتخاب · ابتدا فقط ادمین نتیجه را می‌بیند</p>{% endif %}
+      </div>
+      <div class="connection-config-action">{% if host.issue %}<button class="btn btn-ghost btn-sm" type="button" disabled aria-describedby="config-issue-{{ host.position }}">قابل تست نیست</button>{% else %}<form method="post" action="/connection-status/configs/{{ host.config_key }}">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <button class="btn btn-ghost btn-sm" type="submit" aria-label="افزودن {{ host.name }} به تست">افزودن به تست</button>
+        </form>{% endif %}</div>
+    </li>{% else %}<li class="muted">کانفیگ دیگری در اشتراک پیدا نشد.</li>{% endfor %}
+  </ol>
+  {% if hosts.next_offset %}<div class="actions"><a class="btn btn-ghost" href="/connection-status?hosts=1&amp;host_after={{ hosts.next_offset }}#host-picker">کانفیگ‌های بعدی</a></div>{% endif %}
+  {% endif %}
+</section>
+
+{% for target in page.targets %}
+<section class="card" aria-labelledby="monitor-target-{{ target.id }}">
+  <div class="connection-card-head">
+    <h2 id="monitor-target-{{ target.id }}">{{ target.public_name or target.config_name or 'کانفیگ قبلی ' ~ (target.id | num) }}</h2>
+    <span class="badge {{ {'healthy': 'ok', 'degraded': 'warn', 'down': 'danger'}.get(target.health.status, 'neutral') }}">{{ status_labels[target.health.status] }}</span>
+  </div>
+  <div class="bot-conn-row connection-stats" role="list">
+    <div class="bot-conn is-neutral" role="listitem"><span class="bot-conn-text"><span class="bot-conn-k">تأخیر واقعی</span><span class="bot-conn-cap muted">{% if target.health.delay_ms is not none %}{{ target.health.delay_ms | num }} میلی‌ثانیه{% else %}—{% endif %}</span></span></div>
+    <div class="bot-conn is-neutral" role="listitem"><span class="bot-conn-text"><span class="bot-conn-k">آخرین تست</span><span class="bot-conn-cap muted">{{ checked_time(target.health.checked_at) }}</span></span></div>
+    <div class="bot-conn is-neutral" role="listitem"><span class="bot-conn-text"><span class="bot-conn-k">مسیرهای بررسی‌شده</span><span class="bot-conn-cap muted">{{ target.health.covered | num }} از {{ target.health.expected | num }}</span></span></div>
+  </div>
+  {% if target.reason %}<small class="muted">{{ reason_labels.get(target.reason, 'نتیجهٔ قابل استفاده هنوز ثبت نشده است.') }}</small>{% endif %}
+  {% if target.manual_pending %}<div class="flash info" role="status"><div class="flash-copy">تست در صف است؛ نتیجه بعد از اجرا نمایش داده می‌شود.</div></div>{% endif %}
+  {% if target.test_enabled %}
+  <form method="post" action="/connection-status/targets/{{ target.id }}" id="target-form-{{ target.id }}" class="form-stack">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <div class="form-row">
+      <label class="form-field" for="target-name-{{ target.id }}">نام نمایشی در ربات
+        <input id="target-name-{{ target.id }}" name="public_name" maxlength="64" value="{{ target.public_name }}" placeholder="مثلاً سرور آلمان">
+      </label>
+      <label class="form-field" for="target-order-{{ target.id }}">ترتیب نمایش
+        <input id="target-order-{{ target.id }}" name="display_order" type="number" min="0" max="2147483647" dir="ltr" value="{{ target.display_order }}" required>
+        <small class="muted">عدد کوچک‌تر بالاتر نمایش داده می‌شود.</small>
+      </label>
+      <label class="form-field" for="target-public-{{ target.id }}">چه کسی نتیجه را ببیند؟
+        <select id="target-public-{{ target.id }}" name="is_public"><option value="0"{% if not target.is_public %} selected{% endif %}>فقط ادمین</option><option value="1"{% if target.is_public %} selected{% endif %}>کاربران ربات هم ببینند</option></select>
+        <small class="muted">نمایش به کاربران به نام نمایشی و تست خودکار روشن نیاز دارد.</small>
+      </label>
+    </div>
+  </form>
+  <div class="actions connection-actions">
+    <button class="btn" type="submit" form="target-form-{{ target.id }}">ذخیرهٔ کانفیگ</button>
+    <form method="post" action="/connection-status/targets/{{ target.id }}/check">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <button class="btn btn-ghost" type="submit"{% if not page.settings.enabled or target.manual_pending %} disabled{% endif %}>تست الان</button>
+    </form>
+    <form method="post" action="/connection-status/targets/{{ target.id }}/pause" data-confirm="تست این کانفیگ متوقف و نتیجهٔ آن از فهرست کاربران مخفی می‌شود. ادامه می‌دهید؟" data-confirm-title="توقف کانفیگ" data-confirm-danger="1" data-confirm-label="توقف">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <button class="btn btn-danger" type="submit">توقف کانفیگ</button>
+    </form>
+    <form method="post" action="/connection-status/targets/{{ target.id }}/delete"
+          data-confirm="این کانفیگ از فهرست تست حذف شود؟ تست و نمایش عمومی آن متوقف می‌شود."
+          data-confirm-title="تأیید حذف کانفیگ"
+          data-confirm-danger="1"
+          data-confirm-label="حذف کانفیگ">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <button class="btn btn-danger" type="submit">حذف</button>
+    </form>
+  </div>
+  {% else %}
+  <div class="actions connection-actions">
+    {% if target.config_key %}<form method="post" action="/connection-status/configs/{{ target.config_key }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <button class="btn btn-ghost" type="submit">فعال‌سازی دوبارهٔ کانفیگ</button>
+    </form>{% else %}<small class="muted">این مورد از فهرست قدیمی هاست‌ها مانده است؛ کانفیگ را دوباره از اشتراک انتخاب کنید. نام نمایشی قبلی حفظ شده است.</small>{% endif %}
+    <form method="post" action="/connection-status/targets/{{ target.id }}/delete"
+          data-confirm="این کانفیگ از فهرست تست حذف شود؟"
+          data-confirm-title="تأیید حذف کانفیگ"
+          data-confirm-danger="1"
+          data-confirm-label="حذف کانفیگ">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <button class="btn btn-danger" type="submit">حذف</button>
+    </form>
+  </div>
+  {% endif %}
+</section>
+{% else %}<div class="card"><p class="muted">هنوز کانفیگی برای تست انتخاب نشده است. از بخش «انتخاب کانفیگ‌های اشتراک» شروع کنید.</p></div>{% endfor %}
+{% if page.next_id %}<div class="actions"><a class="btn btn-ghost" href="/connection-status?after={{ page.next_id }}">نتیجه‌های بعدی</a></div>{% endif %}
+{% endblock %}

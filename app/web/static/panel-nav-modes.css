@@ -1,0 +1,82 @@
+/* Sidebar section accordion (no work-mode tabs) */
+
+.nav-label-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-1, 0.25rem);
+  width: 100%;
+  margin: 0;
+  padding: var(--space-1, 0.25rem) var(--space-2, 0.5rem);
+  border: 1px solid transparent;
+  border-radius: 999px; /* capsule hit/select chrome */
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  line-height: 1.25;
+  text-align: inherit;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  outline: none;
+  /* No background transition — post-tap :active fade looked like accordion lag. */
+  transition: none;
+}
+
+/* Press feedback on all devices — instant on/off (no fade after lift) */
+.nav-label-toggle:active {
+  background: color-mix(in srgb, var(--muted-fg, #a1a1aa) 10%, transparent);
+  border-color: color-mix(in srgb, var(--border, #27272a) 80%, transparent);
+  color: inherit;
+}
+
+/* Sticky :hover after tap is an iOS quirk — only apply on real hover pointers */
+@media (hover: hover) and (pointer: fine) {
+  .nav-label-toggle:hover {
+    background: color-mix(in srgb, var(--muted-fg, #a1a1aa) 10%, transparent);
+    border-color: color-mix(in srgb, var(--border, #27272a) 80%, transparent);
+    color: inherit;
+  }
+}
+
+.nav-label-toggle:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--bot-line, #e08a3c) 45%, transparent);
+  outline-offset: 1px;
+}
+
+.nav-label-caret {
+  width: 14px;
+  height: 14px;
+  flex: 0 0 auto;
+  stroke: currentColor;
+  fill: none;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  opacity: 0.7;
+  transition: transform var(--motion-fast, 0.15s) var(--ease-standard, ease);
+  pointer-events: none;
+}
+
+.nav-section.is-collapsed .nav-label-caret {
+  transform: rotate(90deg);
+}
+
+.nav-section.is-collapsed > .nav-item,
+.nav-section.is-collapsed > .nav-empty {
+  display: none;
+}
+
+.nav-empty {
+  display: none;
+  margin: 0;
+  padding: var(--space-1, 0.25rem);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.nav-section:not(:has(.nav-item)) > .nav-empty {
+  display: block;
+}

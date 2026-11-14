@@ -1,0 +1,133 @@
+{% extends "base.html" %}
+{% from "macros.html" import page_title, row_actions %}
+{% from "_marketing_tabs.html" import marketing_tabs %}
+{% block title %}تخفیف‌ها{% endblock %}
+{% block content %}
+{% set announcement_labels = {'running': 'در صف ارسال', 'paused': 'متوقف', 'completed': 'تکمیل‌شده', 'review': 'نیازمند بررسی'} %}
+{% set announcement_tones = {'running': 'info', 'paused': 'warn', 'completed': 'ok', 'review': 'danger'} %}
+<div class="page-head">
+  <div>
+    {{ page_title('discounts', 'تخفیف‌ها', help='discounts') }}
+  </div>
+</div>
+
+{{ marketing_tabs(marketing_sections|default(()), 'discounts') }}
+
+{% if request.query_params.get('error') %}<div class="flash warn" role="alert">{{ request.query_params.get('error') }}</div>{% endif %}
+
+<div class="card">
+  <h2>تخفیف جدید یا کاهش دائمی قیمت</h2>
+  <p class="muted">کاهش دائمی قیمت را بدون برچسب تغییر می‌دهد. تخفیف زمان‌دار قیمت قبلی و جدید را نشان می‌دهد و بعد از پایان خودکار برداشته می‌شود. پلن تست رایگان تغییر نمی‌کند.</p>
+  <form method="post" action="/catalog-discounts" class="form-stack">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input type="hidden" name="request_key" value="{{ request_key }}">
+    <label class="form-field" for="discount-title">عنوان اطلاع‌رسانی
+      <input id="discount-title" name="title" maxlength="128" required>
+    </label>
+    <div class="form-row">
+      <label class="form-field" for="discount-scope">محدوده
+        <select id="discount-scope" name="scope">{% for key, label in scopes.items() %}<option value="{{ key }}">{{ label }}</option>{% endfor %}</select>
+        <small class="muted">همهٔ بخش‌ها شامل پلن ثابت، دلخواه، تمدید، خرید عمده و بستهٔ حجم و زمان است.</small>
+      </label>
+      <label class="form-field" for="discount-mode">حالت
+        <select id="discount-mode" name="mode">{% for key, label in modes.items() %}<option value="{{ key }}">{{ label }}</option>{% endfor %}</select>
+        <small class="muted">در محدوده‌های هم‌زمان، بیشترین کاهش هر حالت اعمال می‌شود؛ کاهش دائمی ابتدا قیمت پایه را تعیین می‌کند.</small>
+      </label>
+    </div>
+    <div class="form-row">
+      <label class="form-field" for="discount-plan">سرویس / پلن
+        <select id="discount-plan" name="plan_id"><option value="">انتخاب کنید</option>{% for plan in plans %}<option value="{{ plan.id }}">{{ plan.name }}</option>{% endfor %}</select>
+        <small class="muted">فقط برای محدودهٔ یک سرویس</small>
+      </label>
+      <label class="form-field" for="discount-category">دسته‌بندی
+        <select id="discount-category" name="category_id"><option value="">انتخاب کنید</option>{% for category in categories %}<option value="{{ category.id }}">{{ category.name }}</option>{% endfor %}</select>
+        <small class="muted">فقط برای محدودهٔ یک دسته؛ شامل پلن‌ها و بسته‌های همان دسته است.</small>
+      </label>
+    </div>
+    <div class="form-row">
+      <label class="form-field" for="discount-kind">نوع کاهش
+        <select id="discount-kind" name="reduction_kind"><option value="percent">درصد</option><option value="amount">مبلغ ثابت (تومان)</option></select>
+      </label>
+      <label class="form-field" for="discount-value">مقدار کاهش
+        <input id="discount-value" name="reduction_value" type="number" data-money-kind="reduction_kind" data-money-value="amount" min="1" max="2000000000" dir="ltr" required>
+      </label>
+      <label class="form-field" for="discount-hours">مدت (ساعت)
+        <input id="discount-hours" name="duration_hours" type="number" min="1" max="8760" value="24" dir="ltr">
+        <small class="muted">فقط برای تخفیف زمان‌دار</small>
+      </label>
+    </div>
+    <label class="toggle-row ui-switch-row">
+      <span class="ui-switch-copy">
+        <strong>اطلاع‌رسانی به مشتریان</strong>
+        <small class="muted">پیام به مشتریان همین فروشگاه، با ذکر مدت تخفیف، در صف ارسال قرار می‌گیرد.</small>
+      </span>
+      <span class="ui-switch">
+        <input type="checkbox" name="notify" value="1" checked />
+        <span class="ui-switch-track" aria-hidden="true"></span>
+      </span>
+    </label>
+    <div class="actions">
+      <button class="btn" type="submit">ثبت قیمت و صف اطلاع‌رسانی</button>
+    </div>
+  </form>
+</div>
+
+<div class="card card-flush">
+  <div class="card-flush-head">
+    <h2>تاریخچه</h2>
+  </div>
+  <div class="table-wrap">
+    <table class="table-compact table-list-sm">
+      <thead>
+        <tr>
+          <th class="col-text">عنوان</th>
+          <th class="col-hide-sm">محدوده</th>
+          <th class="col-hide-sm">حالت</th>
+          <th>کاهش</th>
+          <th>پایان</th>
+          <th class="col-status">وضعیت</th>
+          <th class="col-hide-sm col-status">اطلاع‌رسانی</th>
+          <th class="col-actions"></th>
+          <th class="li-head" scope="col"><span class="li-count">{{ discounts | length | num }} تغییر قیمت</span></th>
+        </tr>
+      </thead>
+      <tbody>
+      {% for row in discounts %}
+        {% set announcement = announcement_status.get(row.campaign_id) if row.campaign_id else None %}
+        <tr>
+          <td class="li-title"><span dir="auto">{{ row.title }}</span></td>
+          <td class="col-hide-sm li-sub">
+            {#- On phones line two: scope · mode · end, then the announcement. -#}
+            <span>{{ scopes.get(row.scope) }}</span>
+            <span class="li-only">· {{ modes.get(row.mode) }} · {% if row.ends_at %}تا <bdi dir="ltr">{{ deadlines.get(row.id) }}</bdi>{% else %}دائمی{% endif %}</span>
+            {% if row.campaign_id %}<span class="li-only badge {{ announcement_tones.get(announcement, 'neutral') }}">{{ announcement_labels.get(announcement, 'ثبت‌شده') }}</span>{% endif %}
+          </td>
+          <td class="col-hide-sm">{{ modes.get(row.mode) }}</td>
+          <td class="cell-tight li-value"><span dir="ltr">{{ row.reduction_value | num if row.reduction_kind == 'percent' else row.reduction_value | money }}</span> {{ '٪' if row.reduction_kind == 'percent' else 'تومان' }}</td>
+          <td class="cell-tight">{% if row.ends_at %}<span dir="ltr" class="mono">{{ deadlines.get(row.id) }}</span> <small class="muted">(تهران)</small>{% else %}دائمی{% endif %}</td>
+          <td class="cell-tight li-badge"><span class="badge {{ 'ok' if row.is_active else 'neutral' }}">{{ 'ثبت‌شده' if row.is_active else 'متوقف‌شده' }}</span></td>
+          <td class="col-hide-sm cell-tight">{% if row.campaign_id %}<span class="badge {{ announcement_tones.get(announcement, 'neutral') }}">{{ announcement_labels.get(announcement, 'ثبت‌شده') }}</span>{% else %}<span class="muted">—</span>{% endif %}</td>
+          <td class="col-actions">
+            {% if row.is_active %}
+            {% call row_actions() %}
+            <form method="post" action="/catalog-discounts/{{ row.id }}/stop"
+                  data-confirm="این تغییر قیمت متوقف می‌شود و قیمت‌ها با قوانین باقی‌مانده محاسبه می‌شوند. اطلاع‌رسانی باقی‌مانده نیز متوقف می‌شود. ادامه می‌دهید؟"
+                  data-confirm-title="توقف تغییر قیمت"
+                  data-confirm-danger="1"
+                  data-confirm-label="توقف">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+              <button class="btn btn-danger btn-sm" type="submit">توقف</button>
+            </form>
+            {% endcall %}
+            {% endif %}
+          </td>
+        </tr>
+      {% else %}
+        <tr><td colspan="8" class="muted">هنوز تغییری در قیمت ثبت نشده است.</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% if next_before %}<div class="actions"><a class="btn btn-ghost" href="/catalog-discounts?before={{ next_before }}">تاریخچهٔ قدیمی‌تر</a></div>{% endif %}
+</div>
+{% endblock %}

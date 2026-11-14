@@ -1,0 +1,213 @@
+"""Regression: PAYG reseller delete must not HTTP 500 / IntegrityError.
+
+Root causes (v0.2.6):
+1. notify_reseller_revoked after revoke ran outside try/except and could raise
+   from notify_account_edit → unhandled 500 on /resellers/{id}/delete.
+2. delete_bot_user never cleaned PlanCategory / ServiceAddonPack rows owned by
+   the shop (owner_reseller_id FK, no CASCADE) — common on active PAYG shops.
+"""
+
+from __future__ import annotations
+
+import tempfile
+import unittest
+from pathlib import Path
+from unittest.mock import AsyncMock, patch
+
+from sqlalchemy import event, select
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+
+def _enable_sqlite_fk(dbapi_conn, _connection_record):
+    cur = dbapi_conn.cursor()
+    cur.execute("PRAGMA foreign_keys=ON")
+    cur.close()
+
+
+class NotifyResellerRevokedNeverRaises(unittest.IsolatedAsyncioTestCase):
+    async def test_session_path_swallows_notify_failure(self):
+        from app.db.models import BotUser, Role
+        from app.services.resellers import notify_reseller_revoked
+
+        user = BotUser(
+            id=1,
+            telegram_id=960001,
+            role=Role.USER.value,
+            referral_code="NR960001",
+        )
+        with patch(
+            "app.services.notifications.notify_account_edit",
+            new_callable=AsyncMock,
+            side_effect=RuntimeError("telegram down"),
+        ):
+            ok = await notify_reseller_revoked(
+                960001,
+                "تست حذف نمایندگی",
+                session=AsyncMock(),
+                user=user,
+                actor="admin",
+            )
+        self.assertFalse(ok)
+
+    async def test_legacy_path_swallows_send_failure(self):
+        from app.services.resellers import notify_reseller_revoked
+
+        bot = AsyncMock()
+        bot.send_message = AsyncMock(side_effect=RuntimeError("network"))
+        bot.session.close = AsyncMock()
+        with patch("app.bot.create_bot", return_value=bot):
+            ok = await notify_reseller_revoked(960002, "علت تستی")
+        self.assertFalse(ok)
+
+
+class PaygResellerFullDeleteFkTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        from app.db import Base
+        import app.db.models  # noqa: F401
+
+        self._tmpdir = tempfile.TemporaryDirectory()
+        db_path = Path(self._tmpdir.name) / "payg_del.db"
+        self.engine = create_async_engine(f"sqlite+aiosqlite:///{db_path}")
+        event.listen(self.engine.sync_engine, "connect", _enable_sqlite_fk)
+        async with self.engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+            await conn.execute(
+                __import__("sqlalchemy").text("PRAGMA foreign_keys=ON")
+            )
+        self.Session = async_sessionmaker(self.engine, expire_on_commit=False)
+
+    async def asyncTearDown(self):
+        await self.engine.dispose()
+        self._tmpdir.cleanup()
+
+    async def test_delete_payg_reseller_with_catalog_and_billing(self):
+        from app.db.models import (
+            BotUser,
+            Plan,
+            PlanCategory,
+            ResellerBillingTransaction,
+            ResellerProfile,
+            Role,
+            ServiceAddonPack,
+        )
+        from app.services.billing import BILLING_MODE_PAYG
+        from app.services.users import delete_bot_user
+
+        async with self.Session() as session:
+            user = BotUser(
+                telegram_id=960010,
+                username="payg_shop",
+                full_name="فروشگاه PAYG",
+                role=Role.RESELLER.value,
+                referral_code="PG960010",
+                wallet_balance=50_000,
+            )
+            session.add(user)
+            await session.flush()
+            session.add(
+                ResellerProfile(
+                    user_id=int(user.id),
+                    pg_admin_username="payg_shop_pg",
+                    is_active=True,
+                    billing_mode=BILLING_MODE_PAYG,
+                    payg_wallet_linked=True,
+                    billing_balance=50_000,
+                )
+            )
+            cat = PlanCategory(
+                name="ویژه",
+                audience="users",
+                owner_reseller_id=int(user.id),
+                is_active=True,
+            )
+            session.add(cat)
+            await session.flush()
+            session.add(
+                Plan(
+                    name="ماهانه",
+                    price=100_000,
+                    duration_days=30,
+                    owner_reseller_id=int(user.id),
+                    category_id=int(cat.id),
+                    is_active=True,
+                )
+            )
+            session.add(
+                ServiceAddonPack(
+                    name="۱۰ گیگ",
+                    kind="volume",
+                    amount=10.0,
+                    price=20_000,
+                    owner_reseller_id=int(user.id),
+                    is_active=True,
+                )
+            )
+            session.add(
+                ResellerBillingTransaction(
+                    reseller_user_id=int(user.id),
+                    kind="topup",
+                    amount=50_000,
+                    balance_after=50_000,
+                    idempotency_key=f"payg-seed-{user.id}",
+                )
+            )
+            await session.commit()
+            uid = int(user.id)
+
+            mock_pg = AsyncMock()
+            mock_pg.delete_admin = AsyncMock(return_value=None)
+            with patch("app.services.users.get_settings") as gs:
+                gs.return_value.admin_ids = []
+                with patch("app.services.pasarguard.get_pg", return_value=mock_pg):
+                    with patch(
+                        "app.services.reseller_bots.get_reseller_bot_manager",
+                        return_value=None,
+                    ):
+                        info = await delete_bot_user(session, uid)
+
+            self.assertEqual(info["user_id"], uid)
+            self.assertIsNone(await session.get(BotUser, uid))
+            cats = (
+                await session.execute(
+                    select(PlanCategory).where(PlanCategory.owner_reseller_id == uid)
+                )
+            ).scalars().all()
+            self.assertEqual(cats, [])
+            packs = (
+                await session.execute(
+                    select(ServiceAddonPack).where(
+                        ServiceAddonPack.owner_reseller_id == uid
+                    )
+                )
+            ).scalars().all()
+            self.assertEqual(packs, [])
+            txs = (
+                await session.execute(
+                    select(ResellerBillingTransaction).where(
+                        ResellerBillingTransaction.reseller_user_id == uid
+                    )
+                )
+            ).scalars().all()
+            self.assertEqual(txs, [])
+
+
+class PaygResellerDeleteSourceGuards(unittest.TestCase):
+    def test_notify_reseller_revoked_is_best_effort(self):
+        src = Path("app/services/resellers.py").read_text(encoding="utf-8")
+        block = src.split("async def notify_reseller_revoked", 1)[1].split(
+            "\nasync def ", 1
+        )[0]
+        self.assertIn("Never raises", block)
+        self.assertIn("except Exception:", block)
+
+    def test_role_demote_catches_revoke_exception(self):
+        src = Path("app/api/reseller_pages.py").read_text(encoding="utf-8")
+        idx = src.find("async def reseller_set_role")
+        self.assertGreater(idx, 0)
+        block = src[idx : idx + 2500]
+        self.assertIn("except Exception as e:", block)
+        self.assertIn("friendly_user_delete_error", block)
+
+
+if __name__ == "__main__":
+    unittest.main()

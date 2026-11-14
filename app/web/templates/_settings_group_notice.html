@@ -1,0 +1,6 @@
+{# A group's own warning, placed inside its box right under the title. #}
+{% if group_name == 'کانال اجباری' %}
+  {% include "_forcejoin_admin_notice.html" %}
+{% elif group_name == 'قوانین ورود به ربات' %}
+  {% include "_terms_admin_notice.html" %}
+{% endif %}

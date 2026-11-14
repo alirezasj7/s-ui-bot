@@ -1,0 +1,25 @@
+{# Per-item Telegram button color — same tone-aware select as plans / colors tab.
+   Requires: item_style_options (list of value, label, tone tuples)
+   Optional: item_button_style (stored value), button_style_name (form field name) #}
+{% set bs_name = button_style_name if button_style_name is defined else 'button_style' %}
+{% set cur = item_button_style if item_button_style is defined else 'inherit' %}
+{% set cur_tone = 'default' if cur in ('inherit', '') else cur %}
+<div class="plan-color-field item-color-field">
+  <div class="btn-color-card plan-color-card">
+    <span class="btn-color-label">رنگ دکمه در ربات</span>
+    <select
+      name="{{ bs_name }}"
+      class="btn-color-select"
+      data-tone="{{ cur_tone }}"
+      aria-label="رنگ دکمه در ربات"
+    >
+      {% for opt_val, opt_label, opt_tone in item_style_options %}
+      <option
+        value="{{ opt_val }}"
+        data-tone="{{ opt_tone }}"
+        {% if cur == opt_val %}selected{% endif %}
+      >{{ opt_label }}</option>
+      {% endfor %}
+    </select>
+  </div>
+</div>

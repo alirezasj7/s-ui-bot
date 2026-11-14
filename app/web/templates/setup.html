@@ -1,0 +1,676 @@
+{% extends "base.html" %}
+{% from "_list_input.html" import list_input %}
+{% block title %}راه‌اندازی اولیه{% endblock %}
+{% block auth %}
+<div class="auth-wrap auth-wrap--atmo">
+  <div class="auth-atmosphere" aria-hidden="true">
+    <span class="auth-orb auth-orb-a"></span>
+    <span class="auth-orb auth-orb-b"></span>
+    <span class="auth-grid"></span>
+  </div>
+  <div class="auth-panel auth-panel--stage setup-panel">
+    <div class="auth-brand">
+      <span class="brand-logo" aria-hidden="true"><img src="/static/logo-64.png" alt="" /></span>
+      <h1 dir="ltr">MrClockBot</h1>
+      <p id="step-caption">راه‌اندازی اولیه پنل</p>
+    </div>
+
+    <div class="setup-progress" id="setup-progress" aria-hidden="true"{% if show_done %} hidden{% endif %}>
+      <span data-dot="0"></span>
+      <span data-dot="1"></span>
+      <span data-dot="2"></span>
+      <span data-dot="3"></span>
+      <span data-dot="4"></span>
+    </div>
+
+    {% if flash_err %}<div class="flash err" id="flash-err">{{ flash_err }}</div>{% endif %}
+    {% if flash_ok %}<div class="flash ok" id="flash-ok">{{ flash_ok }}</div>{% endif %}
+    <div class="flash err" id="client-err" hidden></div>
+
+    <div class="auth-form auth-form--card setup-probe" id="setup-probe" hidden>
+      <h2 class="setup-title">بررسی سطح دسترسی</h2>
+      <p class="muted setup-lead">نقش، مجوزها و سقف‌های حساب پاسارگارد در حال خواندن است.</p>
+      <div class="setup-probe-bar" aria-hidden="true"><i id="setup-probe-fill"></i></div>
+      <ol class="setup-probe-steps" id="setup-probe-steps">
+        <li data-probe="0">اتصال به پاسارگارد</li>
+        <li data-probe="1">خواندن نقش و مجوزها</li>
+        <li data-probe="2">خواندن سقف‌ها</li>
+        <li data-probe="3">آماده‌سازی منوها</li>
+      </ol>
+    </div>
+
+    {# —— Step 0: Welcome —— #}
+    <div class="auth-form auth-form--card setup-step" data-step="0" hidden>
+      <h2 class="setup-title">خوش آمدید</h2>
+      <p class="muted setup-lead">
+        چند مرحله کوتاه برای تنظیم مدیر، ربات و اتصال پاسارگارد.
+        فقط با تکمیل هر مرحله می‌توانید ادامه دهید.
+      </p>
+      <button type="button" class="btn" data-next="1">شروع</button>
+    </div>
+
+    {# —— Step 1: Admin —— #}
+    <form class="auth-form auth-form--card setup-step" data-step="1" method="post" action="/setup/admin" hidden novalidate>
+      <h2 class="setup-title">۱ · مدیر پنل</h2>
+      <p class="muted setup-hint">
+        حداقل ۱۲ کاراکتر، شامل حداقل دو رقم، دو حرف بزرگ، دو حرف کوچک و یک کاراکتر خاص.
+      </p>
+      <label>نام کاربری
+        
+        <input name="username" value="{{ values.username or '' }}" required autocomplete="off"
+               autocapitalize="off" spellcheck="false" placeholder="admin" dir="ltr" />
+        <small class="muted">حروف انگلیسی، عدد و _ — بعداً قابل تغییر است</small>
+      </label>
+      <label>رمز عبور
+        <input name="password" type="password" required autocomplete="new-password" minlength="12" dir="ltr" />
+      </label>
+      <label>تکرار رمز عبور
+        <input name="password_confirm" type="password" required autocomplete="new-password" minlength="12" dir="ltr" />
+      </label>
+      <div class="setup-actions">
+        <button type="button" class="btn btn-ghost" data-prev="0">قبلی</button>
+        <button class="btn" type="submit">ادامه</button>
+      </div>
+    </form>
+
+    {# —— Step 2: Bot —— #}
+    <form class="auth-form auth-form--card setup-step" data-step="2" method="post" action="/setup/bot" hidden novalidate>
+      <h2 class="setup-title">۲ · ربات تلگرام</h2>
+      <label>توکن ربات (BOT_TOKEN)
+        <input name="bot_token" value="" {{ 'required' if not has_bot_token else '' }} autocomplete="off" dir="ltr"
+               placeholder="{{ '•••••••••• (برای تغییر، مقدار جدید وارد کنید)' if has_bot_token else '' }}" />
+        {% if has_bot_token %}<small class="muted">قبلاً ذخیره شده — برای حفظ همان توکن، این فیلد را خالی بگذارید.</small>{% endif %}
+      </label>
+      <label>نام کاربری ربات (بدون @)
+        <input name="bot_username" value="{{ values.BOT_USERNAME or '' }}" required autocomplete="off" dir="ltr" placeholder="MyShopBot" />
+      </label>
+      {{ list_input('admin_ids', 'آیدی ادمین‌ها', values.ADMIN_IDS or '', kind='telegram', required=true, placeholder='123456789', help='آیدی هر ادمین را جداگانه اضافه کنید.') }}
+      <div class="setup-actions">
+        <button type="button" class="btn btn-ghost" data-prev="1">قبلی</button>
+        <button class="btn" type="submit">ادامه</button>
+      </div>
+    </form>
+
+    {# —— Step 3: Other —— #}
+    <form class="auth-form auth-form--card setup-step" data-step="3" method="post" action="/setup/other" hidden novalidate>
+      <h2 class="setup-title">۳ · پنل و وب</h2>
+      <label>نوع پنل مدیریت
+        <select name="panel_backend" id="panel-backend" dir="ltr">
+          <option value="pasarguard" {% if (values.PANEL_BACKEND or 'pasarguard') != 'sui' %}selected{% endif %}>PasarGuard</option>
+          <option value="sui" {% if values.PANEL_BACKEND == 'sui' %}selected{% endif %}>S-UI</option>
+        </select>
+        <small class="muted">اتصال S-UI افزوده است و قابلیت‌های اتصال PasarGuard حذف نشده‌اند.</small>
+      </label>
+      <div id="pasarguard-fields">
+      <label>آدرس پاسارگارد (PG_BASE_URL)
+        
+        <input name="pg_base_url" value="{{ values.PG_BASE_URL or '' }}" required dir="ltr" placeholder="https://panel.example.com:8443/base" />
+        <small class="muted">با پورت و path وارد کنید — مثال: <code dir="ltr">https://panel.example.com:8443/base</code></small>
+        <small class="muted">ریشه API — نه مسیر داشبورد (<code dir="ltr">/MrClock</code>)</small>
+      </label>
+      <label>مسیر سابسکریپشن
+        <input name="pg_subscription_path" value="{{ values.PG_SUBSCRIPTION_PATH or '/sub' }}" dir="ltr" placeholder="/sub/" maxlength="128" autocomplete="off" />
+        <small class="muted">فقط مسیر لینک اشتراک؛ مثل <code dir="ltr">/sub/</code> یا <code dir="ltr">/apilog/</code>، بدون دامنه و توکن.</small>
+      </label>
+      <label>نام کاربری پاسارگارد
+        
+        <input name="pg_username" value="{{ values.PG_USERNAME or '' }}" required dir="ltr" placeholder="pg_user" autocomplete="off" />
+        <small class="muted">یوزر همان ادمین متصل در پاسارگارد (لزوماً owner نیست)</small>
+      </label>
+      <label>رمز پاسارگارد
+        <input name="pg_password" type="password" value="" {{ 'required' if not has_pg_password and not has_pg_api_key else '' }} autocomplete="off" dir="ltr"
+               placeholder="{{ 'خالی بماند تا رمز فعلی حفظ شود' if has_pg_password else '' }}" />
+        {% if has_pg_password %}<small class="muted">قبلاً ذخیره شده — برای حفظ همان رمز، این فیلد را خالی بگذارید.</small>
+        {% else %}<small class="muted">رمز یا کلید API — حداقل یکی لازم است</small>{% endif %}
+      </label>
+      <label>کلید API پاسارگارد
+        <input name="pg_api_key" type="password" value="" autocomplete="new-password" dir="ltr"
+               placeholder="{% if has_pg_api_key %}خالی بماند تا کلید فعلی حفظ شود{% else %}اختیاری — کلید API از پنل پاسارگارد{% endif %}" />
+        <small class="muted">
+          ترجیح بر رمز برای فراخوانی API (هدر <code dir="ltr">X-Api-Key</code>).
+          {% if has_pg_api_key %}<span class="badge approved">کلید API ذخیره‌شده</span>{% endif %}
+        </small>
+      </label>
+      {% if has_pg_api_key %}
+      <label>
+        <span class="ui-check">
+          <input type="checkbox" name="clear_pg_api_key" value="1" />
+          حذف کلید API (بازگشت به احراز هویت با رمز)
+        </span>
+      </label>
+      {% endif %}
+      </div>
+      <div id="sui-fields" hidden>
+        <label>آدرس S-UI (SUI_BASE_URL)
+          <input name="sui_base_url" value="{{ values.SUI_BASE_URL or '' }}" dir="ltr" placeholder="http://127.0.0.1:2095/app" autocomplete="off" />
+          <small class="muted">آدرس وب S-UI را با path آن وارد کنید؛ در نصب پیش‌فرض معمولاً <code dir="ltr">/app</code> دارد.</small>
+        </label>
+        <label>توکن API v2 S-UI
+          <input name="sui_api_token" type="password" value="" dir="ltr" autocomplete="new-password"
+                 placeholder="{{ 'خالی بماند تا توکن فعلی حفظ شود' if has_sui_api_token else 'توکن API v2 از تنظیمات S-UI' }}" />
+          {% if has_sui_api_token %}<small class="muted">توکن ذخیره‌شده حفظ می‌شود؛ برای تغییر، مقدار جدید را وارد کنید.</small>{% endif %}
+        </label>
+        <label>آدرس Subscription S-UI
+          <input name="sui_subscription_base_url" value="{{ values.SUI_SUBSCRIPTION_BASE_URL or '' }}" dir="ltr" placeholder="http://SERVER_IP:2096/sub" autocomplete="off" />
+          <small class="muted">بدون دامنه هم می‌توانید IP و HTTP بدهید.</small>
+        </label>
+        <label>شناسهٔ Inboundها (SUI_INBOUND_IDS) — اختیاری
+          <input name="sui_inbound_ids" value="{{ values.SUI_INBOUND_IDS or '' }}" dir="ltr" placeholder="1,2" autocomplete="off" />
+          <small class="muted">خالی یعنی همهٔ Inboundهای قابل لینک فعال انتخاب می‌شوند.</small>
+        </label>
+        <label>نام مالک S-UI
+          <input name="sui_admin_username" value="{{ values.SUI_ADMIN_USERNAME or 's-ui' }}" dir="ltr" placeholder="s-ui" autocomplete="off" />
+        </label>
+      </div>
+      <label>پورت وب‌پنل (WEB_PORT)
+        <input name="web_port" value="{{ values.WEB_PORT or '9000' }}" required dir="ltr" />
+      </label>
+      <label>آدرس عمومی (PUBLIC_BASE_URL) — اختیاری
+        <input name="public_base_url" value="{{ values.PUBLIC_BASE_URL or '' }}" placeholder="https://bot.example.com" dir="ltr" />
+      </label>
+      <label>واحد پول (CURRENCY)
+        <input name="currency" value="{{ values.CURRENCY or 'تومان' }}" required />
+      </label>
+      <div class="setup-actions">
+        <button type="button" class="btn btn-ghost" data-prev="2">قبلی</button>
+        <button class="btn" type="submit">ادامه</button>
+      </div>
+    </form>
+
+    {# —— Step 4: Done —— #}
+    <div class="auth-form auth-form--card setup-step" data-step="4" hidden>
+      <h2 class="setup-title">۴ · سطح دسترسی</h2>
+      <p class="muted setup-lead">خلاصه نقش پاسارگارد برای این نصب — منوها از همین سطح زنده می‌آیند.</p>
+      {% if pg_audit is defined and pg_audit and pg_audit.ok %}
+      <div class="setup-audit">
+        <div class="setup-audit-head">
+          <span class="setup-audit-badge {% if pg_audit.pg_is_owner %}is-owner{% else %}is-limited{% endif %}">{{ pg_audit.account_label }}</span>
+          {% if pg_audit.username %}
+          <code class="setup-audit-user" dir="ltr">{{ pg_audit.username }}</code>
+          {% endif %}
+          {% if pg_audit.role_name %}
+          <span class="muted">{{ pg_audit.role_name }}</span>
+          {% endif %}
+        </div>
+        {% if pg_audit.features %}
+        <div class="setup-audit-block">
+          <small class="muted">منوی پاسارگارد</small>
+          <div class="setup-audit-chips">
+            {% for feat in pg_audit.features %}
+            <span class="identity-chip">{{ feat.label }}</span>
+            {% endfor %}
+          </div>
+        </div>
+        {% else %}
+        <p class="muted setup-audit-empty">هیچ بخش پاسارگارد برای این نقش فعال نیست.</p>
+        {% endif %}
+        {% if pg_audit.limits %}
+        <div class="home-panel-grid setup-audit-limits">
+          {% for row in pg_audit.limits %}
+          <div class="stat">
+            <div class="stat-top">
+              <span class="stat-ico" aria-hidden="true">
+                <svg viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="2"/><path d="M8 9h8M8 12h8M8 15h5"/></svg>
+              </span>
+              <span>{{ row.label }}</span>
+            </div>
+            <strong>{{ row.value }}</strong>
+          </div>
+          {% endfor %}
+        </div>
+        {% endif %}
+        <ul class="setup-audit-flags">
+          <li class="{% if pg_audit.can_manage_representatives %}is-yes{% else %}is-no{% endif %}">
+            {% if pg_audit.can_manage_representatives %}ساخت نماینده / ادمین مجاز است
+            {% else %}ساخت نماینده و ادمین دیگر مجاز نیست{% endif %}
+          </li>
+          <li class="is-yes">فروشگاه این نصب کامل است (پلن، سفارش، تنظیمات)</li>
+        </ul>
+      </div>
+      {% elif pg_audit is defined and pg_audit and pg_audit.error %}
+      <div class="flash warn">{{ pg_audit.error }}</div>
+      {% endif %}
+      <div class="setup-summary">
+        <div class="setup-copy-block">
+          <small class="muted">آدرس پنل</small>
+          <code id="panel-url" dir="ltr">{{ panel_url }}</code>
+          <button type="button" class="btn btn-ghost btn-sm setup-copy-btn" data-copy="panel-url">کپی آدرس پنل</button>
+        </div>
+        <div class="setup-copy-block">
+          <small class="muted">ربات</small>
+          <code id="bot-user" dir="ltr">@{{ bot_username or '—' }}</code>
+          <button type="button" class="btn btn-ghost btn-sm setup-copy-btn" data-copy="bot-user">کپی آدرس ربات</button>
+        </div>
+      </div>
+      <div class="flash warn">
+        <div class="flash-copy">
+          <span>فایل env را امن نگه دارید. با زدن دکمه زیر، پنل و ربات به‌صورت خودکار ری‌استارت می‌شوند.</span>
+        </div>
+      </div>
+      <form method="post" action="/setup/finish" id="setup-finish-form">
+        <input type="hidden" name="next" id="setup-finish-next" value="{{ finish_login_url }}" />
+        <button class="btn" type="submit" style="width:100%" id="setup-enter-panel">ورود به پنل</button>
+      </form>
+    </div>
+
+    <div class="auth-foot">© ۲۰۲۶ MrClockBot</div>
+  </div>
+</div>
+<script>
+(function(){
+  const params = new URLSearchParams(location.search);
+  let step = parseInt(params.get('step') || '{{ initial_step|default(0) }}', 10);
+  if (isNaN(step) || step < 0) step = 0;
+  if ({{ 'true' if show_done else 'false' }}) step = 4;
+  if (step > 4) step = 4;
+  const hasBotToken = {{ 'true' if has_bot_token else 'false' }};
+  const hasPgPassword = {{ 'true' if has_pg_password else 'false' }};
+  const hasSuiApiToken = {{ 'true' if has_sui_api_token else 'false' }};
+
+  const captions = {
+    0: 'راه‌اندازی اولیه پنل',
+    1: 'حساب مدیر وب‌پنل',
+    2: 'اتصال ربات تلگرام',
+    3: 'پنل و تنظیمات وب',
+    4: 'خلاصه دسترسی و ورود'
+  };
+
+  function showErr(msg){
+    const el = document.getElementById('client-err');
+    if (!el) return;
+    if (!msg) { el.hidden = true; el.textContent = ''; return; }
+    el.hidden = false;
+    el.textContent = msg;
+    el.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  }
+
+  function showStep(n){
+    step = n;
+    const probe = document.getElementById('setup-probe');
+    if (probe) probe.hidden = true;
+    const progress = document.getElementById('setup-progress');
+    if (progress) progress.hidden = (n >= 4);
+    document.querySelectorAll('.setup-step').forEach(el => {
+      const s = parseInt(el.getAttribute('data-step'), 10);
+      const on = s === n;
+      el.hidden = !on;
+      el.classList.toggle('is-active', on);
+    });
+    document.querySelectorAll('#setup-progress [data-dot]').forEach(dot => {
+      const d = parseInt(dot.getAttribute('data-dot'), 10);
+      dot.classList.toggle('done', d < n);
+      dot.classList.toggle('current', d === n);
+    });
+    const cap = document.getElementById('step-caption');
+    if (cap) cap.textContent = captions[n] || '';
+    showErr('');
+    const url = new URL(location.href);
+    url.searchParams.set('step', String(n));
+    url.searchParams.delete('pg_warn');
+    history.replaceState(null, '', url);
+  }
+
+  function filled(el){
+    return !!(el && String(el.value || '').trim());
+  }
+
+  document.querySelectorAll('[data-next]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      showStep(parseInt(btn.getAttribute('data-next'), 10));
+    });
+  });
+  document.querySelectorAll('[data-prev]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      showStep(parseInt(btn.getAttribute('data-prev'), 10));
+    });
+  });
+
+  const adminForm = document.querySelector('form[data-step="1"]');
+  if (adminForm) {
+    adminForm.addEventListener('submit', (e) => {
+      const user = (adminForm.username.value || '').trim();
+      const p1 = adminForm.password.value || '';
+      const p2 = adminForm.password_confirm.value || '';
+      if (!user) {
+        e.preventDefault();
+        showErr('نام کاربری را وارد کنید.');
+        return;
+      }
+      if (p1 !== p2) {
+        e.preventDefault();
+        showErr('رمز عبور و تکرار آن یکسان نیستند.');
+        return;
+      }
+      if (p1.length < 8) {
+        e.preventDefault();
+        showErr('رمز عبور باید حداقل ۱۲ کاراکتر باشد.');
+        return;
+      }
+      if (!/[A-Z]/.test(p1) || !/[a-z]/.test(p1) || !/[^A-Za-z0-9]/.test(p1)) {
+        e.preventDefault();
+        showErr('رمز باید حرف بزرگ، حرف کوچک و کاراکتر خاص داشته باشد.');
+      }
+    });
+  }
+
+  const botForm = document.querySelector('form[data-step="2"]');
+  if (botForm) {
+    botForm.addEventListener('submit', (e) => {
+      if (!filled(botForm.bot_token) && !hasBotToken) {
+        e.preventDefault();
+        showErr('توکن ربات الزامی است.');
+        return;
+      }
+      if (!filled(botForm.bot_username)) {
+        e.preventDefault();
+        showErr('نام کاربری ربات را وارد کنید.');
+        return;
+      }
+      if (!filled(botForm.admin_ids)) {
+        e.preventDefault();
+        showErr('حداقل یک آیدی ادمین وارد کنید.');
+        return;
+      }
+      const ids = String(botForm.admin_ids.value).split(',').map(s => s.trim()).filter(Boolean);
+      if (!ids.length || ids.some(x => !/^\d+$/.test(x))) {
+        e.preventDefault();
+        showErr('آیدی هر ادمین باید عدد باشد.');
+      }
+    });
+  }
+
+  const otherForm = document.querySelector('form[data-step="3"]');
+  if (otherForm) {
+    const backendSelect = otherForm.querySelector('#panel-backend');
+    const pgFields = otherForm.querySelector('#pasarguard-fields');
+    const suiFields = otherForm.querySelector('#sui-fields');
+    function syncBackendFields(){
+      const isSui = String(backendSelect && backendSelect.value || '').toLowerCase() === 'sui';
+      if (pgFields) pgFields.hidden = isSui;
+      if (suiFields) suiFields.hidden = !isSui;
+    }
+    if (backendSelect) {
+      backendSelect.addEventListener('change', syncBackendFields);
+      syncBackendFields();
+    }
+    otherForm.addEventListener('submit', (e) => {
+      const isSui = String(backendSelect && backendSelect.value || '').toLowerCase() === 'sui';
+      if (isSui) {
+        if (!filled(otherForm.sui_base_url)) {
+          e.preventDefault();
+          showErr('آدرس S-UI الزامی است.');
+          return;
+        }
+        if (!filled(otherForm.sui_api_token) && !hasSuiApiToken) {
+          e.preventDefault();
+          showErr('توکن API v2 S-UI را وارد کنید.');
+          return;
+        }
+        if (!filled(otherForm.sui_subscription_base_url)) {
+          e.preventDefault();
+          showErr('آدرس Subscription S-UI الزامی است.');
+          return;
+        }
+        if (filled(otherForm.sui_inbound_ids)) {
+          const ids = String(otherForm.sui_inbound_ids.value).split(',').map(s => s.trim()).filter(Boolean);
+          if (!ids.length || ids.some(x => !/^\d+$/.test(x) || Number(x) < 1)) {
+            e.preventDefault();
+            showErr('شناسهٔ Inboundها باید عددهای بزرگ‌تر از صفر باشد.');
+            return;
+          }
+        }
+        if (!filled(otherForm.web_port)) {
+          e.preventDefault();
+          showErr('پورت وب‌پنل را وارد کنید.');
+          return;
+        }
+        const suiPort = parseInt(otherForm.web_port.value, 10);
+        if (!suiPort || suiPort < 1 || suiPort > 65535) {
+          e.preventDefault();
+          showErr('پورت وب نامعتبر است.');
+          return;
+        }
+        e.preventDefault();
+        runPanelAccessProbe(otherForm, 'بررسی اتصال S-UI');
+        return;
+      }
+      if (!filled(otherForm.pg_base_url)) {
+        e.preventDefault();
+        showErr('آدرس پاسارگارد الزامی است.');
+        return;
+      }
+      if (!filled(otherForm.pg_username)) {
+        e.preventDefault();
+        showErr('نام کاربری پاسارگارد را وارد کنید.');
+        return;
+      }
+      if (!filled(otherForm.pg_password) && !hasPgPassword) {
+        e.preventDefault();
+        showErr('رمز پاسارگارد را وارد کنید.');
+        return;
+      }
+      if (!filled(otherForm.web_port)) {
+        e.preventDefault();
+        showErr('پورت وب‌پنل را وارد کنید.');
+        return;
+      }
+      const port = parseInt(otherForm.web_port.value, 10);
+      if (!port || port < 1 || port > 65535) {
+        e.preventDefault();
+        showErr('پورت وب نامعتبر است.');
+        return;
+      }
+      e.preventDefault();
+      runPgAccessProbe(otherForm);
+    });
+  }
+
+  function setProbeStep(n, fill){
+    const items = document.querySelectorAll('#setup-probe-steps li');
+    items.forEach((li, i) => {
+      li.classList.toggle('is-done', i < n);
+      li.classList.toggle('is-on', i === n);
+    });
+    const bar = document.getElementById('setup-probe-fill');
+    if (bar) bar.style.width = Math.max(8, Math.min(100, fill)) + '%';
+  }
+
+  function runPgAccessProbe(form){
+    const probe = document.getElementById('setup-probe');
+    const submitBtn = form.querySelector('button[type="submit"]');
+    const cap = document.getElementById('step-caption');
+    showErr('');
+    form.hidden = true;
+    if (probe) probe.hidden = false;
+    const dots = document.getElementById('setup-progress');
+    if (dots) dots.hidden = true;
+    if (cap) cap.textContent = 'بررسی سطح دسترسی';
+    if (submitBtn) submitBtn.disabled = true;
+    let tick = 0;
+    setProbeStep(0, 18);
+    const timer = setInterval(() => {
+      tick += 1;
+      if (tick === 1) setProbeStep(1, 42);
+      else if (tick === 2) setProbeStep(2, 68);
+      else if (tick >= 3) setProbeStep(3, 86);
+    }, 420);
+    const body = new URLSearchParams(new FormData(form));
+    fetch(form.action, {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: {
+        'Accept': 'application/json',
+        'X-Requested-With': 'setup-probe',
+        'Content-Type': 'application/x-www-form-urlencoded',
+      },
+      body: body.toString(),
+    }).then(async (res) => {
+      let data = null;
+      try { data = await res.json(); } catch (_) { data = null; }
+      clearInterval(timer);
+      if (!res.ok || !data || !data.ok) {
+        form.hidden = false;
+        if (probe) probe.hidden = true;
+        const dots = document.getElementById('setup-progress');
+        if (dots) dots.hidden = false;
+        if (submitBtn) submitBtn.disabled = false;
+        if (cap) cap.textContent = captions[3] || '';
+        showErr((data && data.error) || 'بررسی دسترسی ناموفق بود.');
+        return;
+      }
+      setProbeStep(3, 100);
+      window.location.assign(data.next || '/setup?step=4');
+    }).catch(() => {
+      clearInterval(timer);
+      if (submitBtn) submitBtn.disabled = false;
+      if (cap) cap.textContent = captions[3] || '';
+      form.hidden = false;
+      if (probe) probe.hidden = true;
+      const dots = document.getElementById('setup-progress');
+      if (dots) dots.hidden = false;
+      showErr('اتصال برقرار نشد. دوباره تلاش کنید.');
+    });
+  }
+
+  function runPanelAccessProbe(form, captionText){
+    const probe = document.getElementById('setup-probe');
+    const submitBtn = form.querySelector('button[type="submit"]');
+    const cap = document.getElementById('step-caption');
+    showErr('');
+    form.hidden = true;
+    if (probe) probe.hidden = false;
+    const dots = document.getElementById('setup-progress');
+    if (dots) dots.hidden = true;
+    if (cap) cap.textContent = captionText || 'بررسی اتصال پنل';
+    if (submitBtn) submitBtn.disabled = true;
+    let tick = 0;
+    setProbeStep(0, 18);
+    const timer = setInterval(() => {
+      tick += 1;
+      if (tick === 1) setProbeStep(1, 42);
+      else if (tick === 2) setProbeStep(2, 68);
+      else if (tick >= 3) setProbeStep(3, 86);
+    }, 420);
+    const body = new URLSearchParams(new FormData(form));
+    fetch(form.action, {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: {
+        'Accept': 'application/json',
+        'X-Requested-With': 'setup-probe',
+        'Content-Type': 'application/x-www-form-urlencoded',
+      },
+      body: body.toString(),
+    }).then(async (res) => {
+      let data = null;
+      try { data = await res.json(); } catch (_) { data = null; }
+      clearInterval(timer);
+      if (!res.ok || !data || !data.ok) {
+        form.hidden = false;
+        if (probe) probe.hidden = true;
+        if (dots) dots.hidden = false;
+        if (submitBtn) submitBtn.disabled = false;
+        if (cap) cap.textContent = captions[3] || '';
+        showErr((data && data.error) || 'بررسی اتصال ناموفق بود.');
+        return;
+      }
+      setProbeStep(3, 100);
+      window.location.assign(data.next || '/setup?step=4');
+    }).catch(() => {
+      clearInterval(timer);
+      if (submitBtn) submitBtn.disabled = false;
+      if (cap) cap.textContent = captions[3] || '';
+      form.hidden = false;
+      if (probe) probe.hidden = true;
+      if (dots) dots.hidden = false;
+      showErr('اتصال برقرار نشد. دوباره تلاش کنید.');
+    });
+  }
+
+  document.querySelectorAll('[data-copy]').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const id = btn.getAttribute('data-copy');
+      const el = document.getElementById(id);
+      if (!el) return;
+      const text = (el.textContent || '').trim();
+      let ok = false;
+      try {
+        if (navigator.clipboard && window.isSecureContext) {
+          await navigator.clipboard.writeText(text);
+          ok = true;
+        }
+      } catch (_) {}
+      if (!ok) {
+        try {
+          const ta = document.createElement('textarea');
+          ta.value = text;
+          ta.setAttribute('readonly', '');
+          ta.style.cssText = 'position:fixed;top:0;left:0;width:1px;height:1px;opacity:0';
+          document.body.appendChild(ta);
+          ta.focus();
+          ta.select();
+          ok = document.execCommand('copy');
+          document.body.removeChild(ta);
+        } catch (_) { ok = false; }
+      }
+      if (ok) {
+        const prev = btn.getAttribute('data-copy-label') || btn.textContent;
+        btn.setAttribute('data-copy-label', prev);
+        btn.textContent = 'کپی شد';
+        btn.classList.add('btn-ok', 'is-copied');
+        setTimeout(() => {
+          btn.textContent = prev;
+          btn.classList.remove('btn-ok', 'is-copied');
+        }, 1200);
+      } else {
+        showErr('کپی انجام نشد — متن را دستی انتخاب کنید.');
+      }
+    });
+  });
+
+  /* Finish → navigate with the displayed HTTP panel URL (SSL not ready yet). */
+  const finishForm = document.getElementById('setup-finish-form');
+  if (finishForm) {
+    finishForm.addEventListener('submit', function (e) {
+      e.preventDefault();
+      const btn = document.getElementById('setup-enter-panel');
+      if (btn) btn.disabled = true;
+      const panelEl = document.getElementById('panel-url');
+      const shown = (panelEl && panelEl.textContent || '').trim();
+      let loginUrl = '';
+      const httpsReady = {{ 'true' if https_ready else 'false' }};
+      try {
+        const base = new URL(shown || '{{ finish_login_url }}');
+        // Only force http when TLS is not live yet (pre-cert installs).
+        if (!httpsReady) {
+          base.protocol = 'http:';
+        }
+        if (!/\/login\/?$/i.test(base.pathname)) {
+          base.pathname = (base.pathname.replace(/\/?$/, '/') + 'login').replace(/\/{2,}/g, '/');
+        }
+        base.search = 'restarting=1';
+        base.hash = '';
+        loginUrl = base.href;
+      } catch (_) {
+        loginUrl = '{{ finish_login_url }}';
+      }
+      const next = document.getElementById('setup-finish-next');
+      if (next) next.value = loginUrl;
+      const body = new URLSearchParams();
+      body.set('next', loginUrl);
+      fetch(finishForm.action, {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: body.toString(),
+        redirect: 'manual',
+      }).catch(function () {}).finally(function () {
+        window.location.replace(loginUrl);
+      });
+    });
+  }
+
+  showStep(step);
+})();
+</script>
+{% endblock %}

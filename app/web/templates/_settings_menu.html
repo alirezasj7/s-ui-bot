@@ -1,0 +1,194 @@
+<div class="card menu-layout-intro">
+  <h2>چیدمان دکمه‌های کیبورد</h2>
+  <p class="muted update-card-caption">
+    کیبورد پایین فقط میانبرهای اصلی است (فروشگاه، کیف، پشتیبانی، …؛ برای ادمین + «پنل ادمین»).
+    همهٔ زیرمنوها روی <b>یک پیام پنل اینلاین</b> با ویرایش همان پیام‌اند — با دکمهٔ بازگشت در هر مرحله.
+    «درخواست نمایندگی» در پشتیبانی/خوش‌آمد است. مینی‌اپ فقط از دکمهٔ Open کنار کادر پیام
+    (وقتی HTTPS فعال باشد) — نه کیبورد پایین و نه اینلاین خوش‌آمد.
+    «آموزش‌ها» روی کارت سرویس کاربر است (نه کیبورد اصلی) — متن/رنگ در تنظیمات آموزش اتصال.
+    آیتم‌های «منوی فعال» فقط ترتیب کیبورد پایین‌اند؛ متن واقعی دکمه‌ها در بخش «متن دکمه‌های منو» تنظیم می‌شود.
+  </p>
+  <div class="settings-grid menu-layout-mode">
+    <label class="setting-item">
+      <span>حالت چیدمان کیبورد</span>
+      <select name="menu_layout_ui" id="menu_layout_select" form="menu-form">
+        <option value="classic" {% if values.get('menu_layout','compact')=='classic' %}selected{% endif %}>تکی — هر دکمه یک ردیف</option>
+        <option value="compact" {% if values.get('menu_layout','compact')=='compact' %}selected{% endif %}>فشرده — دکمه‌ها جفتی (پیشنهادی)</option>
+      </select>
+    </label>
+    {% include "_settings_chat_cleanup.html" %}
+  </div>
+</div>
+<form method="post" action="/settings?tab=menu" id="menu-form" class="menu-layout-form">
+  <input type="hidden" name="menu_order" id="menu_order" value="{{ order_csv }}" />
+  <input type="hidden" name="menu_layout" id="menu_layout" value="{{ values.get('menu_layout', 'compact') }}" />
+  <input type="hidden" name="menu_layout_save" value="1" />
+  <div class="dnd-cols">
+    <div class="card dnd-card">
+      <h2>منوی فعال</h2>
+      <ul class="dnd-list" id="active-list" data-zone="active">
+        {% for item in items %}
+        <li class="dnd-item" data-key="{{ item.key }}" data-required="{{ '1' if item.required else '0' }}">
+          <div class="meta">
+            <strong>{{ item.label }}</strong>
+          </div>
+          <div class="dnd-actions">
+            <button type="button" class="icon-btn icon-move btn-up" title="بالا" aria-label="بالا"><svg class="ico" viewBox="0 0 16 16" aria-hidden="true"><path d="M4 10l4-4 4 4"/></svg></button>
+            <button type="button" class="icon-btn icon-move btn-down" title="پایین" aria-label="پایین"><svg class="ico" viewBox="0 0 16 16" aria-hidden="true"><path d="M4 6l4 4 4-4"/></svg></button>
+            {% if not item.required %}
+            <button type="button" class="icon-btn icon-remove btn-remove" title="حذف" aria-label="حذف"><svg class="ico" viewBox="0 0 16 16" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8"/></svg></button>
+            {% else %}
+            <span class="icon-btn icon-move icon-fixed" title="همیشه در منو است — با ▲▼ جابه‌جا می‌شود" aria-label="قابل جابه‌جایی، غیرقابل حذف" role="img"><svg class="ico" viewBox="0 0 16 16" aria-hidden="true"><path d="M3.5 8h9"/></svg></span>
+            {% endif %}
+          </div>
+        </li>
+        {% endfor %}
+      </ul>
+    </div>
+    <div class="card dnd-card">
+      <h2>مخزن</h2>
+      <ul class="dnd-list" id="pool-list" data-zone="pool">
+        {% for item in pool %}
+        <li class="dnd-item" data-key="{{ item.key }}" data-required="0">
+          <div class="meta">
+            <strong>{{ item.label }}</strong>
+          </div>
+          <div class="dnd-actions">
+            <button type="button" class="icon-btn icon-add btn-add" title="افزودن" aria-label="افزودن"><svg class="ico" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 3v10M3 8h10"/></svg></button>
+          </div>
+        </li>
+        {% endfor %}
+        <li class="pool-empty" id="pool-empty" {% if pool %}style="display:none"{% endif %}>همه دکمه‌ها در منو هستند</li>
+      </ul>
+    </div>
+  </div>
+  <div class="actions sticky-actions">
+    <button class="btn" type="submit">ذخیره منو</button>
+  </div>
+</form>
+
+<script>
+(function () {
+  const active = document.getElementById('active-list');
+  const pool = document.getElementById('pool-list');
+  const orderInput = document.getElementById('menu_order');
+  const layoutSelect = document.getElementById('menu_layout_select');
+  const layoutHidden = document.getElementById('menu_layout');
+
+  function syncOrder() {
+    if (!orderInput) return;
+    orderInput.value = [...active.querySelectorAll('.dnd-item')].map((el) => el.dataset.key).join(',');
+    orderInput.dispatchEvent(new Event('change', { bubbles: true }));
+  }
+  function ensureEmpty() {
+    const empty = document.getElementById('pool-empty');
+    const count = pool.querySelectorAll('.dnd-item').length;
+    if (empty) empty.style.display = count ? 'none' : 'block';
+  }
+  function setActiveControls(li) {
+    const required = li.dataset.required === '1';
+    const box = document.createElement('div');
+    box.className = 'dnd-actions';
+    box.innerHTML =
+      '<button type="button" class="icon-btn icon-move btn-up" title="بالا" aria-label="بالا"><svg class="ico" viewBox="0 0 16 16" aria-hidden="true"><path d="M4 10l4-4 4 4"/></svg></button>' +
+      '<button type="button" class="icon-btn icon-move btn-down" title="پایین" aria-label="پایین"><svg class="ico" viewBox="0 0 16 16" aria-hidden="true"><path d="M4 6l4 4 4-4"/></svg></button>' +
+      (required
+        ? '<span class="icon-btn icon-move icon-fixed" title="همیشه در منو است — با ▲▼ جابه‌جا می‌شود" aria-label="قابل جابه‌جایی، غیرقابل حذف" role="img"><svg class="ico" viewBox="0 0 16 16" aria-hidden="true"><path d="M3.5 8h9"/></svg></span>'
+        : '<button type="button" class="icon-btn icon-remove btn-remove" title="حذف" aria-label="حذف"><svg class="ico" viewBox="0 0 16 16" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8"/></svg></button>');
+    li.querySelectorAll('.dnd-actions, button.btn-remove, button.btn-add, span.badge, span.icon-fixed').forEach((n) => n.remove());
+    li.appendChild(box);
+    li.draggable = true;
+  }
+  function setPoolControls(li) {
+    li.dataset.required = '0';
+    li.querySelectorAll('.dnd-actions, button.btn-remove, button.btn-add, span.badge, span.icon-fixed').forEach((n) => n.remove());
+    const box = document.createElement('div');
+    box.className = 'dnd-actions';
+    box.innerHTML = '<button type="button" class="icon-btn icon-add btn-add" title="افزودن" aria-label="افزودن"><svg class="ico" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 3v10M3 8h10"/></svg></button>';
+    li.appendChild(box);
+  }
+  function moveToActive(li) {
+    active.appendChild(li);
+    setActiveControls(li);
+    ensureEmpty();
+    syncOrder();
+  }
+  function moveToPool(li) {
+    if (li.dataset.required === '1') return;
+    pool.insertBefore(li, document.getElementById('pool-empty'));
+    setPoolControls(li);
+    ensureEmpty();
+    syncOrder();
+  }
+  function moveItem(li, dir) {
+    if (!li || !li.parentElement || li.parentElement !== active) return;
+    if (dir < 0 && li.previousElementSibling) {
+      active.insertBefore(li, li.previousElementSibling);
+    } else if (dir > 0 && li.nextElementSibling) {
+      active.insertBefore(li.nextElementSibling, li);
+    }
+    syncOrder();
+  }
+
+  if (layoutSelect && layoutHidden) {
+    layoutSelect.addEventListener('change', () => {
+      layoutHidden.value = layoutSelect.value;
+      layoutHidden.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+  }
+
+  const menuForm = document.getElementById('menu-form');
+  if (!menuForm || !active || !pool) return;
+  menuForm.addEventListener('submit', () => {
+    syncOrder();
+    if (layoutSelect && layoutHidden) layoutHidden.value = layoutSelect.value;
+  });
+  menuForm.addEventListener('click', (e) => {
+    const rem = e.target.closest('.btn-remove');
+    const add = e.target.closest('.btn-add');
+    const up = e.target.closest('.btn-up');
+    const down = e.target.closest('.btn-down');
+    if (rem) {
+      e.preventDefault();
+      moveToPool(rem.closest('.dnd-item'));
+    } else if (add) {
+      e.preventDefault();
+      moveToActive(add.closest('.dnd-item'));
+    } else if (up) {
+      e.preventDefault();
+      moveItem(up.closest('.dnd-item'), -1);
+    } else if (down) {
+      e.preventDefault();
+      moveItem(down.closest('.dnd-item'), 1);
+    }
+  });
+
+  /* HTML5 drag-reorder — includes required items (shop); only remove is blocked. */
+  let dragEl = null;
+  active.querySelectorAll('.dnd-item').forEach((li) => { li.draggable = true; });
+  active.addEventListener('dragstart', (e) => {
+    const li = e.target.closest('.dnd-item');
+    if (!li || !active.contains(li)) return;
+    dragEl = li;
+    li.classList.add('is-dragging');
+    try { e.dataTransfer.setData('text/plain', li.dataset.key || ''); e.dataTransfer.effectAllowed = 'move'; } catch (_) {}
+  });
+  active.addEventListener('dragend', () => {
+    if (dragEl) dragEl.classList.remove('is-dragging');
+    dragEl = null;
+    syncOrder();
+  });
+  active.addEventListener('dragover', (e) => {
+    if (!dragEl) return;
+    e.preventDefault();
+    const over = e.target.closest('.dnd-item');
+    if (!over || over === dragEl || !active.contains(over)) return;
+    const rect = over.getBoundingClientRect();
+    const before = (e.clientY - rect.top) < rect.height / 2;
+    active.insertBefore(dragEl, before ? over : over.nextSibling);
+  });
+
+  syncOrder();
+  ensureEmpty();
+})();
+</script>

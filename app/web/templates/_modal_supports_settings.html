@@ -1,0 +1,41 @@
+{# Support contacts + support_text modal on /tickets #}
+{% from "macros.html" import modal_title %}
+
+{% set open_supports = open_supports_modal %}
+{% set strip_keys = 'settings,supports,stab,saved,ok,err,msg,_' %}
+<div class="ui-modal{% if open_supports %} open{% endif %}" id="modal-supports-settings"
+     {% if not open_supports %}hidden{% endif %}
+     data-modal-strip-keys="{{ strip_keys }}">
+  <div class="ui-modal-backdrop" data-modal-close-strip></div>
+  <div class="ui-modal-panel ui-modal-panel-xl settings-modal-panel" role="dialog" aria-modal="true" aria-labelledby="supports-settings-title">
+    <div class="ui-modal-head">
+      {{ modal_title('panel-settings', 'پشتیبان‌ها', caption='مخاطبین و متن پشتیبانی ربات', tone='neutral', heading_id='supports-settings-title') }}
+      <button type="button" class="icon-btn" data-modal-close-strip aria-label="بستن">
+        <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
+      </button>
+    </div>
+    {% if open_supports and (flash_ok or flash_err) %}
+    <div class="settings-modal-flash">
+      {% if flash_ok %}<div class="flash ok">{{ flash_ok }}</div>{% endif %}
+      {% if flash_err %}<div class="flash err">{{ flash_err }}</div>{% endif %}
+    </div>
+    {% endif %}
+    <nav class="section-tabs settings-tabs modal-section-tabs" role="tablist" aria-label="تب‌های پشتیبانی" data-modal-tabs>
+      <button type="button" class="tab-btn {% if supports_modal_tab != 'text' %}active{% endif %}" data-modal-tab="contacts" role="tab">پشتیبان‌های تلگرام</button>
+      <button type="button" class="tab-btn {% if supports_modal_tab == 'text' %}active{% endif %}" data-modal-tab="text" role="tab">متن پشتیبانی</button>
+    </nav>
+    <div class="settings-modal-body">
+      <div class="modal-tab-panel" data-modal-tab-panel="contacts" {% if supports_modal_tab == 'text' %}hidden{% endif %}>
+        {% set supports_save = supports_save_action %}
+        {% include "_settings_supports.html" %}
+      </div>
+      <div class="modal-tab-panel" data-modal-tab-panel="text" {% if supports_modal_tab != 'text' %}hidden{% endif %}>
+        {% set settings_form_action = support_text_action %}
+        {% set tab_groups = support_text_tab_groups %}
+        {% set groups = support_text_groups %}
+        {% set show_pending_orders = false %}
+        {% include "_domain_settings_form.html" %}
+      </div>
+    </div>
+  </div>
+</div>

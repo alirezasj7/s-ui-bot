@@ -1,0 +1,14 @@
+{% extends "base.html" %}
+{% from "macros.html" import page_title %}
+{% block title %}داشبورد{% endblock %}
+{% block content %}
+{% if widgets_deferred %}
+{% include "_panel_widgets_defer.html" %}
+{% include "_home_dash_body.html" %}
+{% else %}
+{% include "_home_dash_body.html" %}
+{% endif %}
+{% endblock %}
+{% block page_scripts %}
+<script src="/static/sales-chart.js?v={{ sales_chart_cache_key|default(app_version) }}"{% if csp_nonce %} nonce="{{ csp_nonce }}"{% endif %}></script>
+{% endblock %}

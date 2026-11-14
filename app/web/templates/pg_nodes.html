@@ -1,0 +1,170 @@
+{% extends "base.html" %}
+{% from "macros.html" import row_actions, page_title, table_select_head, table_select_cell, table_bulk_bar, modal_title %}
+{% block title %}نودهای پاسارگارد{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div>
+    {{ page_title('nodes', 'نودها', 'pg', help='pg-nodes') }}
+  </div>
+  <div class="page-head-actions">
+    {% if can_reconnect %}
+    <form method="post" action="/pg/nodes/reconnect-all" class="js-busy-form" data-busy-label="در حال اتصال…">
+      <button class="btn btn-ghost" type="submit">اتصال مجدد همه</button>
+    </form>
+    {% endif %}
+    {% if can_create %}
+    <button type="button" class="btn" data-modal-open="modal-node-create">ساخت نود</button>
+    {% endif %}
+  </div>
+</div>
+<div class="card card-flush">
+  {% if not nodes %}
+  <p class="muted">نودی یافت نشد.</p>
+  {% else %}
+  {% if can_reconnect or can_update or can_delete %}
+  {{ table_bulk_bar('/pg/nodes/bulk-action', [
+    {'key': 'reconnect', 'label': 'اتصال مجدد', 'confirm': 'اتصال مجدد {n} نود؟', 'confirm_title': 'اتصال مجدد گروهی', 'confirm_label': 'اتصال'},
+    {'key': 'sync', 'label': 'همگام‌سازی', 'confirm': 'همگام‌سازی {n} نود؟', 'confirm_title': 'همگام‌سازی گروهی', 'confirm_label': 'همگام‌سازی'},
+    {'key': 'reset', 'label': 'ریست مصرف', 'confirm': 'مصرف {n} نود ریست شود؟', 'confirm_title': 'ریست گروهی', 'confirm_label': 'ریست', 'warn': true},
+    {'key': 'toggle', 'label': 'تغییر وضعیت', 'confirm': 'وضعیت {n} نود تغییر کند؟', 'confirm_title': 'تغییر وضعیت گروهی', 'confirm_label': 'اعمال'},
+    {'key': 'delete', 'label': 'حذف', 'class': 'btn-danger', 'confirm': '{n} نود حذف شوند؟', 'confirm_title': 'حذف گروهی', 'confirm_label': 'حذف', 'danger': true},
+  ]) }}
+  {% endif %}
+  <div class="table-wrap">
+  <table class="table-compact table-list-sm" data-sortable{% if can_reconnect or can_update or can_delete %} data-bulk-select{% endif %}>
+    <thead><tr>
+      {% if can_reconnect or can_update or can_delete %}{{ table_select_head() }}{% endif %}
+      <th class="col-id" data-sort-type="num">شناسه</th>
+      <th class="col-name" data-sort-type="text" data-list-sort-label="نام" data-list-sort-dir="ascending" data-list-sort-order="3">نام</th>
+      <th class="col-address" data-sort-type="text">آدرس</th>
+      <th class="col-status" data-sort-type="text" data-list-sort-label="وضعیت" data-list-sort-dir="ascending" data-list-sort-order="2">وضعیت</th>
+      <th data-sort-type="num">آپلود</th>
+      <th data-sort-type="num">دانلود</th>
+      <th data-sort-type="num" data-list-sort-label="بیشترین ترافیک" data-list-sort-dir="descending" data-list-sort-order="1">مجموع ترافیک</th>
+      <th class="col-actions"></th>
+      <th class="li-head" scope="col"><span class="li-count">{{ nodes | length | num }} نود</span><select class="select-sm li-sort" data-list-sort aria-label="مرتب‌سازی" hidden></select></th>
+    </tr></thead>
+    <tbody>
+    {% for n in nodes %}
+      {% set ns = namespace(ops='') %}
+      {% if n.get('id') %}
+        {% if can_reconnect %}{% set ns.ops = ns.ops + 'reconnect,' %}{% endif %}
+        {% if can_update %}{% set ns.ops = ns.ops + 'sync,reset,toggle,' %}{% endif %}
+        {% if can_delete %}{% set ns.ops = ns.ops + 'delete,' %}{% endif %}
+      {% endif %}
+      <tr data-bulk-ops="{{ ns.ops.rstrip(',') }}">
+        {% if can_reconnect or can_update or can_delete %}{% if n.get('id') %}{{ table_select_cell(n.get('id')) }}{% else %}<td class="col-select"></td>{% endif %}{% endif %}
+        <td class="mono" dir="ltr" data-sort-value="{{ n.get('id') or 0 }}">{{ n.get('id') }}</td>
+        <td class="li-title" data-sort-value="{{ n.get('name') or '' }}"><span dir="auto">{{ n.get('name') or '—' }}</span> <span class="li-only li-id" dir="ltr">(#{{ n.get('id') }})</span></td>
+        <td class="mono li-sub" data-sort-value="{{ n.get('address') or n.get('host') or '' }}"><bdi dir="ltr">{{ n.get('address') or n.get('host') or '—' }}{% if n.get('port') %}:{{ n.get('port') }}{% endif %}</bdi></td>
+        <td class="li-badge" data-sort-value="{{ (n.get('status') or n.get('connection_status') or '')|string|lower }}">
+          {% set st = (n.get('status') or n.get('connection_status') or '')|string|lower %}
+          <span class="badge {% if st in ['connected','online','healthy'] %}connected{% elif 'connect' in st %}connecting{% elif st in ['error','offline','unhealthy','disabled','disconnected'] %}danger{% else %}neutral{% endif %}">
+            {{ n.get('status') or n.get('connection_status') or '—' }}
+          </span>
+        </td>
+        <td class="mono reseller-quota-cell" data-sort-value="{{ n.get('_traffic_up') if n.get('_traffic_up') is not none else '' }}">
+          <span class="byte-size reseller-quota-line">{{ n.get('_traffic_up_text') or '—' }}</span>
+        </td>
+        <td class="mono reseller-quota-cell" data-sort-value="{{ n.get('_traffic_down') if n.get('_traffic_down') is not none else '' }}">
+          <span class="byte-size reseller-quota-line">{{ n.get('_traffic_down_text') or '—' }}</span>
+        </td>
+        <td class="mono reseller-quota-cell li-value" data-sort-value="{{ n.get('_traffic_total') if n.get('_traffic_total') is not none else '' }}">
+          <span class="byte-size reseller-quota-line">{{ n.get('_traffic_total_text') or '—' }}</span>
+        </td>
+        <td class="col-actions">
+          {% if n.get('id') and (can_reconnect or can_update or can_delete) %}
+          {% call row_actions() %}
+            {% if can_reconnect %}
+            <form method="post" action="/pg/nodes/{{ n.get('id') }}/reconnect" class="js-busy-form" data-busy-label="در حال اتصال…">
+              <button class="btn btn-ghost btn-sm" type="submit">اتصال مجدد</button>
+            </form>
+            {% endif %}
+            {% if can_update %}
+            <form method="post" action="/pg/nodes/{{ n.get('id') }}/sync" class="js-busy-form" data-busy-label="همگام‌سازی…">
+              <button class="btn btn-ghost btn-sm" type="submit">همگام‌سازی</button>
+            </form>
+            <form method="post" action="/pg/nodes/{{ n.get('id') }}/reset"
+              data-confirm="مصرف این نود ریست شود؟" data-confirm-title="ریست مصرف نود" data-confirm-warn="1" data-confirm-label="ریست">
+              <button class="btn btn-ghost btn-sm" type="submit">ریست مصرف</button>
+            </form>
+            <form method="post" action="/pg/nodes/{{ n.get('id') }}/toggle" class="js-busy-form" data-busy-label="…">
+              <button class="btn btn-ghost btn-sm" type="submit">تغییر وضعیت</button>
+            </form>
+            {% endif %}
+            {% if can_delete %}
+            <form method="post" action="/pg/nodes/{{ n.get('id') }}/delete"
+              data-confirm="این نود حذف شود؟" data-confirm-title="حذف نود" data-confirm-danger="1" data-confirm-label="حذف">
+              <button class="btn btn-danger btn-sm" type="submit">حذف</button>
+            </form>
+            {% endif %}
+          {% endcall %}
+          {% endif %}
+        </td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  </div>
+  {% endif %}
+</div>
+
+{% if can_create %}
+<div class="ui-modal" id="modal-node-create" hidden>
+  <div class="ui-modal-backdrop" data-modal-close></div>
+  <div class="ui-modal-panel" role="dialog" aria-modal="true">
+    <div class="ui-modal-head">
+      {{ modal_title('nodes', 'ساخت نود', caption='نود جدید پاسارگارد', tone='pg') }}
+      <button type="button" class="icon-btn" data-modal-close aria-label="بستن"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
+    </div>
+    <form method="post" action="/pg/nodes" class="form-stack js-busy-form" data-busy-label="در حال ساخت…">
+      <p class="muted">فیلدهای گواهی و کلید API را از پنل پاسارگارد / نود کپی کنید.</p>
+      <label class="form-field">نام
+        <input name="name" required autocomplete="off" placeholder="DE node" />
+      </label>
+      <label class="form-field">آدرس
+        <input name="address" required autocomplete="off" dir="ltr" placeholder="192.168.1.1" />
+      </label>
+      <label class="form-field">پورت
+        <input name="port" type="number" dir="ltr" placeholder="62050" />
+      </label>
+      <label class="form-field">نوع اتصال
+        <select name="connection_type">
+          <option value="grpc">grpc</option>
+          <option value="rest">rest</option>
+        </select>
+      </label>
+      <label class="form-field">شناسه هسته (core_config_id)
+        <input name="core_config_id" type="number" dir="ltr" placeholder="1" />
+      </label>
+      <label class="form-field">API Key
+        <input name="api_key" autocomplete="off" dir="ltr" />
+      </label>
+      <label class="form-field">Server CA
+        <textarea name="server_ca" rows="4" dir="ltr" placeholder="-----BEGIN CERTIFICATE-----"></textarea>
+      </label>
+      <div class="actions">
+        <button class="btn" type="submit">ساخت نود</button>
+        <button type="button" class="btn btn-ghost" data-modal-close>انصراف</button>
+      </div>
+    </form>
+  </div>
+</div>
+{% endif %}
+<script>
+(function () {
+  document.querySelectorAll('form.js-busy-form').forEach(function (form) {
+    form.addEventListener('submit', function () {
+      const btn = form.querySelector('button[type="submit"]');
+      if (!btn || btn.disabled) return;
+      btn.disabled = true;
+      const label = form.getAttribute('data-busy-label');
+      if (label) {
+        btn.dataset.idleLabel = btn.textContent;
+        btn.textContent = label;
+      }
+    });
+  });
+})();
+</script>
+{% endblock %}

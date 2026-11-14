@@ -1,0 +1,2548 @@
+from __future__ import annotations
+
+import json
+import logging
+import secrets
+import string
+import time
+from contextvars import ContextVar
+from typing import Any
+
+from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.config import get_settings
+from app.db.models import BotUser, Order, Role, Setting, UserService
+from app.services.button_styles import default_settings as button_style_defaults
+from app.services.screen_titles import SCREEN_TEXT_TAB, screen_text_defaults, screen_text_setting_groups
+from app.services.settings_button_labels import appearance_button_subs, shop_button_subs
+from app.services.button_styles import setting_group_fields as button_style_setting_fields
+from app.services.connection_status_texts import MONITOR_TEXT_DEFAULTS, readable_monitor_texts
+from app.services.psp_gateways import KEY_PSP_GATEWAYS, merge_submitted_psp_gateways
+from app.services.retired_text_defaults import refresh_retired_defaults
+from app.services.user_purge import purge_user_references
+
+logger = logging.getLogger("pgclock.users")
+
+# When handling updates on a reseller-owned bot, settings read/write overlay
+# that reseller's shop settings automatically.
+_shop_reseller_id: ContextVar[int | None] = ContextVar("shop_reseller_id", default=None)
+
+# Short TTL cache: reseller_id (0=global) → (monotonic_at, settings dict)
+_SETTINGS_CACHE: dict[int, tuple[float, dict[str, str]]] = {}
+_SETTINGS_CACHE_TTL = 15.0
+
+
+def clear_settings_cache(reseller_id: int | None = None) -> None:
+    """Drop cached settings. Clear all when global keys change."""
+    if reseller_id is None:
+        _SETTINGS_CACHE.clear()
+        return
+    _SETTINGS_CACHE.pop(int(reseller_id), None)
+
+
+def _split_channel_tokens(raw: str | None) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for part in (raw or "").replace(",", "\n").splitlines():
+        ch, _required = _parse_channel_line(part)
+        if not ch:
+            continue
+        key = ch.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(ch)
+    return out
+
+
+def normalize_force_join_invite_link(raw: str | None) -> str:
+    """Normalize a public t.me / telegram.me invite or channel URL for inline buttons."""
+    link = (raw or "").strip()
+    if not link:
+        return ""
+    lower = link.lower()
+    if lower.startswith("tg://"):
+        return link
+    for prefix in (
+        "https://t.me/",
+        "http://t.me/",
+        "t.me/",
+        "https://telegram.me/",
+        "http://telegram.me/",
+        "telegram.me/",
+    ):
+        if lower.startswith(prefix):
+            rest = link[len(prefix) :].lstrip("/")
+            if not rest:
+                return ""
+            # Private message deep-links (t.me/c/…) are not join URLs
+            if rest.lower().startswith("c/"):
+                return ""
+            return f"https://t.me/{rest}"
+    if link.startswith("@") and len(link) > 1:
+        return f"https://t.me/{link[1:].lower()}"
+    return ""
+
+
+def is_force_join_invite_ref(raw: str | None) -> bool:
+    """True when value is an invite / joinchat URL (resolved via getChat at check time)."""
+    link = normalize_force_join_invite_link(raw)
+    if not link:
+        return False
+    lower = link.lower()
+    return "/+" in lower or "joinchat/" in lower
+
+
+def force_join_channel_url(channel_id: str, invite_link: str | None = None) -> str | None:
+    """Best-effort join URL for inline buttons (@username or stored invite link)."""
+    custom = normalize_force_join_invite_link(invite_link)
+    if custom:
+        return custom
+    # Invite stored as the channel id itself
+    as_invite = normalize_force_join_invite_link(channel_id)
+    if as_invite:
+        return as_invite
+    ch = normalize_force_join_channel_id(channel_id)
+    if not ch:
+        return None
+    if ch.startswith("@"):
+        return f"https://t.me/{ch[1:]}"
+    return None
+
+
+def normalize_force_join_channel_id(raw: str | None) -> str:
+    """Normalize @username / numeric id / t.me URL into a Telegram chat id string.
+
+    Usernames are lowercased (Telegram treats them case-insensitively).
+    Private invite links (``t.me/+hash``, ``joinchat/...``) return ``\"\"`` — keep them
+    in the optional ``link`` field (or as invite-ref id); runtime resolves via ``getChat``.
+    ``t.me/c/<internal>`` private deep-links become ``-100<internal>``.
+    """
+    import re
+
+    from app.services.numbers import normalize_digits
+
+    ch = normalize_digits((raw or "").strip())
+    if not ch:
+        return ""
+    lower = ch.lower()
+    for prefix in (
+        "https://t.me/",
+        "http://t.me/",
+        "t.me/",
+        "https://telegram.me/",
+        "http://telegram.me/",
+        "telegram.me/",
+    ):
+        if lower.startswith(prefix):
+            ch = ch[len(prefix) :]
+            break
+    ch = ch.strip().strip("/")
+    if "?" in ch:
+        ch = ch.split("?", 1)[0].strip()
+    if not ch:
+        return ""
+    # t.me/c/<channel_internal_id>[/message_id] → -100<internal>
+    m = re.match(r"^[Cc]/(\d+)(?:/\d+)?$", ch)
+    if m:
+        return f"-100{m.group(1)}"
+    # Private invite paths — not a direct get_chat_member chat id
+    if ch.startswith("+") or ch.lower().startswith("joinchat") or "/" in ch:
+        return ""
+    if ch.startswith("@"):
+        return "@" + ch[1:].lower()
+    if ch.startswith("-") and ch[1:].isdigit():
+        return ch
+    if ch.isdigit():
+        # Bare internal ids from t.me/c/… copy-paste without prefix
+        if len(ch) >= 9:
+            return f"-100{ch}" if not ch.startswith("100") else f"-{ch}"
+        return ch
+    if re.match(r"^[A-Za-z][A-Za-z0-9_]{3,}$", ch):
+        return f"@{ch.lower()}"
+    return ch
+
+
+def _parse_channel_line(part: str) -> tuple[str, bool]:
+    """Parse one force-join line → (channel_id, required).
+
+    Optional markers (Telegram admin edit / legacy text):
+    ``@chan !optional``, ``@chan !opt``, ``@chan (اختیاری)``.
+    """
+    ch = (part or "").strip()
+    if not ch:
+        return "", True
+    required = True
+    lower = ch.lower()
+    for marker in ("!optional", "!opt"):
+        if lower.endswith(marker):
+            ch = ch[: -len(marker)].strip()
+            required = False
+            break
+    if ch.endswith("(اختیاری)"):
+        ch = ch[: -len("(اختیاری)")].strip()
+        required = False
+    normalized = normalize_force_join_channel_id(ch)
+    if normalized:
+        return normalized, required
+    # Invite-only line — keep normalized invite URL as id for runtime resolve
+    invite = normalize_force_join_invite_link(ch)
+    return (invite, required) if invite else ("", required)
+
+
+def _entry_invite_link(item: dict[str, Any], *, id_raw: str = "") -> str:
+    """Pull optional button URL from JSON fields or an invite-only id value."""
+    for key in ("link", "invite_link", "url"):
+        link = normalize_force_join_invite_link(str(item.get(key) or ""))
+        if link:
+            return link
+    raw = (id_raw or "").strip()
+    if not raw or raw.startswith("@"):
+        return ""
+    lower = raw.lower()
+    if lower.startswith(("http://", "https://", "t.me/", "telegram.me/", "tg://")):
+        return normalize_force_join_invite_link(raw)
+    return ""
+
+
+def _entry_title(item: dict[str, Any] | None) -> str:
+    if not isinstance(item, dict):
+        return ""
+    title = str(item.get("title") or item.get("name") or item.get("label") or "").strip()
+    return title[:64]
+
+
+def parse_force_join_entries(raw: str | None) -> list[dict[str, Any]]:
+    """Parse force-join setting into [{id, required, link?, title?}, ...].
+
+    Accepts JSON array (new) or legacy line/comma-separated channels (all required
+    unless marked ``!optional``). ``link`` is the join URL for inline buttons;
+    invite-only ids are kept and resolved via ``getChat`` when checking membership.
+    """
+    s = (raw or "").strip()
+    if not s:
+        return []
+    if s.startswith("["):
+        try:
+            data = json.loads(s)
+        except Exception:
+            data = None
+        if isinstance(data, list):
+            out: list[dict[str, Any]] = []
+            seen: set[str] = set()
+            for item in data:
+                title = ""
+                link = ""
+                if isinstance(item, str):
+                    ch, required = _parse_channel_line(item)
+                    if not ch:
+                        link = normalize_force_join_invite_link(item)
+                        ch = link
+                    elif is_force_join_invite_ref(ch):
+                        link = ch
+                elif isinstance(item, dict):
+                    id_raw = str(item.get("id") or item.get("channel") or "")
+                    ch = normalize_force_join_channel_id(id_raw)
+                    link = _entry_invite_link(item, id_raw=id_raw)
+                    title = _entry_title(item)
+                    if not ch and link:
+                        # Invite URL alone — keep for getChat resolve + button
+                        ch = link
+                    req = item.get("required", True)
+                    if isinstance(req, str):
+                        required = req.strip().lower() in {"1", "true", "yes", "on"}
+                    else:
+                        required = bool(req)
+                else:
+                    continue
+                if not ch:
+                    continue
+                key = ch.lower()
+                if key in seen:
+                    continue
+                seen.add(key)
+                entry: dict[str, Any] = {"id": ch, "required": required}
+                if link:
+                    entry["link"] = link
+                elif is_force_join_invite_ref(ch):
+                    entry["link"] = ch
+                if title:
+                    entry["title"] = title
+                out.append(entry)
+            return out
+    out: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for part in s.replace(",", "\n").splitlines():
+        ch, required = _parse_channel_line(part)
+        if not ch:
+            continue
+        key = ch.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        entry: dict[str, Any] = {"id": ch, "required": required}
+        if is_force_join_invite_ref(ch):
+            entry["link"] = ch
+        out.append(entry)
+    return out
+
+
+def parse_force_join_channels(raw: str | None) -> list[str]:
+    """Channel ids that must be joined (required=true) before using the bot."""
+    return [e["id"] for e in parse_force_join_entries(raw) if e.get("required", True)]
+
+
+def serialize_force_join_entries(entries: list[dict[str, Any]] | None) -> str:
+    """Normalize entries to a compact JSON string for storage."""
+    normalized: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for item in entries or []:
+        if not isinstance(item, dict):
+            continue
+        id_raw = str(item.get("id") or "")
+        ch = normalize_force_join_channel_id(id_raw)
+        link = _entry_invite_link(item, id_raw=id_raw)
+        if not ch and link:
+            ch = link
+        if not ch:
+            continue
+        key = ch.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        req = item.get("required", True)
+        if isinstance(req, str):
+            required = req.strip().lower() in {"1", "true", "yes", "on"}
+        else:
+            required = bool(req)
+        entry: dict[str, Any] = {"id": ch, "required": required}
+        if link:
+            entry["link"] = link
+        elif is_force_join_invite_ref(ch):
+            entry["link"] = ch
+        title = _entry_title(item)
+        if title:
+            entry["title"] = title
+        normalized.append(entry)
+    return json.dumps(normalized, ensure_ascii=False)
+
+
+def format_force_join_for_edit(raw: str | None) -> str:
+    """Human-editable multi-line preview for bot settings (keeps optional flags)."""
+    lines: list[str] = []
+    for e in parse_force_join_entries(raw):
+        ch = e["id"]
+        if e.get("required", True):
+            lines.append(ch)
+        else:
+            lines.append(f"{ch} !optional")
+    return "\n".join(lines)
+
+def normalize_force_join_channel_value(raw: str | None) -> str:
+    """Accept JSON or legacy lines; always store JSON entries (required defaults true)."""
+    return serialize_force_join_entries(parse_force_join_entries(raw))
+
+
+def set_shop_reseller_id(reseller_user_id: int | None):
+    return _shop_reseller_id.set(reseller_user_id)
+
+
+def reset_shop_reseller_id(token) -> None:
+    _shop_reseller_id.reset(token)
+
+
+def current_shop_reseller_id() -> int | None:
+    return _shop_reseller_id.get()
+
+
+def current_ui_snapshot() -> dict[str, str]:
+    """Best-effort settings snapshot for sync keyboard builders.
+
+    Prefers the per-request shop cache warmed by ``get_all_settings``;
+    falls back to defaults when the cache is cold.
+    """
+    rid = _shop_reseller_id.get()
+    cache_key = int(rid or 0)
+    hit = _SETTINGS_CACHE.get(cache_key)
+    if hit:
+        return dict(hit[1])
+    return dict(DEFAULT_SETTINGS)
+
+
+def _effective_reseller_id(reseller_id: int | None) -> int | None:
+    if reseller_id is not None:
+        return reseller_id
+    return _shop_reseller_id.get()
+
+
+def _referral_code() -> str:
+    alphabet = string.ascii_uppercase + string.digits
+    return "".join(secrets.choice(alphabet) for _ in range(8))
+
+
+async def _record_cross_bot_membership(
+    session: AsyncSession, user: BotUser, bot_shop_id: int | None, *, known_member: bool
+) -> None:
+    """Remember that the person now uses a bot other than the one that attributed them.
+
+    The attributing shop is recorded when the person is created, so only a visit to
+    another bot (a platform customer in a shop bot, or the reverse) needs a row; this
+    keeps the per-message path free of extra queries.
+    """
+    if known_member or user.role != Role.USER.value or int(user.id) == int(bot_shop_id or 0):
+        return
+    if (user.reseller_id or None) == (bot_shop_id or None):
+        return
+    from app.services.shop_membership import ensure_member
+
+    if await ensure_member(session, int(user.id), bot_shop_id):
+        await session.commit()
+
+
+async def _has_commerce_history(session: AsyncSession, user_id: int) -> bool:
+    """True when the user already owns a service or placed an order (any shop)."""
+    has_service = await session.scalar(
+        select(UserService.id).where(UserService.bot_user_id == user_id).limit(1)
+    )
+    if has_service is not None:
+        return True
+    has_order = await session.scalar(select(Order.id).where(Order.user_id == user_id).limit(1))
+    return has_order is not None
+
+
+async def get_or_create_user(
+    session: AsyncSession,
+    telegram_id: int,
+    *,
+    username: str | None = None,
+    full_name: str | None = None,
+    referred_by_code: str | None = None,
+    reseller_owner_id: int | None = None,
+) -> BotUser:
+    result = await session.execute(
+        select(BotUser).where(BotUser.telegram_id == telegram_id)
+    )
+    user = result.scalar_one_or_none()
+    settings = get_settings()
+    is_admin = telegram_id in settings.admin_ids
+
+    if user:
+        changed = False
+        from app.services.color_tags import DEFAULT_COLOR_TAG, normalize_color_tag
+
+        # Every user must have a risk-color tag; backfill legacy NULL / invalid.
+        normalized_tag = normalize_color_tag(getattr(user, "color_tag", None))
+        if (getattr(user, "color_tag", None) or "") != normalized_tag:
+            user.color_tag = normalized_tag or DEFAULT_COLOR_TAG
+            changed = True
+        if username and user.username != username:
+            user.username = username
+            changed = True
+        if full_name and user.full_name != full_name:
+            user.full_name = full_name
+            changed = True
+        if is_admin and user.role != Role.ADMIN.value:
+            user.role = Role.ADMIN.value
+            changed = True
+        # Demote sticky ADMIN when removed from ADMIN_IDS (unless still a reseller)
+        elif (
+            not is_admin
+            and user.role == Role.ADMIN.value
+            and telegram_id not in settings.admin_ids
+        ):
+            from app.db.models import ResellerProfile
+
+            profile = (
+                await session.execute(
+                    select(ResellerProfile).where(ResellerProfile.user_id == user.id)
+                )
+            ).scalar_one_or_none()
+            if profile and profile.is_active:
+                user.role = Role.RESELLER.value
+            else:
+                user.role = Role.USER.value
+            changed = True
+        # Sticky first-touch attribution for reseller shop bots. A customer who
+        # already bought elsewhere keeps their services and stays out of the shop's
+        # user list: attribution would hand the platform's services to the shop.
+        # A returning customer costs one indexed lookup (the membership of this shop); the history
+        # check and the writes only happen on the first visit.
+        known_member = False
+        if (
+            reseller_owner_id
+            and user.reseller_id is None
+            and user.id != reseller_owner_id
+            and user.role == Role.USER.value
+        ):
+            from app.services.shop_membership import ensure_member, is_member
+
+            known_member = await is_member(session, int(user.id), reseller_owner_id)
+            if not known_member and not await _has_commerce_history(session, int(user.id)):
+                user.reseller_id = reseller_owner_id
+                await ensure_member(session, int(user.id), reseller_owner_id)
+                changed = True
+        if changed:
+            await session.commit()
+            await session.refresh(user)
+        await _record_cross_bot_membership(session, user, reseller_owner_id, known_member=known_member)
+        return user
+
+    from app.services.referral_registration import ReferralRequired, find_registration_referrer
+
+    referrer = await find_registration_referrer(
+        session,
+        referred_by_code,
+        telegram_id=telegram_id,
+        reseller_owner_id=reseller_owner_id,
+    )
+    referred_by_id = referrer.id if referrer else None
+    if not is_admin:
+        ui = await get_all_settings(session, reseller_id=reseller_owner_id)
+        if on(ui.get("referral_required")) and referred_by_id is None:
+            raise ReferralRequired(ui, invalid=bool(referred_by_code))
+
+    assign_reseller = None
+    if reseller_owner_id and not is_admin:
+        assign_reseller = reseller_owner_id
+
+    from app.services.color_tags import DEFAULT_COLOR_TAG
+
+    user = BotUser(
+        telegram_id=telegram_id,
+        username=username,
+        full_name=full_name,
+        role=Role.ADMIN.value if is_admin else Role.USER.value,
+        referral_code=_referral_code(),
+        referred_by_id=referred_by_id,
+        reseller_id=assign_reseller,
+        color_tag=DEFAULT_COLOR_TAG,
+    )
+    session.add(user)
+    try:
+        await session.commit()
+    except IntegrityError:
+        await session.rollback()
+        result = await session.execute(
+            select(BotUser).where(BotUser.telegram_id == telegram_id)
+        )
+        existing = result.scalar_one_or_none()
+        if existing:
+            return existing
+        raise
+    await session.refresh(user)
+    # Don't attribute the reseller owner to themselves
+    if assign_reseller and user.id == assign_reseller:
+        user.reseller_id = None
+        await session.commit()
+        await session.refresh(user)
+    if user.role == Role.USER.value:
+        from app.services.shop_membership import ensure_member
+
+        await ensure_member(session, int(user.id), user.reseller_id)
+        await session.commit()
+    if referred_by_id:
+        try:
+            from app.services.loyalty import on_user_referred
+
+            await on_user_referred(session, referred=user, source="telegram")
+        except Exception:
+            logger.debug("get_or_create_user: ignored failure", exc_info=True)
+    return user
+
+
+async def get_setting(
+    session: AsyncSession,
+    key: str,
+    default: str = "",
+    *,
+    reseller_id: int | None = None,
+) -> str:
+    rid = _effective_reseller_id(reseller_id)
+    if rid:
+        from app.db.models import ResellerSetting
+
+        result = await session.execute(
+            select(ResellerSetting).where(
+                ResellerSetting.reseller_user_id == rid,
+                ResellerSetting.key == key,
+            )
+        )
+        row = result.scalar_one_or_none()
+        if row is not None:
+            return row.value
+        # Shop isolation: never fall through to live platform Setting rows
+        return DEFAULT_SETTINGS.get(key, default)
+    result = await session.execute(select(Setting).where(Setting.key == key))
+    row = result.scalar_one_or_none()
+    if row:
+        return row.value
+    return default
+
+
+async def set_setting(
+    session: AsyncSession,
+    key: str,
+    value: str,
+    *,
+    reseller_id: int | None = None,
+) -> None:
+    from app.services.reply_label_aliases import (
+        ALIAS_SETTING_KEY,
+        merge_alias_updates_for_payload,
+    )
+    from app.services.rich_text import is_button_label_key
+
+    rid = _effective_reseller_id(reseller_id)
+    alias_extra: dict[str, str] | None = None
+    if key != ALIAS_SETTING_KEY and is_button_label_key(key):
+        # Snapshot current UI (incl. prior label) so stale keyboards keep working.
+        existing_ui = await get_all_settings(session, reseller_id=rid)
+        alias_extra = merge_alias_updates_for_payload(
+            existing_ui=existing_ui, payload={key: value}
+        )
+
+    if rid:
+        from app.db.models import ResellerSetting
+
+        keys = [key] + (list(alias_extra.keys()) if alias_extra else [])
+        result = await session.execute(
+            select(ResellerSetting).where(
+                ResellerSetting.reseller_user_id == rid,
+                ResellerSetting.key.in_(keys),
+            )
+        )
+        existing = {r.key: r for r in result.scalars().all()}
+        writes = {key: value}
+        if alias_extra:
+            writes.update(alias_extra)
+        for k, v in writes.items():
+            row = existing.get(k)
+            if row:
+                row.value = v
+            else:
+                session.add(
+                    ResellerSetting(reseller_user_id=rid, key=k, value=v)
+                )
+        await session.commit()
+        clear_settings_cache(rid)
+        return
+    keys = [key] + (list(alias_extra.keys()) if alias_extra else [])
+    result = await session.execute(select(Setting).where(Setting.key.in_(keys)))
+    existing = {r.key: r for r in result.scalars().all()}
+    writes = {key: value}
+    if alias_extra:
+        writes.update(alias_extra)
+    for k, v in writes.items():
+        row = existing.get(k)
+        if row:
+            row.value = v
+        else:
+            session.add(Setting(key=k, value=v))
+    await session.commit()
+    # Only invalidate platform cache — do not flush isolated shop caches
+    clear_settings_cache(0)
+
+
+async def _keep_saved_psp_credentials(
+    session: AsyncSession, values: dict[str, str], rid: int | None
+) -> dict[str, str]:
+    """A gateway submitted without its credential keeps the one already saved."""
+    if KEY_PSP_GATEWAYS not in values:
+        return values
+    existing_ui = await get_all_settings(session, reseller_id=rid)
+    return {**values, KEY_PSP_GATEWAYS: merge_submitted_psp_gateways(values[KEY_PSP_GATEWAYS], existing_ui)}
+
+
+async def set_settings_bulk(
+    session: AsyncSession,
+    values: dict[str, str],
+    *,
+    reseller_id: int | None = None,
+) -> None:
+    """Upsert many settings with a single commit (avoids lock storms on menu save)."""
+    if not values:
+        return
+    from app.services.payment_destinations import (
+        KEY_CARDS,
+        KEY_CRYPTO,
+        KEY_GATEWAYS,
+        enrich_payment_settings,
+    )
+    from app.services.reply_label_aliases import (
+        ALIAS_SETTING_KEY,
+        merge_alias_updates_for_payload,
+    )
+    from app.services.rich_text import is_button_label_key
+
+    merged = dict(values)
+    if KEY_CARDS in merged or KEY_GATEWAYS in merged or KEY_CRYPTO in merged:
+        merged = enrich_payment_settings({**DEFAULT_SETTINGS, **merged})
+        for legacy in (
+            "card_number",
+            "card_holder",
+            "gateway_name",
+            "gateway_link",
+            "crypto_asset",
+            "crypto_network",
+            "crypto_address",
+        ):
+            if legacy in merged:
+                values[legacy] = merged[legacy]
+    rid = _effective_reseller_id(reseller_id)
+    values = await _keep_saved_psp_credentials(session, values, rid)
+    if any(is_button_label_key(k) for k in values if k != ALIAS_SETTING_KEY):
+        existing_ui = await get_all_settings(session, reseller_id=rid)
+        alias_extra = merge_alias_updates_for_payload(
+            existing_ui=existing_ui, payload=values
+        )
+        if alias_extra:
+            values = {**values, **alias_extra}
+    keys = list(values.keys())
+    if rid:
+        from app.db.models import ResellerSetting
+
+        result = await session.execute(
+            select(ResellerSetting).where(
+                ResellerSetting.reseller_user_id == rid,
+                ResellerSetting.key.in_(keys),
+            )
+        )
+        existing = {r.key: r for r in result.scalars().all()}
+        for key, value in values.items():
+            row = existing.get(key)
+            if row:
+                row.value = value
+            else:
+                session.add(
+                    ResellerSetting(reseller_user_id=rid, key=key, value=value)
+                )
+        await session.commit()
+        clear_settings_cache(rid)
+        return
+    result = await session.execute(select(Setting).where(Setting.key.in_(keys)))
+    existing = {r.key: r for r in result.scalars().all()}
+    for key, value in values.items():
+        row = existing.get(key)
+        if row:
+            row.value = value
+        else:
+            session.add(Setting(key=key, value=value))
+    await session.commit()
+    clear_settings_cache(0)
+
+
+DEFAULT_SETTINGS = {
+    "shop_title": "کلاک بات",
+    "welcome_text": (
+        "سلام {name} 👋\n\n"
+        "به فروشگاه کلاک خوش آمدید.\n"
+        "از منوی زیر می‌توانید سرویس بخرید، وضعیت را ببینید و پشتیبانی بگیرید."
+    ),
+    "payment_cards": "[]",
+    "payment_cards_random": "0",
+    "payment_gateways": "[]",
+    "payment_crypto_wallets": "[]",
+    "card_number": "",
+    "card_holder": "",
+    "support_text": "پیام خود را بنویسید؛ تیم پشتیبانی پاسخ می‌دهد.",
+    "support_contacts": "[]",
+    "force_join_channel": "",
+    "force_join_enabled": "0",
+    "force_join_msg": (
+        "برای استفاده از ربات ابتدا از دکمه‌های زیر عضو کانال شوید، "
+        "سپس «عضو شدم» را بزنید."
+    ),
+    "btn_force_join": "عضویت در کانال",
+    "btn_force_join_check": "✅ عضو شدم",
+    "terms_entry_enabled": "0",
+    "terms_entry_text": "",
+    "terms_entry_btn": "موافقم",
+    "terms_entry_reaccept": "1",
+    "terms_buy_user_enabled": "0",
+    "terms_buy_user_text": "",
+    "terms_buy_user_btn": "موافقم",
+    "terms_buy_user_reaccept": "1",
+    "terms_buy_reseller_enabled": "0",
+    "terms_buy_reseller_text": "",
+    "terms_buy_reseller_btn": "موافقم",
+    "terms_buy_reseller_reaccept": "1",
+    "trial_enabled": "0",
+    "trial_require_contact": "0",
+    "purchase_require_contact": "0",
+    "trial_require_iran_phone": "0",
+    "trial_min_account_minutes": "0",
+    "receipt_dup_policy": "warn",
+    "connection_guides": "[]",
+    "btn_guides": "📘 آموزش اتصال",
+    "btn_guide_open_link": "🔗 باز کردن لینک اشتراک",
+    "referral_bonus": "0",
+    "referral_required": "0",
+    "referral_required_text": (
+        "برای استفاده از این فروشگاه، داشتن کد معرف الزامی است.\n\n"
+        "بدون کد معرف معتبر نمی‌توانید ثبت‌نام کنید و سرویس بخرید.\n\n"
+        "از دوستی که عضو همین فروشگاه است بخواهید کد یا لینک دعوت خود را از بخش "
+        "«باشگاه مشتریان ← دعوت دوستان» برای شما بفرستد.\n\n"
+        "کد معرف را در همین گفتگو ارسال کنید یا از لینک دعوت او وارد ربات شوید."
+    ),
+    "loyalty_enabled": "1",
+    "points_to_wallet_rate": "100",
+    "lucky_wheel_enabled": "0",
+    "lucky_wheel_spin_cost_points": "10",
+    "lucky_wheel_daily_limit": "3",
+    "lucky_wheel_cooldown_seconds": "0",
+    "lucky_wheel_free_spins_daily": "0",
+    "loyalty_submenu_order": "loy_referral,loy_points,loy_rewards,loy_wheel,loy_history",
+    "auto_approve_payments": "0",
+    "crypto_rate_mode": "off",
+    "crypto_rate_asset": "USDT",
+    "crypto_rate_manual": "",
+    "crypto_rate_api_url": "",
+    "crypto_rate_api_path": "",
+    "crypto_rate_api_divisor": "1",
+    "crypto_rate_margin_percent": "0",
+    "crypto_quote_minutes": "15",
+    "auto_approve_after_minutes": "0",
+    "auto_approve_after_max_amount": "0",
+    "auto_approve_after_returning_only": "1",
+    "faq_text": (
+        "❓ حجم تمام شد چه کنم؟\nاز بخش سرویس‌ها → تمدید.\n\n"
+        "❓ لینک کار نمی‌کند؟\nQR یا لینک را دوباره از سرویس‌های من بگیرید."
+    ),
+    "guide_text": (
+        "۱) سرویس را بخرید و پرداخت را انجام دهید\n"
+        "۲) لینک یا QR اشتراک را دریافت کنید\n"
+        "۳) در کلاینت (v2rayNG / Streisand / …) لینک را Import کنید"
+    ),
+    "purchase_success_text": "پرداخت شما تأیید شد و سرویس فعال است.\nشماره سفارش: #{order_id}",
+    "delivery_title": "✅ سرویس آماده است",
+    "wallet_success_title": "💰 شارژ کیف پول",
+    "wallet_success_text": "مبلغ {amount} به کیف پول شما اضافه شد.",
+    "payment_ok_title": "✅ پرداخت تأیید شد",
+    "payment_reject_text": "پرداخت شما رد شد. اگر اشتباهی رخ داده با پشتیبانی در تماس باشید.",
+    "pending_order_cleanup_enabled": "0",
+    "pending_order_ttl_hours": "48",
+    "pending_order_cleanup_awaiting_approval": "0",
+    "pending_order_approval_ttl_hours": "72",
+    "pending_order_cleanup_last_run": "",
+    "pending_order_cleanup_last_count": "0",
+    "card_pay_text": (
+        "مبلغ قابل پرداخت: <b>{amount}</b>\n"
+        "شماره کارت: <code>{card}</code>\n"
+        "به نام: {holder}\n\n"
+        "پس از واریز، عکس رسید را در همین گفتگو ارسال کنید."
+    ),
+    "referral_text": (
+        "با دعوت دوستان پاداش بگیرید.\n\n"
+        "کد دعوت شما: <code>{code}</code>\n"
+        "لینک دعوت:\n{link}"
+    ),
+    "empty_services_text": "هنوز سرویسی ندارید.\nاز بخش «خرید سرویس» شروع کنید.",
+    "shop_empty_text": "در حال حاضر پلنی برای فروش فعال نیست.",
+    "qr_enabled": "1",
+    "qr_caption": "📱 QR اشتراک\nبا دوربین گوشی اسکن کنید یا در کلاینت Import کنید.",
+    "qr_background": "",
+    "show_sub_link_in_text": "1",
+    # Admin Telegram notification toggles (settings → اعلان‌ها)
+    "notify_new_subscription": "1",
+    "notify_pending_approval": "1",
+    "notify_new_order": "0",
+    "notify_trial_claimed": "1",
+    "notify_wallet_topup": "1",
+    "notify_new_ticket": "1",
+    "notify_service_cancellation": "1",
+    "notify_panel_update": "1",
+    "notify_panel_capacity": "1",
+    "notify_panel_delivery_failures": "1",
+    "notify_service_import_request": "1",
+    "notify_auto_approve": "1",
+    "notify_account_edits": "1",
+    # User low-remaining alerts (volume / time)
+    "user_alert_low_enabled": "0",
+    "user_alert_low_traffic_pct": "20",
+    "user_alert_low_time_pct": "20",
+    "first_use_nudge_enabled": "0",
+    # Reseller panel URLs (setup links + messages). Empty = system defaults
+    "reseller_panel_base_url": "",
+    "reseller_pg_panel_base_url": "",
+    # Cached Telegram bot profile (synced via appearance tab → Bot API)
+    "bot_tg_name": "",
+    "bot_tg_description": "",
+    "bot_tg_short_description": "",
+    "bot_tg_photo": "",
+
+    "btn_shop": "🟢🛒 خرید سرویس",
+    "btn_services": "🔵📦 سرویس‌های من",
+    "btn_wallet": "🟡👛 کیف پول",
+    "btn_wallet_topup": "🟢➕ شارژ کیف پول",
+    "btn_wallet_tx": "🟡📜 تراکنش‌ها",
+    "btn_support": "🟣🎧 پشتیبانی",
+    "btn_restart": "🔄 شروع مجدد",
+    "show_restart_button": "1",
+    # In-menu «✏️ ویرایش این منو» for owners; off until the platform owner enables it.
+    "screen_editor_enabled": "0",
+    "btn_support_new": "🟣✉️ تیکت جدید",
+    "btn_support_list": "📋 تیکت‌های من",
+    "btn_guide": "📘 راهنما",
+    "btn_faq": "❓ سوالات متداول",
+    "btn_referral": "👥 دعوت دوستان",
+    "btn_loyalty": "⭐ باشگاه مشتریان",
+    "btn_loy_points": "⭐ امتیاز من",
+    "btn_loy_rewards": "🎁 جوایز",
+    "btn_loy_wheel": "🎡 چرخ شانس",
+    "btn_loy_history": "📜 تاریخچه",
+    "btn_reseller_apply": "🤝 درخواست نمایندگی",
+    "btn_miniapp": "📱 مینی‌اپ",
+    # Internal: previous reply-keyboard labels → action (JSON). Not shown in UI.
+    "reply_btn_label_aliases": "{}",
+    "btn_reseller": "🤝 پنل نماینده",
+    "btn_reseller_creds": "🔐 اطلاعات ورود پنل و ربات",
+    "btn_admin": "🛠 پنل ادمین",
+    "btn_menu_home": "🏠 منوی اصلی",
+    "btn_adm_hub_ops": "🗓 عملیات روزانه",
+    "btn_adm_hub_people": "👤 افراد",
+    "btn_adm_hub_product": "📦 محصول و پاسارگارد",
+    "btn_adm_hub_marketing": "🎯 بازاریابی",
+    "btn_adm_hub_system": "🛠 سیستم",
+    "btn_adm_edit_mode": "✏️ حالت ویرایش منوها",
+    # Submenu and hub button labels (editable from the bot editor and settings).
+    "btn_pg_stats": "🏠 نمای کلی",
+    "btn_pg_users": "👥 کاربران",
+    "btn_pg_create": "➕ ساخت کاربر",
+    "btn_pg_search": "🔎 جستجوی یوزر",
+    "btn_pg_nodes": "🕸 نودها",
+    "btn_pg_group": "📁 ساخت گروه",
+    "btn_pg_template": "📋 ساخت تمپلیت",
+    "btn_adm_users_list": "📋 لیست کاربران",
+    "btn_adm_users_search": "🔎 جستجو",
+    "btn_adm_users_web": "🌐 مدیریت کامل در وب‌پنل",
+    "btn_adm_res_list": "📋 لیست نمایندگان",
+    "btn_adm_res_search": "🔎 جستجوی نماینده",
+    "btn_adm_res_apps": "📋 درخواست‌های در انتظار",
+    "btn_adm_res_add": "➕ افزودن نماینده",
+    "btn_adm_st_shop": "نام و متن‌ها",
+    "btn_adm_st_menu": "ظاهر منو",
+    "btn_adm_st_labels": "متن دکمه‌ها",
+    "btn_adm_st_pay": "پرداخت",
+    "btn_adm_st_support": "پشتیبان‌ها",
+    "btn_adm_st_access": "تحویل سرویس",
+    "btn_adm_st_limits": "ورود و عضویت",
+    "btn_adm_st_buy": "قوانین خرید",
+    "btn_adm_st_guides": "آموزش اتصال",
+    "btn_adm_st_notify": "اعلان‌ها",
+    "btn_adm_st_panel": "🌐 وب‌پنل",
+    "btn_backup_create": "🆕 ساخت بکاپ",
+    "btn_backup_create_env": "🆕 بکاپ + .env",
+    "btn_backup_upload": "📤 آپلود فایل بکاپ",
+    "btn_backup_refresh": "🔄 تازه‌سازی لیست",
+    "btn_bc_aud_all": "📢 همه",
+    "btn_bc_aud_users": "👥 کاربران عادی",
+    "btn_bc_aud_resellers": "🤝 فقط نمایندگان",
+    "btn_bc_aud_admins": "🛠 ادمین‌ها",
+    "btn_adm_plans_aud_users": "📦 پلن‌های کاربران",
+    "btn_adm_plans_aud_resellers": "🤝 پلن‌های نمایندگان",
+    "btn_adm_plans_categories": "🏷 برچسب دسته",
+    "btn_adm_plans_addons": "⏱ بسته حجم و زمان",
+    "btn_adm_plans_add": "➕ افزودن پلن",
+    "btn_adm_plans_kind_res_fixed": "اشتراک ثابت",
+    "btn_adm_plans_kind_res_payg": "اشتراک PAYG",
+    "btn_adm_plans_kind_res_addon_vol": "بسته حجم",
+    "btn_adm_plans_kind_res_addon_users": "بسته کاربر",
+    "btn_res_plan_add": "➕ پلن جدید",
+    "btn_res_plan_categories": "🏷 برچسب دسته",
+    "btn_res_plan_addons": "⏱ بسته حجم/زمان",
+    "btn_res_st_shop": "نام و متن‌ها",
+    "btn_res_st_menu": "ظاهر منو",
+    "btn_res_st_labels": "متن دکمه‌ها",
+    "btn_res_st_pay": "پرداخت",
+    "btn_res_st_support": "پشتیبان‌ها",
+    "btn_res_st_access": "تحویل سرویس",
+    "btn_res_st_limits": "ورود و عضویت",
+    "btn_res_st_buy": "قوانین خرید",
+    "btn_res_st_guides": "آموزش اتصال",
+    "btn_res_st_notify": "اعلان‌ها",
+    "btn_res_st_bot": "ربات",
+    "btn_res_st_panel": "🌐 وب‌پنل",
+    "btn_svc_refresh": "♻️ رفرش وضعیت",
+    "btn_svc_wireguard": "🔐 فایل WireGuard",
+    "btn_svc_auto": "⚙️ تنظیمات خودکار",
+    "btn_svc_cancel": "📝 درخواست لغو سرویس",
+    "btn_svc_delete": "🗑 حذف سرویس",
+    "btn_svc_more": "⚙️ بیشتر",
+    "btn_svc_add_existing": "🔗 اتصال اشتراک قبلی",
+    "btn_adm_st_find": "🔍 جستجو در تنظیمات",
+    "btn_adm_plans_view": "📋 مشاهده پلن‌ها",
+    "btn_adm_gift_codes": "🎁 کدهای هدیه",
+    "btn_adm_campaigns": "📣 کمپین‌ها",
+    "btn_adm_loy_overview": "📊 نمای کلی",
+    "btn_adm_loy_rules": "📐 قوانین امتیاز",
+    "btn_adm_loy_rewards": "🎁 جوایز",
+    "btn_adm_loy_tiers": "🏅 سطوح",
+    "btn_adm_loy_settings": "⚙️ تنظیمات باشگاه",
+    "btn_adm_loy_ref_text": "📝 متن دعوت",
+    "btn_res_addon_packs": "📦 بسته‌های حجم/کاربر",
+    "btn_res_renew": "🔄 تمدید سرویس",
+    "btn_res_dash": "🏠 خانه نماینده",
+    "btn_res_users": "👥 مشتریان من",
+    "btn_res_add_rep": "➕ افزودن نماینده",
+    "btn_res_reports": "📈 گزارش‌ها",
+    "btn_res_stats": "📊 آمار",
+    "btn_res_plans": "💎 پلن‌های فروش",
+    "btn_res_orders": "🛒 سفارش‌های مشتریان",
+    "btn_res_payments": "🧾 رسیدهای در انتظار",
+    "btn_res_tickets": "🎫 تیکت‌های مشتریان",
+    "btn_res_loyalty": "⭐ باشگاه مشتریان",
+    "btn_res_settings": "⚙️ تنظیمات فروشگاه",
+    "btn_res_billing": "💰 کیف پول PAYG",
+    "btn_res_grp_daily": "📥 کارهای روزانه",
+    "btn_res_grp_customers": "👥 مشتریان",
+    "btn_res_grp_shop": "🏪 فروشگاه من",
+    "btn_res_grp_account": "💼 حساب من",
+    "btn_adm_dash": "📊 داشبورد",
+    "btn_adm_reports": "📈 گزارش‌ها",
+    "btn_adm_orders": "🛒 سفارش‌ها",
+    "btn_adm_payments": "🧾 رسیدها",
+    "btn_adm_tickets": "🎫 تیکت‌ها",
+    "btn_adm_plans": "📦 پلن‌ها",
+    "btn_adm_pg": "🖥 پاسارگارد",
+    "btn_adm_users": "👥 کاربران",
+    "btn_adm_resellers": "🤝 نمایندگان",
+    "btn_adm_loyalty": "⭐ باشگاه مشتریان",
+    "btn_adm_settings": "⚙️ تنظیمات",
+    "btn_adm_broadcast": "📢 پیام گروهی",
+    "btn_adm_backup": "💾 بکاپ / ریستور",
+    "btn_adm_preview": "👁 پیش‌نمایش منوی کاربر",
+    "btn_adm_exit_preview": "🛠 بازگشت به پنل ادمین",
+    "btn_buy_continue": "🟢✅ ادامه خرید",
+    "btn_back": "⬅️ بازگشت",
+    "btn_pay_wallet": "🟢👛 پرداخت از کیف پول",
+    "btn_pay_card": "🔵💳 کارت به کارت",
+    "btn_pay_gateway": "🟢🌐 درگاه پرداخت",
+    "btn_pay_crypto": "🟡💎 رمزارز",
+    "btn_pay_stars": "⭐ استارز تلگرام",
+    "btn_pay_discount": "🏷 کد تخفیف",
+    "btn_cancel": "❌ انصراف",
+    "btn_renew": "🔄 تمدید",
+    "btn_svc_addon": "➕ حجم / زمان",
+    "btn_sub_link": "🔗 لینک و QR",
+    "show_guide": "0",
+    "show_faq": "0",
+    "show_referral": "1",
+    "show_loyalty": "1",
+    "show_reseller_apply": "1",
+    "show_wallet": "1",
+    "show_support": "1",
+    "show_miniapp": "1",
+    "menu_layout": "compact",
+    "nav_mode": "inline",
+    "wallet_topup_presets": "50000,100000,200000,500000",
+    "menu_order": "shop,services,wallet,support,loyalty,reseller_apply",
+    "pg_username_prefix": "clk",
+    "pg_username_suffix": "",
+    "pg_username_pattern": "{prefix}_{random}{suffix}",
+    "custom_plan_enabled": "0",
+    "custom_plan_price_per_gb": "1000",
+    "custom_plan_price_per_day": "500",
+    "custom_plan_min_gb": "1",
+    "custom_plan_max_gb": "500",
+    "custom_plan_min_days": "1",
+    "custom_plan_max_days": "365",
+    "custom_plan_template_id": "",
+    "custom_plan_group_ids": "",
+    "custom_plan_username_prefix": "",
+    "custom_plan_username_suffix": "",
+    "custom_plan_username_pattern": "",
+    "custom_plan_button_style": "",
+    # Wholesale / bulk sales
+    "wholesale_enabled": "0",
+    "wholesale_min_qty": "5",
+    "wholesale_max_qty": "20",
+    # JSON list: [{"min":5,"percent":10},{"min":20,"percent":20}]
+    "wholesale_tiers": '[{"min":5,"percent":10},{"min":20,"percent":20}]',
+    "btn_wholesale": "📦 فروش عمده",
+    # Payment methods
+    "pay_wallet_enabled": "1",
+    "pay_card_enabled": "1",
+    "pay_gateway_enabled": "0",
+    "pay_crypto_enabled": "0",
+    "pay_stars_enabled": "0",
+    "pay_psp_enabled": "0",
+    "pay_bbc_enabled": "0",
+    "pay_card_auto_enabled": "0",
+    "pay_discount_enabled": "1",
+    # JSON list of API gateways (see psp_gateways.py); empty = the single psp_* gateway below.
+    "psp_gateways": "[]",
+    "psp_provider": "zarinpal",
+    "psp_merchant_id": "",
+    "psp_pay_url": "",
+    "psp_sunpay_request_method": "GET",
+    # Telegram «ورود به درگاه»: direct PSP URL (default) or panel /go/ hop.
+    "psp_checkout_link_mode": "direct",
+    "psp_sandbox": "1",
+    "psp_pay_text": (
+        "مبلغ قابل پرداخت: <b>{amount}</b>\n"
+        "از دکمه زیر وارد درگاه شوید و پرداخت را تکمیل کنید.\n"
+        "پس از پرداخت، به همین چت ربات برگردید؛ تأیید و تحویل خودکار است."
+    ),
+    "btn_pay_psp": "🔵🏦 درگاه آنلاین",
+    "bbc_api_key": "",
+    "bbc_pay_text": (
+        "مبلغ: <b>{amount}</b>\n"
+        "مبلغ دقیق واریز: <b>{unique_amount}</b>\n"
+        "از دکمهٔ زیر وارد صفحهٔ پرداخت شوید و همین مبلغ را کارت‌به‌کارت کنید."
+    ),
+    "btn_pay_bbc": "💳 بزن به کارت",
+    "card_auto_provider": "generic",
+    "card_auto_webhook_secret": "",
+    "card_auto_hint_text": (
+        "اگر تأیید خودکار کارت روشن باشد، پس از واریز دقیق مبلغ، پرداخت بدون رسید عکس تأیید می‌شود."
+    ),
+    "gateway_name": "درگاه پرداخت",
+    "gateway_link": "",
+    "gateway_pay_text": (
+        "مبلغ قابل پرداخت: <b>{amount}</b>\n"
+        "از دکمه زیر وارد درگاه شوید و پرداخت را انجام دهید.\n"
+        "سپس عکس رسید را در همین گفتگو بفرستید."
+    ),
+    "crypto_asset": "USDT",
+    "crypto_network": "TRC20",
+    "crypto_address": "",
+    "crypto_pay_text": (
+        "مبلغ تقریبی سفارش: <b>{amount}</b>\n"
+        "رمزارز: <b>{asset}</b> ({network})\n"
+        "آدرس ولت:\n<code>{address}</code>\n\n"
+        "پس از واریز، عکس رسید/هش تراکنش را در همین گفتگو بفرستید."
+    ),
+    "stars_toman_per_star": "500",
+    "stars_title": "خرید سرویس",
+    "stars_description": "پرداخت سفارش با استارز تلگرام",
+    # Unified Billing (platform; PAYG resellers)
+    "billing_enabled": "0",
+    "billing_price_per_gb": "0",
+    "billing_low_balance": "10000",
+    "billing_on_empty": "block_provision",
+    "billing_tick_minutes": "15",
+    "volume_external_sync_minutes": "15",
+    # UX20 ops
+    "shop_maintenance_enabled": "0",
+    "shop_maintenance_text": (
+        "فروشگاه موقتاً در حال به‌روزرسانی است.\n"
+        "تمدید و پشتیبانی فعال است — کمی بعد دوباره سر بزنید."
+    ),
+    "admin_daily_report_enabled": "1",
+    "admin_daily_report_hour": "0",
+    "admin_daily_report_last": "",
+    "admin_daily_report_template": "",
+    "admin_daily_report_metrics": "",
+    "subordinate_report_enabled": "1",
+    "subordinate_report_last": "",
+    "backup_schedule_enabled": "1",
+    "backup_schedule_hour": "3",
+    "backup_include_env_scheduled": "0",
+    "backup_last_ok_at": "",
+    "backup_last_attempt_at": "",
+    "backup_last_verify_ok": "",
+    "backup_keep_count": "10",
+    "backup_telegram_enabled": "0",
+    "backup_telegram_custom_bot": "0",
+    "backup_telegram_bot_token": "",
+    "backup_telegram_chat_ids": "",
+    "backup_telegram_last_status": "",
+    "backup_telegram_last_at": "",
+    "capacity_warn_pct": "80",
+    "receipt_auto_match_enabled": "1",
+    "receipt_match_window_minutes": "120",
+    "action_center_expire_days": "3",
+    "funnel_tracking_enabled": "1",
+    "one_tap_renew_enabled": "1",
+    "service_import_enabled": "0",
+    "chat_cleanup_enabled": "1",
+    "menu_keyboard_persistent": "0",
+    # Shop Mini Apps: platform switch and each shop's own switch, both off until turned on.
+    "miniapp_shops_enabled": "0",
+    "miniapp_shop_enabled": "0",
+    # Mini App brand: "" keeps the default accent colour and shows no notice.
+    "miniapp_accent_color": "",
+    "miniapp_notice": "",
+    "service_import_mode": "instant",
+    "service_import_max_per_user": "5",
+    "service_import_paths": "",
+    "service_import_admins": "",
+}
+DEFAULT_SETTINGS.update(button_style_defaults())
+DEFAULT_SETTINGS.update(screen_text_defaults())
+DEFAULT_SETTINGS.update(MONITOR_TEXT_DEFAULTS)
+
+# field kinds: text | textarea | toggle | select | number | image
+# (key, label, kind, help?, options?)
+# Tabs for /settings?tab=... (order matches product IA)
+SETTINGS_TABS: list[tuple[str, str]] = [
+    ("welcome", "خوش‌آمد و هویت"),
+    ("appearance", "هویت ربات"),
+    ("messages", "متن پیام‌ها"),
+    ("buttons", "متن دکمه‌ها"),
+    (SCREEN_TEXT_TAB, "تیتر و توضیح منوها"),
+    ("colors", "رنگبندی دکمه‌ها"),
+    ("menu", "منوی بات"),
+    ("miniapp", "مینی‌اپ"),
+    ("links", "لینک‌های سریع"),
+    ("qr", "QR اشتراک"),
+    ("naming", "نام‌گذاری سرویس"),
+    ("limits", "محدودیت"),
+    ("service_import", "افزودن سرویس قبلی"),
+    ("guides", "آموزش اتصال"),
+    ("notifications", "نوتیفیکیشن"),
+    ("daily_report", "گزارش روزانه"),
+    ("bot", "ربات و اتصال"),
+]
+
+# Legacy bot-settings tabs moved to page-level modals (finance / support / loyalty).
+SETTINGS_DOMAIN_REDIRECTS: dict[str, str] = {
+    "payment": "/finance?tab=orders&settings=payment",
+    "billing": "/finance?tab=orders&settings=billing",
+    "cleanup": "/finance?tab=orders&settings=cleanup",
+    "finance": "/finance?tab=orders&settings=payment",
+    "supports": "/tickets?supports=1",
+    "loyalty": "/loyalty?settings=referral",
+    "reseller": "/resellers",
+    # Merged into «محدودیت»
+    "forcejoin": "/settings?tab=limits",
+    "terms": "/settings?tab=limits",
+    # PG connection lives under «ربات و اتصال»
+    "pasarguard": "/settings?tab=bot",
+}
+
+# Web-panel settings (sidebar under dashboard — not bot settings tabs)
+PANEL_SETTINGS_TABS: list[tuple[str, str]] = [
+    ("general", "عمومی"),
+    ("backup", "بکاپ"),
+    ("pwa", "ظاهر و برند"),
+    # Tab key stays "ssl" so saved links keep working.
+    ("ssl", "دامنه‌ها"),
+    ("update", "آپدیت"),
+]
+PANEL_SETTINGS_KEYS = {t[0] for t in PANEL_SETTINGS_TABS}
+ALL_SETTINGS_TABS: list[tuple[str, str]] = [*SETTINGS_TABS, *PANEL_SETTINGS_TABS]
+
+BUTTON_LABELS_GROUP = "متن دکمه‌های منو"
+
+# Settings fields shown only while another select field has one of the listed values:
+# key -> (controlling key, values that show it). The form hides the rest and keeps their saved values.
+SETTING_VISIBILITY: dict[str, tuple[str, tuple[str, ...]]] = {
+    "auto_approve_after_minutes": ("auto_approve_payments", ("1",)),
+    "auto_approve_after_max_amount": ("auto_approve_payments", ("1",)),
+    "auto_approve_after_returning_only": ("auto_approve_payments", ("1",)),
+    "crypto_rate_asset": ("crypto_rate_mode", ("manual", "api")),
+    "crypto_rate_manual": ("crypto_rate_mode", ("manual", "api")),
+    "crypto_rate_margin_percent": ("crypto_rate_mode", ("manual", "api")),
+    "crypto_quote_minutes": ("crypto_rate_mode", ("manual", "api")),
+    "crypto_rate_api_url": ("crypto_rate_mode", ("api",)),
+    "crypto_rate_api_path": ("crypto_rate_mode", ("api",)),
+    "crypto_rate_api_divisor": ("crypto_rate_mode", ("api",)),
+}
+
+SETTING_GROUPS = {
+    "خوش‌آمد و هویت": [
+        ("shop_title", "نام فروشگاه", "text", "بالای منوی اصلی ربات دیده می‌شود"),
+        (
+            "welcome_text",
+            "پیام خوش‌آمد (/start)",
+            "textarea",
+            "اولین پیامی که کاربر بعد از استارت می‌بیند. متغیرها: {user_name} (قدیمی: {name})، {shop_title} — فهرست کامل: /message-variables",
+        ),
+    ],
+    "متن پیام‌ها": [
+        ("guide_text", "متن راهنما", "textarea", "دستور /help در تلگرام"),
+        ("faq_text", "متن سوالات متداول", "textarea", "قابل استفاده در پیام‌ها"),
+        ("empty_services_text", "وقتی سرویسی ندارد", "textarea", "پیام بخش سرویس‌های من اگر لیست خالی باشد"),
+        ("shop_empty_text", "وقتی پلنی نیست", "textarea", "پیام فروشگاه اگر پلن فعالی نباشد"),
+        ("delivery_title", "عنوان پیام تحویل سرویس", "text", "مثلاً: ✅ سرویس آماده است"),
+        ("purchase_success_text", "متن موفقیت خرید", "textarea", "متغیرها: {order_id} {plan_name} {plan_type} — فهرست: /message-variables"),
+        ("wallet_success_title", "عنوان موفقیت شارژ کیف پول", "text", "عنوان پیام بعد از تأیید شارژ"),
+        ("wallet_success_text", "متن موفقیت شارژ کیف پول", "textarea", "متغیرها: {amount} {payment_id}"),
+        ("payment_ok_title", "عنوان تأیید پرداخت", "text", "عنوان پیام وقتی پرداخت غیر از شارژ کیف پول تأیید می‌شود"),
+        # Connection status is still being built; its texts come last.
+        ("connection_status_title", "عنوان وضعیت اتصال مشتری", "text", "بدون متغیر"),
+        ("connection_status_empty", "فهرست وضعیت خالی", "textarea", "بدون متغیر"),
+        ("connection_status_error", "خطای دریافت وضعیت", "textarea", "بدون متغیر"),
+        ("connection_status_admin_title", "عنوان مدیریت وضعیت اتصال", "text", "بدون متغیر"),
+        ("connection_status_account_prompt", "تنظیم کاربر تست", "textarea", "بدون متغیر"),
+        ("connection_status_name_prompt", "دریافت نام عمومی هاست", "text", "بدون متغیر"),
+        ("connection_status_order_prompt", "دریافت ترتیب هاست", "text", "بدون متغیر"),
+    ],
+    "متن پشتیبانی ربات": [
+        ("support_text", "متن صفحه پشتیبانی", "textarea", "بالای دکمه/فرم پشتیبانی در ربات نمایش داده می‌شود"),
+    ],
+    "معرف اجباری": [
+        (
+            "referral_required",
+            "معرف اجباری",
+            "toggle",
+            "اگر روشن باشد، کاربر جدید بدون کد معرف معتبر ثبت‌نام نمی‌شود و نمی‌تواند بخرد. کاربران قبلی معاف‌اند.",
+        ),
+        (
+            "referral_required_text",
+            "پیام دریافت معرف",
+            "textarea",
+            "پیامی که قبل از ثبت‌نام به کاربر بدون معرف نشان داده می‌شود.",
+        ),
+    ],
+    "اکانت تست": [
+        (
+            "trial_require_contact",
+            "تأیید شماره تماس برای تست",
+            "toggle",
+            "قبل از دریافت اکانت تست، کاربر باید شمارهٔ خودش را با دکمهٔ اشتراک‌گذاری بفرستد. فقط شمارهٔ همان حساب تلگرام پذیرفته می‌شود.",
+        ),
+        (
+            "trial_require_iran_phone",
+            "فقط شماره ایران برای تست",
+            "toggle",
+            "همراه با تأیید شماره: فقط موبایل ایران (+۹۸) پذیرفته می‌شود. شمارهٔ کامل ذخیره یا لاگ نمی‌شود.",
+        ),
+        (
+            "trial_min_account_minutes",
+            "حداقل سن حساب برای تست (دقیقه)",
+            "number",
+            "کاربری که تازه وارد ربات شده باید این‌قدر صبر کند تا بتواند تست بگیرد. ۰ یعنی خاموش. جلوی ساخت حساب و گرفتن تست در همان لحظه را می‌گیرد؛ تستی که رد شود مصرف نمی‌شود.",
+        ),
+    ],
+    "شماره تماس خرید": [
+        (
+            "purchase_require_contact",
+            "شماره تماس اجباری برای خرید اشتراک",
+            "toggle",
+            "قبل از خرید عادی، دلخواه یا عمده، کاربر شمارهٔ خودش را تأیید می‌کند. تأیید فقط برای همین فروشگاه است و شمارهٔ کامل ذخیره نمی‌شود. تست رایگان تنظیم جدا دارد.",
+        ),
+    ],
+    "ضدتقلب رسید": [
+        (
+            "receipt_dup_policy",
+            "رسید تکراری",
+            "select",
+            "اگر همان تصویر رسید برای پرداخت دیگری دیده شود",
+            [("warn", "هشدار به بررسی‌کننده"), ("block", "رد کردن آپلود")],
+        ),
+    ],
+    "آموزش اتصال": [
+        (
+            "btn_guides",
+            "متن دکمه فهرست آموزش",
+            "text",
+            "روی کارت سرویس کاربر و پیام تحویل سرویس",
+        ),
+        (
+            "btn_guide_open_link",
+            "متن دکمه لینک اشتراک",
+            "text",
+            "وقتی آموزش deep-link فعال باشد",
+        ),
+        (
+            "btn_style_guides",
+            "رنگ دکمه فهرست آموزش",
+            "btn_color",
+            "همان رنگ‌بندی تلگرام",
+        ),
+        (
+            "connection_guides",
+            "آموزش‌ها (دکمه‌ها)",
+            "connection_guides",
+            "برای هر آموزش عنوان، متن، مخاطب (کاربر/نماینده)، رنگ و لینک اشتراک جدا تعریف کنید.",
+        ),
+    ],
+    "متن دعوت دوستان": [
+        ("referral_text", "متن دعوت دوستان", "textarea", "متغیرها: {code} {link} — فهرست: /message-variables"),
+    ],
+    BUTTON_LABELS_GROUP: [
+        ("btn_shop", "دکمه خرید", "text", ""),
+        ("btn_services", "دکمه سرویس‌ها", "text", ""),
+        ("btn_wallet", "دکمه کیف پول", "text", ""),
+        ("btn_wallet_topup", "دکمه شارژ کیف پول", "text", "زیرمنوی کیف پول"),
+        ("btn_wallet_tx", "دکمه تراکنش‌ها", "text", "زیرمنوی کیف پول"),
+        (
+            "wallet_topup_presets",
+            "مبالغ آماده شارژ (تومان)",
+            "list",
+            "هر مبلغ را جداگانه اضافه کنید؛ برای تغییر مبلغ، آن را در فهرست ویرایش کنید.",
+        ),
+        ("btn_support", "دکمه پشتیبانی", "text", ""),
+        ("btn_restart", "دکمه شروع مجدد", "text", "ردیف آخر کیبورد اصلی؛ منو را از نو می‌سازد. روشن/خاموش‌کردنش در تب «منوی بات» است."),
+        ("btn_support_new", "دکمه تیکت جدید", "text", "زیرمنوی پشتیبانی (حالت تیکت)"),
+        ("btn_support_list", "دکمه تیکت‌های من", "text", "زیرمنوی پشتیبانی (حالت تیکت)"),
+        ("btn_guide", "دکمه راهنما", "text", ""),
+        ("btn_faq", "دکمه سوالات", "text", ""),
+        ("btn_loyalty", "دکمه باشگاه مشتریان", "text", "منوی اصلی ربات"),
+        (
+            "btn_guides",
+            "دکمه آموزش‌ها",
+            "text",
+            "روی کارت سرویس‌های من (و پیام تحویل)",
+        ),
+        ("btn_referral", "دکمه دعوت دوستان", "text", "زیرمنوی باشگاه مشتریان"),
+        ("btn_loy_points", "دکمه امتیاز من", "text", "زیرمنوی باشگاه مشتریان"),
+        ("btn_loy_rewards", "دکمه جوایز", "text", "زیرمنوی باشگاه مشتریان"),
+        ("btn_loy_wheel", "دکمه چرخ شانس", "text", "زیرمنوی باشگاه مشتریان"),
+        ("btn_loy_history", "دکمه تاریخچه باشگاه", "text", "زیرمنوی باشگاه مشتریان"),
+        ("btn_reseller_apply", "دکمه درخواست نمایندگی", "text", ""),
+        ("btn_wholesale", "دکمه فروش عمده", "text", "در لیست پلن‌های فروشگاه نمایش داده می‌شود"),
+        ("btn_reseller", "دکمه نماینده", "text", "در کیبورد ربات اختصاصی نماینده"),
+        ("btn_reseller_creds", "دکمه اطلاعات ورود نماینده", "text", "در ربات اصلی برای صاحب فروشگاه"),
+        ("btn_admin", "دکمه ادمین", "text", ""),
+        ("btn_connection_status_admin", "دکمه وضعیت اتصال", "text", "صفحهٔ اول پنل ادمین"),
+        ("btn_connection_status", "دکمه وضعیت اتصال مشتری", "text", "منوی اصلی"),
+        ("btn_menu_home", "دکمه منوی اصلی (کیبورد)", "text", "خروج از پیش‌نمایش / خانه"),
+        ("btn_adm_hub_ops", "گروه عملیات روزانه (ادمین)", "text", "هاب پنل ادمین"),
+        ("btn_adm_hub_people", "گروه افراد (ادمین)", "text", "هاب پنل ادمین"),
+        ("btn_adm_hub_product", "گروه محصول و پاسارگارد (ادمین)", "text", "هاب پنل ادمین"),
+        ("btn_adm_hub_marketing", "گروه بازاریابی (ادمین)", "text", "هاب پنل ادمین"),
+        ("btn_adm_hub_system", "گروه سیستم (ادمین)", "text", "هاب پنل ادمین"),
+        ("btn_adm_edit_mode", "دکمه حالت ویرایش منوها", "text", "هاب پنل ادمین"),
+        ("btn_adm_dash", "دکمه داشبورد (ادمین)", "text", "هاب عملیات"),
+        ("btn_adm_reports", "دکمه گزارش‌ها (ادمین)", "text", "هاب عملیات"),
+        ("btn_adm_orders", "دکمه سفارش‌ها (ادمین)", "text", "هاب عملیات"),
+        ("btn_adm_payments", "دکمه رسیدها (ادمین)", "text", "هاب عملیات"),
+        ("btn_adm_tickets", "دکمه تیکت‌ها (ادمین)", "text", "هاب عملیات"),
+        ("btn_adm_plans", "دکمه پلن‌ها (ادمین)", "text", "هاب محصول"),
+        ("btn_adm_pg", "دکمه پاسارگارد (ادمین)", "text", "هاب محصول"),
+        ("btn_adm_users", "دکمه کاربران (ادمین)", "text", "هاب افراد"),
+        ("btn_adm_resellers", "دکمه نمایندگان (ادمین)", "text", "هاب افراد"),
+        ("btn_adm_loyalty", "دکمه باشگاه (ادمین)", "text", "هاب بازاریابی"),
+        ("btn_adm_settings", "دکمه تنظیمات (ادمین)", "text", "هاب سیستم"),
+        ("btn_adm_broadcast", "دکمه پیام گروهی (ادمین)", "text", "هاب بازاریابی"),
+        ("btn_adm_backup", "دکمه بکاپ (ادمین)", "text", "هاب سیستم"),
+        ("btn_adm_preview", "دکمه پیش‌نمایش کاربر (ادمین)", "text", "هاب سیستم"),
+        ("btn_adm_exit_preview", "خروج از پیش‌نمایش", "text", "روی کیبورد هنگام پیش‌نمایش منوی کاربر"),
+        ("btn_buy_continue", "ادامه خرید (فروشگاه)", "text", "زیر جزئیات پلن"),
+        ("btn_back", "دکمه بازگشت", "text", "زیر پیام‌های انتخابی (اینلاین)"),
+        ("btn_cancel", "انصراف", "text", ""),
+        ("btn_renew", "تمدید", "text", ""),
+        ("btn_svc_addon", "حجم / زمان", "text", "خرید افزونه روی سرویس فعلی"),
+        ("btn_sub_link", "لینک و QR", "text", ""),
+    ],
+    "نمایش منو": [
+        (
+            "menu_layout",
+            "چیدمان کیبورد اصلی",
+            "select",
+            "منوی اصلی داخل کیبورد پایین است؛ انتخاب‌ها (پلن/پرداخت/…) زیر پیام اینلاین می‌آیند",
+            [("classic", "تکی — هر دکمه یک ردیف"), ("compact", "فشرده — دکمه‌ها جفتی")],
+        ),
+    ],
+    "مدیریت PAYG": [
+        (
+            "billing_enabled",
+            "فعال‌سازی PAYG",
+            "toggle",
+            "فقط روی نمایندگان PAYG اثر دارد؛ Fixed دست‌نخورده می‌ماند",
+        ),
+        (
+            "billing_low_balance",
+            "حداقل موجودی PAYG (تومان)",
+            "number",
+            "حداقل موجودی کیف پول برای خرید پلن پرداخت به‌ازای مصرف. شارژ لازم برای رفع تعلیق دو برابر آن است. هشدارهای موجودی کم ثابت‌اند (۱۰۰٬۰۰۰ و ۵۰٬۰۰۰ تومان).",
+        ),
+        (
+            "billing_on_empty",
+            "رفتار اتمام موجودی",
+            "select",
+            "پیش‌فرض: مسدود کردن همه عملیات ساخت/تمدید سرویس (ساخت/تمدید/افزایش حجم/…)",
+            [("block_provision", "مسدود کردن ساخت و تمدید سرویس")],
+        ),
+        (
+            "billing_tick_minutes",
+            "بازه شارژ خودکار (دقیقه)",
+            "number",
+            "فاصله اجرای billing tick برای کسر مصرف تفاضلی (دلتا) از watermark نماینده",
+        ),
+    ],
+    "هشدار سرویس کاربر": [
+        (
+            "user_alert_low_enabled",
+            "ارسال خودکار هشدار کمبود به کاربر",
+            "toggle",
+            "وقتی حجم یا زمان باقی‌ماندهٔ سرویس از درصد تعیین‌شده کمتر شود، به کاربر در تلگرام پیام می‌رود.",
+        ),
+        (
+            "user_alert_low_traffic_pct",
+            "کمتر از چند درصد حجم؟",
+            "number",
+            "۱ تا ۹۹ — مثلاً ۲۰ یعنی وقتی کمتر از ۲۰٪ حجم مانده پیام برود",
+        ),
+        (
+            "user_alert_low_time_pct",
+            "کمتر از چند درصد زمان؟",
+            "number",
+            "۱ تا ۹۹ — مثلاً ۲۰ یعنی وقتی کمتر از ۲۰٪ از مدت سرویس مانده پیام برود",
+        ),
+        (
+            "first_use_nudge_enabled",
+            "پیام کمکی برای سرویس بدون مصرف",
+            "toggle",
+            "اگر ۲۴ ساعت پس از تحویل سرویس هنوز هیچ ترافیکی مصرف نشده باشد، یک بار پیام کمکی با دکمهٔ آموزش اتصال و پشتیبانی برای کاربر می‌رود.",
+        ),
+    ],
+    "گزارش روزانه": [
+        (
+            "admin_daily_report_enabled",
+            "ارسال گزارش روزانه در تلگرام",
+            "toggle",
+            "هر روز در ساعت مشخص‌شده خلاصهٔ انتخابی به ادمین‌ها فرستاده می‌شود",
+        ),
+        (
+            "subordinate_report_enabled",
+            "گزارش نمایندگان زیرمجموعه",
+            "toggle",
+            "همان ساعت، خلاصهٔ عملکرد هر نمایندهٔ مستقیم (کاربر، خرید، فروش، حجم) برایتان فرستاده می‌شود.",
+        ),
+        (
+            "admin_daily_report_hour",
+            "ساعت ارسال (۰–۲۳، UTC)",
+            "number",
+            "ساعت تهران = UTC + ۳:۳۰ · مثلاً ۲۰ = ۲۳:۳۰ تهران · اگر ربات در آن ساعت خاموش باشد، گزارش همان روز بعداً فرستاده می‌شود",
+        ),
+        (
+            "admin_daily_report_template",
+            "متن گزارش",
+            "textarea",
+            "متغیرها: {admin_name} {users_new} {revenue_today} … — فهرست کامل در همین تب و /message-variables",
+        ),
+    ],
+    "گزارش و عملیات": [
+        (
+            "action_center_expire_days",
+            "پنجره سرویس‌های نزدیک انقضا (روز)",
+            "number",
+            "برای مرکز اقدام داشبورد",
+        ),
+        (
+            "one_tap_renew_enabled",
+            "دکمه تمدید یک‌ضرب در هشدار انقضا",
+            "toggle",
+            "در پیام هشدار انقضا دکمه تمدید سریع نمایش داده شود",
+        ),
+        (
+            "capacity_warn_pct",
+            "آستانه هشدار ظرفیت نماینده (٪)",
+            "number",
+            "مثلاً ۸۰ — قبل از پر شدن سهمیه هشدار داده می‌شود",
+        ),
+        (
+            "funnel_tracking_enabled",
+            "ثبت رفتار کاربر",
+            "toggle",
+            "مراحل باز کردن فروشگاه تا تحویل برای آمار «رفتار کاربر» در بخش بازاریابی و وفاداری",
+        ),
+    ],
+    "رنگ دکمه‌ها": button_style_setting_fields(),
+    "بکاپ زمان‌بندی": [
+        (
+            "backup_schedule_enabled",
+            "بکاپ خودکار شبانه",
+            "toggle",
+            "ساخت بکاپ و بررسی سلامت آرشیو",
+        ),
+        (
+            "backup_schedule_hour",
+            "ساعت بکاپ (۰–۲۳، UTC)",
+            "number",
+            "پیش‌فرض ۳",
+        ),
+        (
+            "backup_include_env_scheduled",
+            "شامل .env در بکاپ خودکار",
+            "toggle",
+            "توکن‌ها و اسرار — فقط اگر مطمئنید",
+        ),
+        (
+            "backup_keep_count",
+            "تعداد بکاپ نگه‌داشته‌شده",
+            "select",
+            "فقط همین تعداد آخرین بکاپ می‌ماند و قدیمی‌ترها از سرور پاک می‌شوند.",
+            [("5", "۵ بکاپ"), ("10", "۱۰ بکاپ"), ("15", "۱۵ بکاپ")],
+        ),
+    ],
+    "ارسال بکاپ به تلگرام": [
+        (
+            "backup_telegram_enabled",
+            "ارسال بکاپ به تلگرام",
+            "toggle",
+            "بعد از هر بکاپ بدون .env، فایل برای گیرنده‌ها فرستاده می‌شود (تا ۵۰ مگابایت).",
+        ),
+        (
+            "backup_telegram_custom_bot",
+            "ربات جداگانه برای بکاپ",
+            "toggle",
+            "خاموش: با همان ربات پنل برای مدیران اصلی ارسال می‌شود.",
+        ),
+        (
+            "backup_telegram_bot_token",
+            "توکن ربات بکاپ",
+            "password",
+            "فقط با روشن بودن «ربات جداگانه». خالی = بدون تغییر.",
+        ),
+        (
+            "backup_telegram_chat_ids",
+            "شناسهٔ چت گیرنده‌ها",
+            "text",
+            "عددی؛ چند شناسه را با کاما جدا کنید. ربات باید در آن چت شروع شده باشد.",
+        ),
+    ],
+    "حالت تعمیرات و رسید": [
+        (
+            "shop_maintenance_enabled",
+            "حالت تعمیرات فروشگاه",
+            "toggle",
+            "خرید جدید بسته می‌شود؛ تمدید و پشتیبانی باز می‌ماند",
+        ),
+        (
+            "shop_maintenance_text",
+            "متن حالت تعمیرات",
+            "textarea",
+            "پیامی که در ربات به کاربر نشان داده می‌شود",
+        ),
+        (
+            "receipt_auto_match_enabled",
+            "پیشنهاد تطبیق رسیدهای هم‌مبلغ",
+            "toggle",
+            "در صف پرداخت‌ها موارد هم‌مبلغ در بازه زمانی پیشنهاد می‌شود",
+        ),
+        (
+            "receipt_match_window_minutes",
+            "بازه تطبیق رسید (دقیقه)",
+            "number",
+            "مثلاً ۱۲۰",
+        ),
+    ],
+    "QR اشتراک": [
+        ("qr_enabled", "ارسال خودکار QR", "toggle", "بعد از تحویل سرویس، QR لینک اشتراک فرستاده می‌شود"),
+        ("show_sub_link_in_text", "نمایش لینک در کپشن QR", "toggle", "لینک متنی هم در کپشن QR باشد"),
+        ("qr_caption", "کپشن عکس QR", "textarea", "جزئیات لینک/حجم/زمان خودکار اضافه می‌شود. متغیر: {url} یا {sub_link}"),
+        ("qr_background", "عکس پس‌زمینه QR", "image", "اختیاری — PNG/JPG"),
+    ],
+    "روش‌های پرداخت": [
+        ("pay_wallet_enabled", "کیف پول داخلی", "toggle", "پرداخت از موجودی کیف پول کاربر"),
+        ("pay_card_enabled", "کارت به کارت", "toggle", ""),
+        ("auto_approve_payments", "تأیید خودکار رسید", "toggle", "اگر روشن باشد، سرویس بلافاصله بعد از ارسال رسید خرید تحویل می‌شود؛ یا بعد از مدتی که پایین‌تر تعیین می‌کنید. شارژ کیف پول هرگز خودکار تأیید نمی‌شود."),
+        (
+            "auto_approve_after_minutes",
+            "تأیید خودکار رسید بعد از مدت (دقیقه)",
+            "number",
+            "رسید کارت‌به‌کارتِ خرید سرویس که این‌قدر دقیقه بی‌پاسخ بماند خودکار تأیید می‌شود. ۰ = فوری. شارژ کیف پول، تمدید، افزونه و رسید تکراری شامل نمی‌شوند. ادمین دکمهٔ «رد درخواست» را دارد.",
+        ),
+        (
+            "auto_approve_after_max_amount",
+            "سقف مبلغ تأیید خودکار زمان‌بندی‌شده (تومان)",
+            "number",
+            "رسید بالاتر از این مبلغ دستی می‌ماند. ۰ = بدون سقف.",
+        ),
+        (
+            "auto_approve_after_returning_only",
+            "فقط مشتریان با خرید قبلی",
+            "toggle",
+            "روشن (پیشنهادی): فقط مشتریانی که قبلاً از همین فروشگاه خرید پولی تحویل‌شده دارند خودکار تأیید می‌شوند؛ مشتری جدید دستی می‌ماند.",
+        ),
+        ("pay_card_auto_enabled", "تأیید خودکار کارت به کارت", "toggle", "وب‌هوک امضادار از سرویس تأیید کارت — کنار رسید دستی"),
+        (
+            "pay_bbc_enabled",
+            "بزن به کارت",
+            "toggle",
+            "کارت‌به‌کارت خودکار با bezanbecard.ir و کلید API خود فروشگاه: مشتری مبلغ یکتا را "
+            "واریز می‌کند و ربات بعد از تأیید بزن به کارت، خودکار تحویل می‌دهد. نیاز به آدرس https دارد.",
+        ),
+        ("pay_gateway_enabled", "درگاه پرداخت (لینک + رسید)", "toggle", "لینک درگاه خارجی + ارسال رسید — روش قبلی حفظ می‌شود"),
+        (
+            "pay_psp_enabled",
+            "درگاه آنلاین API",
+            "toggle",
+            "درگاه واقعی request→verify (زرین‌پال / سان‌پی / Mock فقط با ALLOW_SETTLEMENT_MOCK)",
+        ),
+        ("pay_crypto_enabled", "رمزارز", "toggle", ""),
+        ("pay_stars_enabled", "استارز تلگرام", "toggle", "پرداخت درون‌برنامه‌ای با ⭐"),
+        ("pay_discount_enabled", "کد تخفیف", "toggle", "نمایش دکمه کد تخفیف هنگام پرداخت"),
+        ("referral_bonus", "پاداش دعوت (تومان)", "number", "هدیه به معرف بعد از خرید موفق دعوت‌شده"),
+        ("payment_reject_text", "متن رد پرداخت", "textarea", "وقتی ادمین رسید را رد می‌کند"),
+    ],
+    "پاکسازی سفارش‌های معلق": [
+        (
+            "pending_order_cleanup_enabled",
+            "لغو خودکار سفارش‌های معلق",
+            "toggle",
+            "هر ساعت سفارش‌های پرداخت‌نشده‌ای که از مهلت گذشته‌اند لغو می‌شوند",
+        ),
+        (
+            "pending_order_ttl_hours",
+            "مهلت سفارش پرداخت‌نشده (ساعت)",
+            "number",
+            "سفارش‌های در انتظار پرداخت یا رسید که قدیمی‌تر از این مقدار باشند لغو می‌شوند (۱ تا ۷۲۰)",
+        ),
+        (
+            "pending_order_cleanup_awaiting_approval",
+            "لغو سفارش‌های منتظر تأیید رسید",
+            "toggle",
+            "مشتری رسید فرستاده و منتظر تأیید ادمین است؛ فقط اگر بخواهید بعد از مهلت جداگانهٔ زیر لغو شود روشن کنید",
+        ),
+        (
+            "pending_order_approval_ttl_hours",
+            "مهلت سفارش منتظر تأیید (ساعت)",
+            "number",
+            "فقط وقتی گزینهٔ بالا روشن است اعمال می‌شود (۱ تا ۷۲۰)",
+        ),
+    ],
+    "کارت به کارت": [
+        (
+            "payment_cards",
+            "کارت‌ها",
+            "payment_cards",
+            "چند کارت — دکمه + برای افزودن. متغیرهای متن: {amount} {card} {holder}",
+        ),
+        (
+            "payment_cards_random",
+            "نمایش کارت تصادفی",
+            "toggle",
+            "اگر چند کارت فعال باشد، یکی از آن‌ها به‌جای انتخاب مشتری نشان داده می‌شود. برای هر سفارش همیشه همان کارت می‌ماند.",
+        ),
+        ("card_pay_text", "راهنمای کارت‌به‌کارت", "textarea", "متغیرها: {amount} {card} {holder}"),
+        ("btn_pay_card", "متن دکمه کارت به کارت", "text", ""),
+    ],
+    "درگاه پرداخت": [
+        (
+            "payment_gateways",
+            "درگاه‌ها",
+            "payment_gateways",
+            "چند درگاه — لینک می‌تواند شامل {amount} یا {order_id} باشد",
+        ),
+        ("gateway_pay_text", "راهنمای درگاه", "textarea", "متغیرها: {amount} {order_id} {gateway_name} (قدیمی: {name})"),
+        ("btn_pay_gateway", "متن دکمه درگاه", "text", ""),
+    ],
+    "رمزارز": [
+        (
+            "payment_crypto_wallets",
+            "آدرس‌های ولت",
+            "payment_crypto_wallets",
+            "چند آدرس — هر ردیف: رمزارز، شبکه، آدرس",
+        ),
+        ("crypto_pay_text", "راهنمای رمزارز", "textarea", "متغیرها: {amount} {asset} {network} {address}"),
+        (
+            "crypto_rate_mode",
+            "تبدیل مبلغ تومان به رمزارز",
+            "select",
+            "خاموش: مبلغ تومان نمایش داده می‌شود. نرخ دستی یا API: مبلغ به ارز مبنا تبدیل و با نرخ قفل‌شده روی پرداخت ثبت می‌شود.",
+            [("off", "خاموش"), ("manual", "نرخ دستی"), ("api", "نرخ از API")],
+        ),
+        ("crypto_rate_asset", "ارز مبنای تبدیل", "text", "مثلاً USDT؛ فقط آدرس‌هایی که همین ارز را دارند تبدیل می‌شوند."),
+        ("crypto_rate_manual", "نرخ دستی (تومان برای هر واحد)", "text", "مثلاً 98500. در حالت API، پشتیبان وقتی API پاسخ نمی‌دهد."),
+        ("crypto_rate_api_url", "آدرس API نرخ (HTTPS)", "text", "فقط https عمومی؛ پاسخ باید JSON باشد. نرخ هر دقیقه خوانده می‌شود."),
+        ("crypto_rate_api_path", "مسیر عدد در JSON", "text", "با نقطه، مثلاً stats.usdt-rls.latest یا data.0.price"),
+        ("crypto_rate_api_divisor", "تقسیم‌کنندهٔ نرخ API", "number", "اگر API ریال می‌دهد 10 بگذارید تا به تومان تبدیل شود. پیش‌فرض 1."),
+        ("crypto_rate_margin_percent", "حاشیه روی مبلغ (٪)", "text", "مثلاً 1.5: مشتری این درصد بیشتر از نرخ بازار می‌پردازد. 0 تا 20."),
+        ("crypto_quote_minutes", "اعتبار نرخ (دقیقه)", "number", "مدتی که نرخ برای مشتری معتبر است؛ ۱ تا ۱۲۰. پیش‌فرض ۱۵."),
+        ("btn_pay_crypto", "متن دکمه رمزارز", "text", ""),
+    ],
+    "استارز تلگرام": [
+        (
+            "stars_toman_per_star",
+            "هر استارز چند تومان؟",
+            "number",
+            "مثال: اگر ۵۰۰ باشد، سفارش ۱۰۰٬۰۰۰ تومانی = ۲۰۰ استارز",
+        ),
+        ("stars_title", "عنوان فاکتور", "text", ""),
+        ("stars_description", "توضیح فاکتور", "text", ""),
+        ("btn_pay_stars", "متن دکمه استارز", "text", ""),
+    ],
+    "درگاه آنلاین API": [
+        (
+            "psp_gateways",
+            "درگاه‌ها",
+            "psp_gateways",
+            "چند درگاه — دکمه + برای افزودن؛ با بیش از یک درگاه فعال، مشتری انتخاب می‌کند. "
+            "زرین‌پال: Merchant ID — سان‌پی: api_key و آدرس https. کلید خالی = بدون تغییر",
+        ),
+        (
+            "psp_checkout_link_mode",
+            "لینک دکمهٔ درگاه",
+            "select",
+            "اگر برگشت شاپرک گیر کرد، آدرس پنل فروشگاه را انتخاب کنید",
+            [
+                ("direct", "آدرس خود درگاه"),
+                ("panel", "آدرس پنل فروشگاه"),
+            ],
+        ),
+        (
+            "psp_pay_text",
+            "راهنمای درگاه API",
+            "textarea",
+            "متغیرها: {amount} {order_id} {payment_id}",
+        ),
+        ("btn_pay_psp", "متن دکمه درگاه آنلاین", "text", ""),
+    ],
+    "بزن به کارت": [
+        (
+            "bbc_api_key",
+            "کلید API",
+            "password",
+            "از داشبورد bezanbecard.ir (طرح دارای API) کلید بسازید و اینجا بگذارید. "
+            "کلید دسترسی کامل حساب شماست و جایی نمایش داده نمی‌شود؛ خالی بگذارید تا کلید فعلی بماند.",
+        ),
+        (
+            "bbc_pay_text",
+            "راهنمای پرداخت",
+            "textarea",
+            "متن بالای دکمهٔ پرداخت. {unique_amount} مبلغ دقیق واریز به ریال است. "
+            "متغیرها: {amount} {unique_amount} {order_id} {payment_id} {shop_title}",
+        ),
+        ("btn_pay_bbc", "متن دکمه بزن به کارت", "text", ""),
+    ],
+    "تأیید خودکار کارت به کارت": [
+        (
+            "card_auto_provider",
+            "نام ارائه‌دهنده",
+            "text",
+            "شناسه منطقی (مثلاً generic)",
+        ),
+        (
+            "card_auto_webhook_secret",
+            "رمز امضای وب‌هوک",
+            "password",
+            "حداقل ۱۶ کاراکتر — HMAC-SHA256 روی بدنه؛ هدر X-Signature. خالی = بدون تغییر",
+        ),
+        (
+            "card_auto_hint_text",
+            "متن راهنما کنار کارت‌به‌کارت",
+            "textarea",
+            "پلتفرم: /payments/settlement/card-auto/platform/webhook — فروشگاه: .../shop/{reseller_id}/webhook",
+        ),
+    ],
+    "متن دکمه‌های پرداخت": [
+        ("btn_pay_wallet", "پرداخت با کیف پول", "text", ""),
+        ("btn_pay_discount", "کد تخفیف", "text", ""),
+    ],
+    "نام‌گذاری سرویس در پاسارگارد": [
+        ("pg_username_prefix", "پیشوند ثابت", "text", "مثلاً clk — اول نام کاربر ساخته‌شده"),
+        ("pg_username_suffix", "پسوند ثابت", "text", "اختیاری — ته نام"),
+        (
+            "pg_username_pattern",
+            "الگوی نام",
+            "text",
+            "متغیرها: {prefix} {random} {suffix} {id} {plan_volume} {plan_unit} {username} — پیش‌فرض: {prefix}_{random}{suffix}",
+        ),
+    ],
+    "کانال اجباری": [
+        ("force_join_enabled", "عضویت اجباری کانال", "toggle", "قبل از استفاده از ربات"),
+        (
+            "force_join_channel",
+            "کانال‌ها (دکمه‌های اینلاین)",
+            "force_channels",
+            "شناسه را به شکل @username، -100… یا لینک t.me/c/… بدهید. برای کانال خصوصی لینک دعوت (+…) را هم بگذارید. عنوان روی دکمه نمایش داده می‌شود. ربات باید ادمین کانال باشد.",
+        ),
+        (
+            "force_join_msg",
+            "متن پیام عضویت اجباری",
+            "textarea",
+            "پیام بالای دکمه‌های اینلاین. اختیاری: {channels} — فهرست کامل متغیرها: /message-variables",
+        ),
+        ("btn_force_join", "متن پیش‌فرض دکمه لینک کانال", "text", "اگر عنوان کانال خالی باشد"),
+        ("btn_force_join_check", "متن دکمه بررسی عضویت", "text", "دکمه «عضو شدم»"),
+    ],
+    "افزودن سرویس قبلی": [
+        (
+            "service_import_enabled",
+            "افزودن سرویس قبلی توسط مشتری",
+            "toggle",
+            "مشتری با لینک اشتراک، سرویس بیرونی خود را به «سرویس‌های من» اضافه می‌کند و همان‌جا تمدید می‌کند. فقط سرویس ادمین‌های مجاز که به کاربر دیگری وصل نیست قابل افزودن است. لغو و بازگشت وجه ندارد.",
+        ),
+        (
+            "service_import_mode",
+            "روش پذیرش سرویس",
+            "select",
+            "فوری: بعد از بررسی لینک همان لحظه اضافه می‌شود. با تأیید ادمین: درخواست در «درخواست‌های در انتظار» همین تب می‌ماند تا ادمین تأیید یا رد کند. درخواست بی‌پاسخ بعد از ۷ روز منقضی می‌شود.",
+            [("instant", "فوری"), ("approval", "با تأیید ادمین")],
+        ),
+        (
+            "service_import_max_per_user",
+            "سقف سرویس افزوده‌شده برای هر مشتری",
+            "number",
+            "بین ۱ تا ۲۰ — پیش‌فرض ۵",
+        ),
+    ],
+    "مسیرها و ادمین‌های مجاز": [
+        (
+            "service_import_paths",
+            "مسیرهای مجاز لینک اشتراک",
+            "list",
+            "مسیر اشتراک پنل (PG_SUBSCRIPTION_PATH) همیشه مجاز است. اگر بعضی لینک‌ها مسیر دیگری دارند، مثل /hamid، اینجا اضافه کنید. فقط مسیر را بنویسید، نه آدرس کامل.",
+        ),
+        (
+            "service_import_admins",
+            "ادمین‌های مجاز پاسارگارد",
+            "list",
+            "ادمینی که ربات با آن وارد پنل می‌شود همیشه مجاز است. اگر بعضی سرویس‌ها را با ادمین دیگری ساخته‌اید، نام کاربری او را اینجا بنویسید. ادمین نمایندگان قابل افزودن نیست.",
+        ),
+    ],
+    "قوانین ورود به ربات": [
+        ("terms_entry_enabled", "فعال", "toggle", "قبل از منوی اصلی — فقط کاربران"),
+        (
+            "terms_entry_text",
+            "متن قوانین ورود",
+            "textarea",
+            "برای ایموجی پریمیوم، متن را از تنظیمات داخل ربات تلگرام ذخیره کنید",
+        ),
+        ("terms_entry_btn", "متن دکمه موافقت", "text", "برچسب دکمه اینلاین (ایموجی عادی؛ پریمیوم از ربات)"),
+        (
+            "btn_style_terms_entry",
+            "رنگ دکمه موافقت",
+            "btn_color",
+            "همان رنگ‌بندی تلگرام؛ از تب رنگبندی هم قابل تغییر است",
+        ),
+        (
+            "terms_entry_reaccept",
+            "پذیرش مجدد با تغییر متن",
+            "toggle",
+            "اگر متن قوانین عوض شود دوباره موافقت بگیر",
+        ),
+    ],
+    "قوانین خرید پلن کاربر": [
+        ("terms_buy_user_enabled", "فعال", "toggle", "قبل از ثبت سفارش خرید کاربر"),
+        (
+            "terms_buy_user_text",
+            "متن قوانین خرید کاربر",
+            "textarea",
+            "برای ایموجی پریمیوم از ویرایش داخل ربات استفاده کنید",
+        ),
+        ("terms_buy_user_btn", "متن دکمه موافقت", "text", ""),
+        (
+            "btn_style_terms_buy_user",
+            "رنگ دکمه موافقت",
+            "btn_color",
+            "همان رنگ‌بندی تلگرام؛ از تب رنگبندی هم قابل تغییر است",
+        ),
+        (
+            "terms_buy_user_reaccept",
+            "پذیرش مجدد با تغییر متن",
+            "toggle",
+            "اگر متن قوانین عوض شود دوباره موافقت بگیر",
+        ),
+    ],
+    "قوانین خرید پلن نماینده": [
+        ("terms_buy_reseller_enabled", "فعال", "toggle", "قبل از ثبت درخواست/خرید نمایندگی"),
+        (
+            "terms_buy_reseller_text",
+            "متن قوانین خرید نماینده",
+            "textarea",
+            "برای ایموجی پریمیوم از ویرایش داخل ربات استفاده کنید",
+        ),
+        ("terms_buy_reseller_btn", "متن دکمه موافقت", "text", ""),
+        (
+            "btn_style_terms_buy_reseller",
+            "رنگ دکمه موافقت",
+            "btn_color",
+            "همان رنگ‌بندی تلگرام؛ از تب رنگبندی هم قابل تغییر است",
+        ),
+        (
+            "terms_buy_reseller_reaccept",
+            "پذیرش مجدد با تغییر متن",
+            "toggle",
+            "اگر متن قوانین عوض شود دوباره موافقت بگیر",
+        ),
+    ],
+}
+SETTING_GROUPS.update(screen_text_setting_groups())
+
+
+def _remaining_button_label_groups(groups: dict[str, list]) -> dict[str, list[tuple[str, str, str, str]]]:
+    """Every bot button label the «متن دکمه‌ها» tab does not list yet, in the bot's own categories."""
+    seen = {field[0] for field in groups[BUTTON_LABELS_GROUP]}
+    extra: dict[str, list[tuple[str, str, str, str]]] = {}
+    for _sub_id, title, fields in (*shop_button_subs(include_platform=True), *appearance_button_subs()):
+        rest = [(key, label, "text", "") for key, label, *_ in fields if key not in seen]
+        seen.update(field[0] for field in rest)
+        if rest:
+            extra.setdefault(title, []).extend(rest)
+    if set(extra) & set(groups):
+        raise RuntimeError("button label group name clashes with a settings group")
+    return extra
+
+
+BUTTON_LABEL_GROUPS_MORE = _remaining_button_label_groups(SETTING_GROUPS)
+SETTING_GROUPS.update(BUTTON_LABEL_GROUPS_MORE)
+
+# Map tab id → which SETTING_GROUPS cards to show (menu/notifications/update/naming special)
+TAB_SETTING_GROUPS: dict[str, list[str]] = {
+    "menu": [],
+    "welcome": ["خوش‌آمد و هویت"],
+    "messages": ["متن پیام‌ها"],
+    "buttons": [BUTTON_LABELS_GROUP, *BUTTON_LABEL_GROUPS_MORE],
+    SCREEN_TEXT_TAB: list(screen_text_setting_groups()),
+    "colors": ["رنگ دکمه‌ها"],
+    "qr": ["QR اشتراک"],
+    "payment": [
+        "روش‌های پرداخت",
+        "کارت به کارت",
+        "تأیید خودکار کارت به کارت",
+        "درگاه پرداخت",
+        "درگاه آنلاین API",
+        "بزن به کارت",
+        "رمزارز",
+        "استارز تلگرام",
+        "متن دکمه‌های پرداخت",
+        "حالت تعمیرات و رسید",
+    ],
+    "supports": ["متن پشتیبانی ربات"],
+    "loyalty": ["متن دعوت دوستان"],
+    "naming": ["نام‌گذاری سرویس در پاسارگارد"],
+    "limits": [
+        "معرف اجباری",
+        "شماره تماس خرید",
+        "اکانت تست",
+        "ضدتقلب رسید",
+        "کانال اجباری",
+        "قوانین ورود به ربات",
+        "قوانین خرید پلن کاربر",
+        "قوانین خرید پلن نماینده",
+    ],
+    "guides": ["آموزش اتصال"],
+    "service_import": ["افزودن سرویس قبلی", "مسیرها و ادمین‌های مجاز"],
+    # Legacy aliases — redirected to limits
+    "forcejoin": ["کانال اجباری"],
+    "terms": ["قوانین ورود به ربات", "قوانین خرید پلن کاربر", "قوانین خرید پلن نماینده"],
+    "billing": ["مدیریت PAYG"],
+    "cleanup": ["پاکسازی سفارش‌های معلق"],
+    "notifications": ["هشدار سرویس کاربر", "گزارش و عملیات"],
+    "daily_report": ["گزارش روزانه"],
+    "backup": ["بکاپ زمان‌بندی", "ارسال بکاپ به تلگرام"],
+    "pwa": [],
+    "update": [],
+    "ssl": [],
+    "bot": [],
+    "appearance": [],
+}
+
+TOGGLE_KEYS = {
+    item[0]
+    for fields in SETTING_GROUPS.values()
+    for item in fields
+    if len(item) >= 3 and item[2] == "toggle"
+} | {
+    # Managed on /resellers (not a bot-settings tab), still a boolean setting.
+    "show_reseller_apply",
+}
+
+IMAGE_KEYS = {
+    item[0]
+    for fields in SETTING_GROUPS.values()
+    for item in fields
+    if len(item) >= 3 and item[2] == "image"
+}
+
+SECRET_KEYS = {
+    item[0]
+    for fields in SETTING_GROUPS.values()
+    for item in fields
+    if len(item) >= 3 and item[2] == "password"
+}
+
+# Sentinels: empty / keep-marker means "do not overwrite existing secret".
+SECRET_KEEP_VALUES = {"", "••••", "****", "__keep__", "__unchanged__"}
+
+
+def should_keep_secret_value(raw: str | None) -> bool:
+    return str(raw if raw is not None else "").strip() in SECRET_KEEP_VALUES
+
+
+def keys_for_tab(tab: str) -> set[str]:
+    """Setting keys that belong to a settings tab (prevents wiping other tabs on save)."""
+    names = TAB_SETTING_GROUPS.get(tab) or []
+    keys: set[str] = set()
+    for name in names:
+        for item in SETTING_GROUPS.get(name, []):
+            keys.add(item[0])
+    return keys
+
+
+# Tabs whose texts and colors the web panel can put back to the shipped defaults in one step.
+RESETTABLE_SETTINGS_TABS = frozenset({"welcome", "messages", "buttons", "colors", "menu", SCREEN_TEXT_TAB})
+# A reset brings back the shipped texts, never a placeholder shop name.
+RESET_KEEPS_KEYS = frozenset({"shop_title"})
+
+
+def default_values_for_keys(keys: set[str]) -> dict[str, str]:
+    """Shipped defaults for ``keys``; switches, images and the shop name keep their current value."""
+    return {
+        key: str(DEFAULT_SETTINGS.get(key, ""))
+        for key in keys
+        if key not in TOGGLE_KEYS and key not in IMAGE_KEYS and key not in RESET_KEEPS_KEYS
+    }
+
+
+_defaults_ready = False
+
+
+async def ensure_default_settings(session: AsyncSession) -> None:
+    """Insert missing default settings once per process (cheap after first call)."""
+    global _defaults_ready
+    if _defaults_ready:
+        return
+    result = await session.execute(select(Setting.key))
+    existing = {row[0] for row in result.all()}
+    missing = False
+    for key, value in DEFAULT_SETTINGS.items():
+        if key not in existing:
+            session.add(Setting(key=key, value=value))
+            missing = True
+    if missing:
+        await session.commit()
+    _defaults_ready = True
+
+
+async def get_all_settings(
+    session: AsyncSession,
+    *,
+    reseller_id: int | None = None,
+) -> dict[str, str]:
+    # Defaults are seeded at startup — avoid N+1 writes on every read path.
+    rid = _effective_reseller_id(reseller_id)
+    cache_key = int(rid or 0)
+    now = time.monotonic()
+    hit = _SETTINGS_CACHE.get(cache_key)
+    if hit and (now - hit[0]) < _SETTINGS_CACHE_TTL:
+        return dict(hit[1])
+
+    data = dict(DEFAULT_SETTINGS)
+    if rid:
+        from app.db.models import ResellerSetting
+
+        # Shop isolation: defaults + reseller overrides ONLY.
+        # Never inherit live platform Setting rows (payment, menu, force-join, …).
+        r_result = await session.execute(
+            select(ResellerSetting).where(ResellerSetting.reseller_user_id == rid)
+        )
+        data.update({r.key: r.value for r in r_result.scalars().all()})
+        # Reseller bots never show platform apply / admin buttons / miniapp (platform WebApp)
+        data["show_reseller_apply"] = "0"
+        data["show_miniapp"] = "0"
+        order = [
+            p.strip()
+            for p in str(data.get("menu_order") or "").split(",")
+            if p.strip() and p.strip() not in {"reseller_apply", "miniapp"}
+        ]
+        if "shop" not in order:
+            order.insert(0, "shop")
+        data["menu_order"] = ",".join(order)
+        from app.services.payment_destinations import enrich_payment_settings
+
+        data = enrich_payment_settings(refresh_retired_defaults(readable_monitor_texts(data), DEFAULT_SETTINGS))
+        _SETTINGS_CACHE[cache_key] = (now, dict(data))
+        return data
+    result = await session.execute(select(Setting))
+    rows = result.scalars().all()
+    data.update({r.key: r.value for r in rows})
+    from app.services.payment_destinations import enrich_payment_settings
+
+    data = enrich_payment_settings(refresh_retired_defaults(readable_monitor_texts(data), DEFAULT_SETTINGS))
+    _SETTINGS_CACHE[cache_key] = (now, dict(data))
+    return data
+
+
+def on(value: str | None) -> bool:
+    return (value or "").strip() in {"1", "true", "yes", "on", "True"}
+
+
+def clamp_alert_percent(raw: str | None, default: int = 20) -> str:
+    """Keep user-alert thresholds in 1..99."""
+    try:
+        n = int(float(str(raw).strip()))
+    except Exception:
+        n = default
+    return str(max(1, min(99, n)))
+
+
+def is_protected_admin(user: BotUser) -> bool:
+    """True for panel/bot admins that must not be blocked or deleted."""
+    if user.role == Role.ADMIN.value:
+        return True
+    return user.telegram_id in get_settings().admin_ids
+
+
+async def delete_bot_user(
+    session: AsyncSession,
+    user_id: int,
+    *,
+    delete_pg_services: bool = True,
+    delete_pg_admin: bool = True,
+    actor_user_id: int | None = None,
+) -> dict:
+    """Hard-delete a bot user and related rows. Refuses protected admins."""
+    from sqlalchemy import delete, update
+
+    from app.db.models import (
+        Order,
+        PanelTicket,
+        PanelTicketMessage,
+        Payment,
+        PaymentStatus,
+        Plan,
+        ResellerApplication,
+        ResellerBillingRate,
+        ResellerBillingTransaction,
+        ResellerSetting,
+        Ticket,
+        TicketMessage,
+        TrialClaim,
+        UserService,
+        WalletTransaction,
+    )
+    from app.services.pasarguard import get_pg
+
+    user = await session.get(BotUser, user_id)
+    if not user:
+        raise ValueError("کاربر یافت نشد")
+    if actor_user_id is not None and user.id == actor_user_id:
+        raise ValueError("نمی‌توانید خودتان را حذف کنید")
+    if is_protected_admin(user):
+        raise ValueError("حذف ادمین مجاز نیست")
+
+    telegram_id = user.telegram_id
+    name = user.full_name or user.username or str(telegram_id)
+
+    # Revoke reseller first (profile + PG admin + unlink customers)
+    from app.services.resellers import get_reseller_profile, revoke_reseller
+
+    if await get_reseller_profile(session, user_id):
+        await revoke_reseller(
+            session,
+            user_id,
+            delete_pg_admin=delete_pg_admin,
+            commit=False,
+        )
+
+    # Clear self-references pointing at this user
+    await session.execute(
+        update(BotUser).where(BotUser.referred_by_id == user_id).values(referred_by_id=None)
+    )
+    # reseller_id / order.reseller_id already cleared by revoke_reseller when applicable
+    await session.execute(
+        update(BotUser).where(BotUser.reseller_id == user_id).values(reseller_id=None)
+    )
+    await session.execute(
+        update(Order).where(Order.reseller_id == user_id).values(reseller_id=None)
+    )
+    await session.execute(
+        update(Ticket).where(Ticket.reseller_id == user_id).values(reseller_id=None)
+    )
+
+    services = list(
+        (
+            await session.execute(select(UserService).where(UserService.bot_user_id == user_id))
+        ).scalars().all()
+    )
+    svc_ids = [s.id for s in services]
+    pg_services_deleted = 0
+    if delete_pg_services:
+        from app.services.bot_user_admin import ensure_pg_user_removed_or_absent
+
+        from app.services.service_import import is_external_service
+
+        pg_client = get_pg()
+        for svc in services:
+            # Linked or imported services were not created by the bot; keep their panel users.
+            if not svc.pg_user_id or is_external_service(svc):
+                continue
+            try:
+                # Confirmed PG 404 counts as removed so local cleanup can proceed.
+                await ensure_pg_user_removed_or_absent(
+                    pg_client,
+                    int(svc.pg_user_id),
+                    staff=None,
+                    allow_disable_fallback=True,
+                )
+                pg_services_deleted += 1
+            except Exception:
+                # Best-effort: BotUser delete continues even if one PG uid sticks.
+                logger.debug(
+                    "PG cleanup skipped for service=%s pg=%s",
+                    svc.id,
+                    svc.pg_user_id,
+                    exc_info=True,
+                )
+
+    # Break orders ↔ services cycle
+    await session.execute(
+        update(Order).where(Order.user_id == user_id).values(service_id=None)
+    )
+    if svc_ids:
+        await session.execute(
+            update(Order).where(Order.service_id.in_(svc_ids)).values(service_id=None)
+        )
+
+    # Reseller applications (null order_id then delete)
+    apps = list(
+        (
+            await session.execute(
+                select(ResellerApplication).where(ResellerApplication.user_id == user_id)
+            )
+        ).scalars().all()
+    )
+    for app in apps:
+        app.order_id = None
+    await session.flush()
+    await session.execute(
+        delete(ResellerApplication).where(ResellerApplication.user_id == user_id)
+    )
+
+    # --- Loyalty / referral / terms / org rows that previously BLOCKED delete ---
+    # These FKs have no ON DELETE CASCADE. Without this cleanup, session.commit()
+    # raises IntegrityError and the user row stays forever (the real "حذف نمی‌شود"
+    # bug). Must run BEFORE deleting UserService (spins/redemptions FK to services).
+    from app.db.models import (
+        BotUserShop,
+        ChargeCode,
+        DeliveryFailure,
+        FunnelEvent,
+        LoyaltyDiscountEntitlement,
+        LoyaltyReward,
+        LuckyWheelPrize,
+        LuckyWheelSpin,
+        LuckyWheelUserState,
+        OrgPrincipal,
+        PaymentSettlement,
+        PointsRule,
+        PointsTransaction,
+        ReferralEvent,
+        RewardRedemption,
+        ShopPoints,
+        ShopWallet,
+        TermsAcceptance,
+    )
+
+    await session.execute(
+        update(BotUser).where(BotUser.id == user_id).values(owner_principal_id=None)
+    )
+    await session.execute(
+        update(OrgPrincipal).where(OrgPrincipal.bot_user_id == user_id).values(bot_user_id=None)
+    )
+    await session.execute(
+        update(PaymentSettlement)
+        .where(PaymentSettlement.shop_owner_id == user_id)
+        .values(shop_owner_id=None)
+    )
+    await session.execute(
+        update(FunnelEvent).where(FunnelEvent.user_id == user_id).values(user_id=None)
+    )
+    await session.execute(
+        update(FunnelEvent).where(FunnelEvent.reseller_id == user_id).values(reseller_id=None)
+    )
+    await session.execute(
+        update(DeliveryFailure)
+        .where(DeliveryFailure.reseller_id == user_id)
+        .values(reseller_id=None)
+    )
+    await session.execute(
+        update(ChargeCode).where(ChargeCode.reseller_id == user_id).values(reseller_id=None)
+    )
+    await session.execute(
+        update(PointsRule).where(PointsRule.reseller_id == user_id).values(reseller_id=None)
+    )
+    await session.execute(
+        update(LoyaltyReward).where(LoyaltyReward.reseller_id == user_id).values(reseller_id=None)
+    )
+    await session.execute(
+        update(LuckyWheelPrize)
+        .where(LuckyWheelPrize.reseller_id == user_id)
+        .values(reseller_id=None)
+    )
+    await session.execute(
+        update(LuckyWheelSpin).where(LuckyWheelSpin.reseller_id == user_id).values(reseller_id=None)
+    )
+    # A shop's wheel counters go with the shop; relabelling them as the platform's would collide
+    # with the customer's own platform row (one row per customer and shop).
+    await session.execute(delete(LuckyWheelUserState).where(LuckyWheelUserState.reseller_id == user_id))
+    await session.execute(delete(BotUserShop).where(BotUserShop.shop_id == user_id))
+    await session.execute(delete(BotUserShop).where(BotUserShop.bot_user_id == user_id))
+    # Customers and orders of a deleted shop become the platform's (above); so do the services it sold.
+    await session.execute(update(UserService).where(UserService.shop_id == user_id).values(shop_id=None))
+    # N1: never NULL-out shop-issued discounts / pending shop top-ups — that
+    # would promote them to platform scope. Delete entitlements; reject pending
+    # top-ups; only then clear wallet_shop_id for FK cleanup on historical rows.
+    await session.execute(
+        delete(LoyaltyDiscountEntitlement).where(
+            LoyaltyDiscountEntitlement.reseller_id == user_id
+        )
+    )
+    await session.execute(
+        update(WalletTransaction)
+        .where(WalletTransaction.reseller_id == user_id)
+        .values(reseller_id=None)
+    )
+    await session.execute(
+        update(Payment)
+        .where(
+            Payment.wallet_shop_id == user_id,
+            Payment.status == PaymentStatus.PENDING.value,
+        )
+        .values(
+            status=PaymentStatus.REJECTED.value,
+            review_note="shop deleted",
+        )
+    )
+    await session.execute(
+        update(Payment).where(Payment.wallet_shop_id == user_id).values(wallet_shop_id=None)
+    )
+    await session.execute(delete(ShopWallet).where(ShopWallet.user_id == user_id))
+    await session.execute(delete(ShopWallet).where(ShopWallet.reseller_id == user_id))
+    # A deleted shop's points go with it; never re-label its entries as the platform's.
+    await session.execute(delete(ShopPoints).where(ShopPoints.user_id == user_id))
+    await session.execute(delete(ShopPoints).where(ShopPoints.reseller_id == user_id))
+    await session.execute(delete(PointsTransaction).where(PointsTransaction.reseller_id == user_id))
+
+    await session.execute(
+        delete(LoyaltyDiscountEntitlement).where(LoyaltyDiscountEntitlement.user_id == user_id)
+    )
+    await session.execute(delete(RewardRedemption).where(RewardRedemption.user_id == user_id))
+    await session.execute(delete(LuckyWheelSpin).where(LuckyWheelSpin.user_id == user_id))
+    await session.execute(
+        delete(LuckyWheelUserState).where(LuckyWheelUserState.user_id == user_id)
+    )
+    pts = list(
+        (
+            await session.execute(
+                select(PointsTransaction.id).where(PointsTransaction.user_id == user_id)
+            )
+        ).scalars().all()
+    )
+    if pts:
+        await session.execute(
+            update(PointsTransaction)
+            .where(PointsTransaction.reversed_tx_id.in_(pts))
+            .values(reversed_tx_id=None)
+        )
+        await session.execute(
+            delete(PointsTransaction).where(PointsTransaction.user_id == user_id)
+        )
+    await session.execute(
+        delete(ReferralEvent).where(
+            (ReferralEvent.referrer_id == user_id) | (ReferralEvent.referred_id == user_id)
+        )
+    )
+    await session.execute(delete(TermsAcceptance).where(TermsAcceptance.bot_user_id == user_id))
+
+    from app.db.models import ChargeCodeRedemption, ChargeCodeUse
+    from app.services.gift_codes import release_gift_discount
+
+    for unpaid in (await session.execute(select(Order).where(
+        Order.user_id == user_id,
+        Order.status.in_(("pending", "awaiting_receipt", "awaiting_approval", "rejected", "cancelled")),
+        Order.discount_code.is_not(None),
+    ))).scalars().all():
+        await release_gift_discount(session, unpaid)
+    await session.execute(delete(ChargeCodeUse).where(ChargeCodeUse.user_id == user_id))
+    await session.execute(
+        delete(ChargeCodeRedemption).where(ChargeCodeRedemption.user_id == user_id)
+    )
+    await purge_user_references(session, user_id)
+    await session.execute(delete(Payment).where(Payment.user_id == user_id))
+    await session.execute(delete(Order).where(Order.user_id == user_id))
+    await session.execute(delete(UserService).where(UserService.bot_user_id == user_id))
+
+    ticket_ids = list(
+        (
+            await session.execute(select(Ticket.id).where(Ticket.user_id == user_id))
+        ).scalars().all()
+    )
+    if ticket_ids:
+        await session.execute(
+            delete(TicketMessage).where(TicketMessage.ticket_id.in_(ticket_ids))
+        )
+        await session.execute(delete(Ticket).where(Ticket.id.in_(ticket_ids)))
+
+    await session.execute(
+        delete(WalletTransaction).where(WalletTransaction.user_id == user_id)
+    )
+
+    # Shop/reseller rows that FK to bot_users (no ON DELETE CASCADE in schema)
+    await session.execute(
+        delete(ResellerSetting).where(ResellerSetting.reseller_user_id == user_id)
+    )
+    await session.execute(
+        delete(ResellerBillingTransaction).where(
+            ResellerBillingTransaction.reseller_user_id == user_id
+        )
+    )
+    await session.execute(
+        delete(ResellerBillingRate).where(ResellerBillingRate.reseller_user_id == user_id)
+    )
+    plan_ids = list(
+        (
+            await session.execute(select(Plan.id).where(Plan.owner_reseller_id == user_id))
+        ).scalars().all()
+    )
+    if plan_ids:
+        await session.execute(
+            update(Order).where(Order.plan_id.in_(plan_ids)).values(plan_id=None)
+        )
+        await session.execute(delete(Plan).where(Plan.id.in_(plan_ids)))
+    # Shop catalog labels / add-on packs (FK owner_reseller_id → bot_users, no CASCADE).
+    # PAYG shops often have these; without cleanup DELETE bot_users raises IntegrityError.
+    from app.db.models import PlanCategory, ServiceAddonPack
+
+    await session.execute(
+        delete(PlanCategory).where(PlanCategory.owner_reseller_id == user_id)
+    )
+    await session.execute(
+        delete(ServiceAddonPack).where(ServiceAddonPack.owner_reseller_id == user_id)
+    )
+    panel_ticket_ids = list(
+        (
+            await session.execute(
+                select(PanelTicket.id).where(PanelTicket.opener_reseller_user_id == user_id)
+            )
+        ).scalars().all()
+    )
+    if panel_ticket_ids:
+        await session.execute(
+            delete(PanelTicketMessage).where(
+                PanelTicketMessage.ticket_id.in_(panel_ticket_ids)
+            )
+        )
+        await session.execute(
+            delete(PanelTicket).where(PanelTicket.id.in_(panel_ticket_ids))
+        )
+    await session.execute(delete(TrialClaim).where(TrialClaim.user_id == user_id))
+
+    await session.delete(user)
+    await session.commit()
+
+    return {
+        "user_id": user_id,
+        "telegram_id": telegram_id,
+        "name": name,
+        "services_removed": len(svc_ids),
+        "pg_services_deleted": pg_services_deleted,
+    }
+
+
+def friendly_user_delete_error(exc: Exception) -> str:
+    """Short Persian message for hard-delete failures (hide raw SQL)."""
+    text = str(exc or "")
+    low = text.lower()
+    is_integrity_error = (
+        "foreign key" in low
+        or "integrityerror" in low
+        or "constraint failed" in low
+        or isinstance(exc, IntegrityError)
+    )
+    if is_integrity_error:
+        logger.warning(
+            "user delete blocked by constraint: %s", str(getattr(exc, "orig", exc))[:500]
+        )
+    if (
+        "foreign key" in low
+        or "integrityerror" in low
+        or "constraint failed" in low
+        or isinstance(exc, IntegrityError)
+    ):
+        return (
+            "حذف کاربر ممکن نشد چون هنوز دادهٔ وابسته‌ای به این حساب وصل است. "
+            "علت: محدودیت یکپارچگی پایگاه‌داده (کلید خارجی). "
+            "راه حل: دوباره تلاش کنید؛ اگر تکرار شد از پشتیبانی بخواهید لاگ سرور را بررسی کند."
+        )
+    return (text or "حذف ناموفق بود")[:320]

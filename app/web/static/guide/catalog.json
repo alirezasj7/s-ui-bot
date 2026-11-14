@@ -1,0 +1,200 @@
+{
+  "start": {
+    "title": "شروع سریع",
+    "summary": "نصب، ویزارد اولیه و اولین ورود به وب‌پنل را قدم‌به‌قدم یاد بگیرید.",
+    "slug": "start",
+    "panel": "/"
+  },
+  "roles": {
+    "title": "نقش‌ها و دسترسی‌ها",
+    "summary": "مالک، نماینده، ادمین پاسارگارد و نمایندهٔ زیرمجموعه چه چیزی می‌بینند.",
+    "slug": "roles",
+    "panel": "/home"
+  },
+  "home": {
+    "title": "داشبورد وب پنل",
+    "summary": "نمای کلی وضعیت سرور، اعلان‌های مهم و میانبرهای روزمره از صفحهٔ داشبورد.",
+    "slug": "home",
+    "panel": "/home"
+  },
+  "inbox": {
+    "title": "اعلان‌ها و مرکز اقدام",
+    "summary": "رسیدهای منتظر، تیکت‌ها و هشدارهای انقضا/حجم را از یک جا ببینید و جمع کنید.",
+    "slug": "inbox",
+    "panel": "/inbox"
+  },
+  "settings-panel": {
+    "title": "تنظیمات وب پنل",
+    "summary": "بکاپ، امنیت ورود، PWA، SSL و آپدیت نسخه — تنظیمات خودِ پنل، نه ربات فروشگاه.",
+    "slug": "settings-panel",
+    "panel": "/settings?tab=backup"
+  },
+  "bot-dashboard": {
+    "title": "نمای کلی ربات",
+    "summary": "آمار فروشگاه، سفارش‌ها و سلامت ربات تلگرام را یک‌جا ببینید.",
+    "slug": "bot-dashboard",
+    "panel": "/dashboard"
+  },
+  "users": {
+    "title": "کاربران ربات",
+    "summary": "مشتریان تلگرام، موجودی کیف پول، سرویس‌ها و فیلترهای انقضا/حجم کم.",
+    "slug": "users",
+    "panel": "/users"
+  },
+  "finance": {
+    "title": "مدیریت مالی",
+    "summary": "سفارش‌ها، رسید کارت‌به‌کارت، درگاه و تأیید/رد پرداخت‌ها.",
+    "slug": "finance",
+    "panel": "/finance"
+  },
+  "plans": {
+    "title": "پلن‌ها",
+    "summary": "ساخت و ویرایش پلن فروش، اتصال به تمپلیت پاسارگارد و بسته‌های حجم و زمان.",
+    "slug": "plans",
+    "panel": "/plans"
+  },
+  "tickets": {
+    "title": "پشتیبانی",
+    "summary": "تیکت‌های کاربران ربات و گفتگوی داخلی نماینده با مالک.",
+    "slug": "tickets",
+    "panel": "/tickets"
+  },
+  "broadcast": {
+    "title": "پیام گروهی",
+    "summary": "ارسال پیام همگانی به کاربران ربات با فیلتر مخاطب.",
+    "slug": "broadcast",
+    "panel": "/broadcast"
+  },
+  "loyalty": {
+    "title": "باشگاه مشتریان",
+    "summary": "امتیاز، سطح، پاداش و گردونه — و بخش بازاریابی (تخفیف‌ها، کد هدیه، کمپین) که کنار آن است.",
+    "slug": "loyalty",
+    "panel": "/loyalty"
+  },
+  "message-variables": {
+    "title": "متغیرهای پیام",
+    "summary": "جایگزین‌هایی مثل {name} و {amount} که در متن‌های ربات پر می‌شوند.",
+    "slug": "message-variables",
+    "panel": "/message-variables"
+  },
+  "settings-bot": {
+    "title": "تنظیمات ربات و فروشگاه",
+    "summary": "متن‌ها، دکمه‌ها، پرداخت، منو، ظاهر و اعلان‌های ربات تلگرام.",
+    "slug": "settings-bot",
+    "panel": "/settings"
+  },
+  "resellers": {
+    "title": "نمایندگان",
+    "summary": "ساخت نماینده، پلن نمایندگی، دسترسی وب و ربات شخصی نماینده.",
+    "slug": "resellers",
+    "panel": "/resellers"
+  },
+  "reseller-applications": {
+    "title": "درخواست‌های نمایندگی",
+    "summary": "بررسی و تأیید درخواست‌هایی که کاربر از داخل ربات فرستاده است.",
+    "slug": "reseller-applications",
+    "panel": "/reseller-applications"
+  },
+  "funnel": {
+    "title": "رفتار کاربر",
+    "summary": "مسیر کاربر از ورود تا خرید را ببینید و نقاط ریزش را پیدا کنید.",
+    "slug": "funnel",
+    "panel": "/funnel"
+  },
+  "shop-isolation": {
+    "title": "جداسازی فروشگاه‌ها",
+    "summary": "هر فروشگاه ایزوله است: سرویس، تیکت، پرداخت و امتیاز هر ربات فقط در همان ربات دیده می‌شود.",
+    "slug": "shop-isolation",
+    "panel": "/service-shop-review"
+  },
+  "discounts": {
+    "title": "تخفیف‌ها",
+    "summary": "تخفیف زمان‌دار یا کاهش دائمی قیمت برای همهٔ پلن‌ها، یک پلن یا یک دسته.",
+    "slug": "discounts",
+    "panel": "/catalog-discounts"
+  },
+  "gift-codes": {
+    "title": "کد هدیه",
+    "summary": "کد شارژ کیف پول یا تخفیف درصدی با سقف مصرف و تاریخ انقضا برای مشتریان فروشگاه.",
+    "slug": "gift-codes",
+    "panel": "/gift-codes"
+  },
+  "service-import": {
+    "title": "افزودن سرویس قبلی",
+    "summary": "اتصال سرویس موجود مشتری با لینک اشتراک، فوری یا با تأیید ادمین.",
+    "slug": "service-import",
+    "panel": "/settings"
+  },
+  "connection-status": {
+    "title": "وضعیت اتصال",
+    "summary": "تست خودکار کانفیگ‌ها از سمت سرور و نمایش وضعیت آن‌ها به ادمین و مشتریان.",
+    "slug": "connection-status",
+    "panel": "/connection-status"
+  },
+  "telegram-alerts": {
+    "title": "هشدارهای پنل در تلگرام",
+    "summary": "اعلان نسخهٔ جدید، پر شدن ظرفیت و تحویل ناموفق؛ هر کدام جدا قابل خاموش‌کردن است.",
+    "slug": "telegram-alerts",
+    "panel": "/settings"
+  },
+  "pg-overview": {
+    "title": "نمای کلی پاسارگارد",
+    "summary": "وضعیت اتصال به پنل پاسارگارد و میانبر بخش‌های زیرمجموعه.",
+    "slug": "pg-overview",
+    "panel": "/pg"
+  },
+  "pg-users": {
+    "title": "کاربران پاسارگارد",
+    "summary": "مدیریت یوزرهای VPN روی پاسارگارد از داخل وب‌پنل ربات.",
+    "slug": "pg-users",
+    "panel": "/pg/users"
+  },
+  "pg-admins": {
+    "title": "ادمین پاسارگارد",
+    "summary": "ساخت ادمین فرعی، اعطای وب‌پنل و تبدیل به نماینده فروشگاه.",
+    "slug": "pg-admins",
+    "panel": "/pg/admins"
+  },
+  "pg-nodes": {
+    "title": "نودها",
+    "summary": "مشاهده و مدیریت نودهای پاسارگارد و وضعیت سلامت آن‌ها.",
+    "slug": "pg-nodes",
+    "panel": "/pg/nodes"
+  },
+  "pg-groups": {
+    "title": "گروه‌ها",
+    "summary": "گروه‌های اینباند پاسارگارد برای اتصال پلن‌ها و محدودیت دسترسی.",
+    "slug": "pg-groups",
+    "panel": "/pg/groups"
+  },
+  "pg-inbounds": {
+    "title": "اینباندها",
+    "summary": "فهرست اینباندها و ارتباطشان با گروه‌ها و تمپلیت‌ها.",
+    "slug": "pg-inbounds",
+    "panel": "/pg/inbounds"
+  },
+  "pg-hosts": {
+    "title": "هاست‌ها",
+    "summary": "هاست‌های نمایشی اشتراک و تنظیمات مرتبط در پاسارگارد.",
+    "slug": "pg-hosts",
+    "panel": "/pg/hosts"
+  },
+  "pg-templates": {
+    "title": "تمپلیت‌های کاربر",
+    "summary": "تمپلیت‌های آماده پاسارگارد که پلن‌های فروشگاه به آن‌ها وصل می‌شوند.",
+    "slug": "pg-templates",
+    "panel": "/pg/templates"
+  },
+  "troubleshooting": {
+    "title": "عیب‌یابی سریع",
+    "summary": "ربات جواب نمی‌دهد، لاگین وب، پورت ۹۰۰۰، پاسارگارد و خطاهای رایج دیگر.",
+    "slug": "troubleshooting",
+    "panel": "/home"
+  },
+  "deploy-docs": {
+    "title": "انتشار راهنما روی دامنه خودتان",
+    "summary": "چطور خروجی راهنما را روی سرور و دامنه شخصی بالا بیاورید.",
+    "slug": "deploy-docs",
+    "panel": "/help/"
+  }
+}

@@ -1,0 +1,15 @@
+{% if flash_ok %}<div class="flash ok">{{ flash_ok }}</div>{% endif %}
+{% if flash_err %}<div class="flash err">{{ flash_err }}</div>{% endif %}
+<section class="edit-section">
+  <header class="edit-section-head">
+    <h3>{{ user.full_name or user.username or 'نماینده' }}</h3>
+    <p class="muted">تگ ریسک فقط برای اسکن سریع لیست است؛ کاربر نهایی آن را نمی‌بیند.</p>
+  </header>
+  <form method="post" action="/resellers/{{ user.id }}/color-tag" class="form-stack" data-color-tag-form>
+    {% set selected_color = (user.color_tag or 'green') %}
+    {% include "_color_tag_picker.html" %}
+    <div class="actions">
+      <button class="btn" type="submit">ذخیره تگ ریسک</button>
+    </div>
+  </form>
+</section>

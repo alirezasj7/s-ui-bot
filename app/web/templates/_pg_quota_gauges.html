@@ -1,0 +1,51 @@
+{# Quota gauges for reseller / pg_staff (users + traffic) — same layout as admin CPU/RAM. #}
+{# Expects: meter dict with pct, remain_pct, tone, exhausted, used_text, limit_text, remain_text, has_limit #}
+
+{% macro pg_quota_exhausted_banners(users=None, traffic=None) -%}
+{% if users and users.exhausted %}
+<div class="flash err pg-quota-banner" role="alert">
+  <div class="flash-copy">
+    <strong>سقف تعداد کاربران پر شده است</strong>
+    <span>محدودیت تعداد کاربران شما به پایان رسیده — تا افزایش سهمیه، ساخت کاربر جدید ممکن نیست.</span>
+  </div>
+</div>
+{% endif %}
+{% if traffic and traffic.exhausted %}
+<div class="flash err pg-quota-banner" role="alert">
+  <div class="flash-copy">
+    <strong>سقف حجم تمام شده است</strong>
+    <span>محدودیت حجم شما به پایان رسیده — تا افزایش سهمیه، تحویل سرویس جدید ممکن نیست.</span>
+  </div>
+</div>
+{% endif %}
+{%- endmacro %}
+
+{% macro pg_quota_gauge(meter, label, unit_label, metric) -%}
+<article class="home-gauge home-gauge-{{ meter.tone or 'neutral' }}{% if meter.exhausted %} is-exhausted{% endif %}" data-metric="{{ metric }}">
+  <div class="home-gauge-ring" style="--p: {{ '%.1f'|format(meter.pct or 0) if meter.has_limit else 0 }}">
+    <svg viewBox="0 0 120 120" aria-hidden="true">
+      <circle class="home-gauge-track" cx="60" cy="60" r="52" />
+      <circle class="home-gauge-val" cx="60" cy="60" r="52" pathLength="100" />
+    </svg>
+    <div class="home-gauge-center">
+      {% if meter.has_limit and meter.remain_pct is number %}
+      <strong>{{ '%.0f'|format(meter.remain_pct) }}٪</strong>
+      <span>مانده</span>
+      {% else %}
+      <strong>—</strong>
+      <span>{{ unit_label }}</span>
+      {% endif %}
+    </div>
+  </div>
+  <div class="home-gauge-meta">
+    <span class="home-gauge-label">{{ label }}</span>
+    {% if meter.has_limit %}
+    <span class="muted num-ratio">{{ meter.ratio_text or (meter.used_text ~ '/' ~ meter.limit_text) }}</span>
+    <small class="muted">باقی‌مانده {{ meter.remain_text }}</small>
+    {% else %}
+    <span class="muted num-ratio">{{ meter.used_text }}</span>
+    <small class="muted">بدون سقف</small>
+    {% endif %}
+  </div>
+</article>
+{%- endmacro %}

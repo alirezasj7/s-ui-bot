@@ -1,0 +1,326 @@
+{% extends "base.html" %}
+{% from "macros.html" import tkt_status, page_title, panel_tkt_status, panel_tkt_priority, table_select_head, table_select_cell, table_bulk_bar, modal_title %}
+{% block title %}پشتیبانی{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div>
+    {{ page_title('tickets', 'پشتیبانی', help='tickets') }}
+  </div>
+  <div class="page-head-actions">
+    {% if can_manage_supports %}
+    <button type="button" class="btn btn-ghost" data-modal-open="modal-supports-settings">پشتیبان‌ها</button>
+    {% endif %}
+    {% if can_create %}
+    <button type="button" class="btn" data-modal-open="modal-ticket-new">تیکت جدید</button>
+    {% endif %}
+  </div>
+</div>
+
+<div class="card card-flush">
+  {{ table_bulk_bar('/tickets/panel/bulk-action', [
+    {'key': 'close', 'label': 'بستن', 'confirm': '{n} تیکت پنلی بسته شوند؟', 'confirm_title': 'بستن گروهی', 'confirm_label': 'بستن', 'warn': true},
+  ]) }}
+  <div class="table-wrap">
+  <table class="table-list-sm" data-bulk-select>
+    <thead>
+      <tr>
+        {{ table_select_head() }}
+        <th class="col-id">#</th>
+        {% if is_owner %}<th>از</th>{% endif %}
+        <th>موضوع</th>
+        <th>اولویت</th>
+        <th>وضعیت</th>
+        <th>به‌روزرسانی</th>
+        <th class="col-actions"></th>
+        <th class="li-head" scope="col"><span class="li-count">{{ panel_tickets | length | num }} تیکت</span></th>
+      </tr>
+    </thead>
+    <tbody>
+    {% for t in panel_tickets %}
+      <tr class="{% if (t.answered_unread and not is_owner) or (t.owner_unread and is_owner) %}is-unread{% endif %}"
+          data-bulk-ops="{% if t.status != 'closed' %}close{% endif %}">
+        {{ table_select_cell(t.id) }}
+        <td class="mono">{{ t.id }}</td>
+        {% if is_owner %}
+        <td>
+          <span class="muted">{{ t.opener_label or '—' }}</span>
+          {% if t.opener_role == 'reseller' %}
+          <span class="badge role-reseller">نماینده</span>
+          {% elif t.opener_role == 'pg_staff' %}
+          <span class="badge info">ادمین فرعی</span>
+          {% endif %}
+        </td>
+        {% endif %}
+        <td class="li-title">
+          <span dir="auto">{{ t.subject }}</span>
+          <span class="li-only li-id" dir="ltr">(#{{ t.id }})</span>
+          {% if t.answered_unread and not is_owner %}
+          <span class="badge answered li-hide">پاسخ جدید</span>
+          {% elif t.owner_unread and is_owner %}
+          <span class="badge open li-hide">جدید</span>
+          {% endif %}
+        </td>
+        <td class="li-sub">
+          {#- On phones line two: unread, sender, priority and last update. -#}
+          {% if t.answered_unread and not is_owner %}<span class="li-only badge answered">پاسخ جدید</span>
+          {% elif t.owner_unread and is_owner %}<span class="li-only badge open">جدید</span>{% endif %}
+          {% if is_owner and t.opener_label %}<span class="li-only" dir="auto">{{ t.opener_label }}</span>{% endif %}
+          <span class="badge {{ priority_badge.get(t.priority, 'neutral') }}">{{ panel_tkt_priority(t.priority) }}</span>
+          <span class="li-only">· <bdi dir="ltr">{{ (t.updated_at|string)[:16] }}</bdi></span>
+        </td>
+        <td class="li-badge">
+          <span class="badge {{ status_badge.get(t.status, 'neutral') }}">{{ panel_tkt_status(t.status) }}</span>
+        </td>
+        <td class="muted mono" dir="ltr">{{ t.updated_at }}</td>
+        <td class="col-actions">
+          <a class="btn btn-sm btn-ghost li-hide" href="/tickets?view={{ t.id }}">مشاهده</a>
+          <a class="li-only li-open" href="/tickets?view={{ t.id }}" aria-label="مشاهده تیکت #{{ t.id }}"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="m15 6-6 6 6 6"/></svg></a>
+        </td>
+      </tr>
+    {% else %}
+      <tr><td colspan="{% if is_owner %}8{% else %}7{% endif %}" class="muted">هنوز تیکت پنلی ثبت نشده</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  </div>
+</div>
+
+{% if show_tg %}
+<section class="ticket-tg-section">
+  <h2 class="section-title">تیکت‌های کاربران ربات</h2>
+  <p class="muted page-sub">پشتیبانی کاربران تلگرام — پاسخ از همین‌جا مثل تلگرام برای کاربر ارسال می‌شود</p>
+  <div class="card card-flush">
+    {{ table_bulk_bar('/tickets/bot/bulk-action', [
+      {'key': 'close', 'label': 'بستن', 'confirm': '{n} تیکت بسته شوند؟', 'confirm_title': 'بستن گروهی', 'confirm_label': 'بستن', 'warn': true},
+    ]) }}
+    <div class="table-wrap">
+    <table class="table-list-sm" data-bulk-select>
+      <thead><tr>
+        {{ table_select_head() }}
+        <th class="col-id">#</th><th class="col-user">کاربر</th><th class="col-subject">موضوع</th><th class="col-status">وضعیت</th><th class="col-time">زمان</th><th class="col-actions"></th>
+        <th class="li-head" scope="col"><span class="li-count">{{ tg_rows | length | num }} تیکت</span></th></tr></thead>
+      <tbody>
+      {% for row in tg_rows %}
+        {% set t = row.ticket %}
+        <tr data-bulk-ops="{% if t.status != 'closed' %}close{% endif %}">
+          {{ table_select_cell(t.id) }}
+          <td class="mono">{{ t.id }}</td>
+          <td class="li-sub">
+            {#- On phones line two: who asked and when. -#}
+            {% if row.user_id %}
+            <a class="cell-user-link" href="/users?uid={{ row.user_id }}" dir="auto">{{ row.user_label }}</a>
+            {% else %}
+            <span dir="auto">{{ row.user_label }}</span>
+            {% endif %}
+            <span class="li-only">· <bdi dir="ltr">{{ ((t.updated_at or t.created_at)|string)[:16] }}</bdi></span>
+          </td>
+          <td class="li-title"><span dir="auto">{{ t.subject }}</span> <span class="li-only li-id" dir="ltr">(#{{ t.id }})</span></td>
+          <td class="li-badge">
+            <span class="badge {% if t.status=='open' %}open{% elif t.status=='closed' %}neutral{% else %}answered{% endif %}">
+              {{ tkt_status(t.status) }}
+            </span>
+          </td>
+          <td class="muted mono" dir="ltr">{{ t.updated_at or t.created_at }}</td>
+          <td class="col-actions">
+            <a class="btn btn-sm btn-ghost li-hide" href="/tickets?tg={{ t.id }}">مشاهده</a>
+            <a class="li-only li-open" href="/tickets?tg={{ t.id }}" aria-label="مشاهده تیکت #{{ t.id }}"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="m15 6-6 6 6 6"/></svg></a>
+          </td>
+        </tr>
+      {% else %}
+        <tr><td colspan="7" class="muted">تیکت کاربری نیست</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    </div>
+  </div>
+</section>
+{% endif %}
+
+{% if can_create %}
+<div class="ui-modal{% if open_new %} open{% endif %}" id="modal-ticket-new" {% if not open_new %}hidden{% endif %}>
+  <div class="ui-modal-backdrop" data-modal-close></div>
+  <div class="ui-modal-panel" role="dialog" aria-modal="true" aria-labelledby="ticket-new-title">
+    <div class="ui-modal-head">
+      {{ modal_title('tickets', 'تیکت جدید', caption='گفتگو و وضعیت تیکت', tone='brand', heading_id='ticket-new-title') }}
+      <button type="button" class="icon-btn" data-modal-close aria-label="بستن"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
+    </div>
+    <form method="post" action="/tickets/panel/create" class="form-stack" enctype="multipart/form-data">
+      <label class="form-field">موضوع
+        <input name="subject" required maxlength="255" minlength="3" placeholder="مثلاً مشکل اتصال به نود" autocomplete="off" />
+      </label>
+      <label class="form-field">اولویت
+        <select name="priority">
+          {% for code, label in priority_labels.items() %}
+          <option value="{{ code }}" {% if code == 'normal' %}selected{% endif %}>{{ label }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label class="form-field">متن پیام
+        <textarea name="body" rows="5" placeholder="شرح مشکل یا درخواست…"></textarea>
+        <small class="muted">متن یا فایل پیوست — حداقل یکی لازم است</small>
+      </label>
+      <label class="file-label upload-box">پیوست (اختیاری)
+        <input type="file" name="attachment" accept=".png,.jpg,.jpeg,.webp,.gif,.pdf,.txt,.zip,.rar,.7z,.doc,.docx,.xls,.xlsx,.csv,.log,image/*" />
+        <span class="upload-box-plus" aria-hidden="true">+</span>
+        <span class="upload-box-title">انتخاب فایل</span>
+        <span class="upload-box-hint muted">تصویر، PDF، ZIP، متن یا آفیس — تا ۱۲ مگابایت</span>
+        <span class="upload-box-name muted" data-upload-name>فایلی انتخاب نشده</span>
+        <span class="upload-box-progress" hidden aria-hidden="true"><i class="upload-box-progress-bar"></i></span>
+      </label>
+      <div class="actions">
+        <button type="submit" class="btn">ثبت تیکت</button>
+        <button type="button" class="btn btn-ghost" data-modal-close>انصراف</button>
+      </div>
+    </form>
+  </div>
+</div>
+{% endif %}
+
+{% if active_ticket %}
+{% set t = active_ticket %}
+<div class="ui-modal open" id="modal-ticket-view" data-modal-escape-href="/tickets">
+  <div class="ui-modal-backdrop" data-modal-close-nav="/tickets"></div>
+  <div class="ui-modal-panel ui-modal-panel-lg" role="dialog" aria-modal="true" aria-labelledby="ticket-view-title">
+    <div class="ui-modal-head">
+      {{ modal_title('tickets', 'تیکت #' ~ t.id, caption=t.subject, tone='brand', heading_id='ticket-view-title') }}
+      <a class="icon-btn" href="/tickets" aria-label="بستن"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg></a>
+    </div>
+
+    <div class="ticket-meta">
+      <span class="badge {{ priority_badge.get(t.priority, 'neutral') }}">اولویت: {{ panel_tkt_priority(t.priority) }}</span>
+      <span class="badge {{ status_badge.get(t.status, 'neutral') }}">{{ panel_tkt_status(t.status) }}</span>
+      {% if is_owner %}
+      <span class="muted">از {{ t.opener_label or '—' }}</span>
+      {% endif %}
+    </div>
+
+    <div class="ticket-thread" id="ticket-thread">
+      {% for m in t.messages %}
+      <article class="ticket-msg {% if m.sender_role == 'admin' %}ticket-msg--owner{% else %}ticket-msg--opener{% endif %}">
+        <header class="ticket-msg-head">
+          <strong>{{ m.sender_label or m.sender_role }}</strong>
+          <span class="muted mono" dir="ltr">{{ m.created_at }}</span>
+        </header>
+        {% if m.body %}<p class="ticket-msg-body">{{ m.body }}</p>{% endif %}
+        {% if m.attachment_path %}
+        <a class="ticket-attach" href="/tickets/panel/{{ t.id }}/attachment/{{ m.id }}" rel="noopener">
+          <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M14 3h5v5M19 3l-9 9"/><path d="M11 5H6a2 2 0 0 0-2 2v11a2 2 0 0 0 2 2h11a2 2 0 0 0 2-2v-5"/></svg>
+          <span>{{ m.attachment_name or 'دانلود پیوست' }}</span>
+        </a>
+        {% endif %}
+      </article>
+      {% endfor %}
+    </div>
+
+    {% if t.status != 'closed' %}
+    <form method="post" action="/tickets/panel/{{ t.id }}/reply" class="form-stack ticket-reply" enctype="multipart/form-data">
+      <label class="form-field">پاسخ
+        <textarea name="body" rows="3" placeholder="متن پاسخ…"></textarea>
+      </label>
+      <label class="file-label upload-box">پیوست (اختیاری)
+        <input type="file" name="attachment" accept=".png,.jpg,.jpeg,.webp,.gif,.pdf,.txt,.zip,.rar,.7z,.doc,.docx,.xls,.xlsx,.csv,.log,image/*" />
+        <span class="upload-box-plus" aria-hidden="true">+</span>
+        <span class="upload-box-title">انتخاب فایل</span>
+        <span class="upload-box-hint muted">تصویر، PDF، ZIP، متن یا آفیس — تا ۱۲ مگابایت</span>
+        <span class="upload-box-name muted" data-upload-name>فایلی انتخاب نشده</span>
+        <span class="upload-box-progress" hidden aria-hidden="true"><i class="upload-box-progress-bar"></i></span>
+      </label>
+      <div class="actions">
+        <button type="submit" class="btn">ارسال پاسخ</button>
+      </div>
+    </form>
+    {% else %}
+    <p class="muted ticket-closed-note">این تیکت بسته شده است.</p>
+    {% endif %}
+
+    <div class="ticket-status-actions">
+      {% if is_owner %}
+      <form method="post" action="/tickets/panel/{{ t.id }}/status" class="ticket-status-form">
+        <label class="form-field">وضعیت
+          <select name="status">
+            {% for code, label in status_labels.items() %}
+            <option value="{{ code }}" {% if t.status == code %}selected{% endif %}>{{ label }}</option>
+            {% endfor %}
+          </select>
+        </label>
+        <button type="submit" class="btn btn-sm">ذخیره وضعیت</button>
+      </form>
+      {% elif t.status != 'closed' %}
+      <form method="post" action="/tickets/panel/{{ t.id }}/status" class="ticket-close-form"
+            data-confirm="تیکت بسته شود؟"
+            data-confirm-title="بستن تیکت"
+            data-confirm-warn="1"
+            data-confirm-label="بستن تیکت">
+        <input type="hidden" name="status" value="closed" />
+        <button type="submit" class="btn btn-sm btn-ghost">بستن تیکت</button>
+      </form>
+      {% endif %}
+    </div>
+  </div>
+</div>
+{% endif %}
+
+{% if active_tg_ticket %}
+{% set t = active_tg_ticket %}
+<div class="ui-modal open" id="modal-tg-ticket-view" data-modal-escape-href="/tickets">
+  <div class="ui-modal-backdrop" data-modal-close-nav="/tickets"></div>
+  <div class="ui-modal-panel ui-modal-panel-lg" role="dialog" aria-modal="true" aria-labelledby="tg-ticket-view-title">
+    <div class="ui-modal-head">
+      {{ modal_title('tickets', 'تیکت ربات #' ~ t.id, caption=t.subject, tone='brand', heading_id='tg-ticket-view-title') }}
+      <a class="icon-btn" href="/tickets" aria-label="بستن"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg></a>
+    </div>
+
+    <div class="ticket-meta">
+      <span class="badge {% if t.status=='open' %}open{% elif t.status=='closed' %}neutral{% else %}answered{% endif %}">{{ tkt_status(t.status) }}</span>
+      <span class="muted">کاربر:
+        {% if active_tg_user and active_tg_user.id %}
+        <a class="cell-user-link" href="/users?uid={{ active_tg_user.id }}">{{ active_tg_user_label }}</a>
+        {% else %}
+        {{ active_tg_user_label }}
+        {% endif %}
+      </span>
+    </div>
+
+    <div class="ticket-thread" id="tg-ticket-thread">
+      {% for m in t.messages %}
+      <article class="ticket-msg {% if m.is_staff %}ticket-msg--owner{% else %}ticket-msg--opener{% endif %}">
+        <header class="ticket-msg-head">
+          <strong>{% if m.is_staff %}پشتیبانی{% else %}کاربر{% endif %}</strong>
+          <span class="muted mono" dir="ltr">{{ m.created_at }}</span>
+        </header>
+        {% if m.body %}<p class="ticket-msg-body">{{ m.body }}</p>{% endif %}
+      </article>
+      {% else %}
+      <p class="muted">پیامی ثبت نشده.</p>
+      {% endfor %}
+    </div>
+
+    {% if t.status != 'closed' %}
+    <form method="post" action="/tickets/bot/{{ t.id }}/reply" class="form-stack ticket-reply">
+      <label class="form-field">پاسخ (ارسال به تلگرام کاربر)
+        <textarea name="body" rows="3" required placeholder="متن پاسخ…"></textarea>
+      </label>
+      <div class="actions">
+        <button type="submit" class="btn">ارسال پاسخ</button>
+      </div>
+    </form>
+    <div class="ticket-status-actions">
+      <form method="post" action="/tickets/bot/{{ t.id }}/close" class="ticket-close-form"
+            data-confirm="تیکت بسته شود؟"
+            data-confirm-title="بستن تیکت"
+            data-confirm-warn="1"
+            data-confirm-label="بستن تیکت">
+        <button type="submit" class="btn btn-sm btn-ghost">بستن تیکت</button>
+      </form>
+    </div>
+    {% else %}
+    <p class="muted ticket-closed-note">این تیکت بسته شده است.</p>
+    {% endif %}
+  </div>
+</div>
+{% endif %}
+
+{% if can_manage_supports %}
+  {% include "_modal_supports_settings.html" %}
+{% endif %}
+{% endblock %}

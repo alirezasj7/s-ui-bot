@@ -1,0 +1,666 @@
+{% from "macros.html" import flash_warn_icon, modal_title %}
+{% set st = restore_status or {} %}
+{% set restore_ops = st.state == 'running' or st.awaiting_restart or st.state == 'error' or st.restart_required %}
+<div class="card settings-card">
+  <h2>خروجی / ورودی تنظیمات فروشگاه</h2>
+  <p class="muted update-card-caption">پلن‌ها و متن‌ها/سوییچ‌ها را به‌صورت JSON جابه‌جا کنید (جدا از بکاپ کامل ZIP).</p>
+  <div class="actions" style="gap:var(--space-2);flex-wrap:wrap;margin-bottom:var(--space-2)">
+    <a class="btn btn-ghost" href="/settings/shop-export">دانلود خروجی JSON</a>
+  </div>
+  <form method="post" action="/settings/shop-import" enctype="multipart/form-data" class="form-stack">
+    <label class="upload-box">
+      <input type="file" name="file" accept=".json,application/json" required />
+      <span class="upload-box-plus" aria-hidden="true">+</span>
+      <span class="upload-box-title">انتخاب فایل JSON</span>
+      <span class="upload-box-hint muted">خروجی قبلی را اینجا رها کنید</span>
+    </label>
+    <label class="ui-switch-row">
+      <span class="ui-switch-copy"><strong>جایگزینی پلن‌های فعلی</strong><small>اگر خاموش باشد فقط اضافه می‌شود</small></span>
+      <span class="ui-switch">
+        <input type="checkbox" name="replace_plans" value="1" />
+        <span class="ui-switch-track" aria-hidden="true"></span>
+      </span>
+    </label>
+    <div class="actions">
+      <button class="btn" type="submit">وارد کردن</button>
+    </div>
+  </form>
+</div>
+
+{% if backup_schedule_groups %}
+<form method="post" action="/settings?tab=backup" class="settings-form" id="backup-schedule-form">
+  {% for group_name, fields in backup_schedule_groups.items() %}
+  <div class="card settings-card">
+    <h2>{{ group_name }}</h2>
+    <div class="settings-grid">
+      {% for field in fields %}
+        {% include "_settings_field.html" %}
+      {% endfor %}
+    </div>
+  </div>
+  {% endfor %}
+  <div class="actions sticky-actions">
+    <button class="btn" type="submit">ذخیره تنظیمات بکاپ</button>
+  </div>
+</form>
+{% set tg_status = (values.get('backup_telegram_last_status') or '') %}
+<div class="card settings-card" id="backup-telegram-card">
+  <h2>وضعیت ارسال به تلگرام</h2>
+  {% if tg_status %}
+  {% set tg_kind = tg_status.split(':')[0] %}
+  <p class="muted update-card-caption">
+    <span class="badge {% if tg_kind == 'ok' %}active{% elif tg_kind == 'skipped' %}warn{% else %}danger{% endif %}">{% if tg_kind == 'ok' %}موفق{% elif tg_kind == 'skipped' %}ارسال نشد{% else %}خطا{% endif %}</span>
+    {{ tg_status.split(':', 1)[1].strip() if ':' in tg_status else tg_status }}
+    {% if values.get('backup_telegram_last_at') %}<span class="mono" dir="ltr">· {{ values.get('backup_telegram_last_at')[:16] }}</span>{% endif %}
+  </p>
+  {% else %}
+  <p class="muted update-card-caption">هنوز بکاپی به تلگرام ارسال نشده است. بعد از ذخیرهٔ تنظیمات، با دکمهٔ زیر اتصال را بسنجید.</p>
+  {% endif %}
+  <form method="post" action="/backup/telegram-test" class="actions">
+    <button class="btn btn-ghost" type="submit">ارسال پیام آزمایشی</button>
+  </form>
+</div>
+{% endif %}
+<form method="post" action="/backup/create" class="settings-form" id="backup-create-form" data-busy-label="در حال ساخت بکاپ…">
+  <div class="card settings-card">
+    <h2>بکاپ کامل اطلاعات</h2>
+    <p class="muted update-card-caption">
+      آرشیو ZIP همیشه شامل دیتابیس کامل پلتفرم (همه فروشگاه‌ها)، آپلودها و فایل ورود وب‌پنل (<code dir="ltr">web_admin.json</code>) است.
+      فایل <code dir="ltr">.env</code> (توکن ربات و اسرار) پیش‌فرض <strong>خارج</strong> است — مثل بکاپ زمان‌بندی‌شده؛ فقط با سوییچ + تأیید امنیتی اضافه می‌شود.
+      قبل از هر ریستور، یک بکاپ ایمنی خودکار (با .env) ساخته می‌شود.
+    </p>
+    <div class="update-meta">
+      <div><span class="muted">نسخه فعلی</span> <strong>{{ local_version }}</strong></div>
+      <div><span class="muted">دیتابیس</span> <strong class="mono" dir="ltr">{{ db_path }}</strong></div>
+      <div><span class="muted">تعداد بکاپ‌ها</span> <strong>{{ backups|length }}</strong></div>
+      {% if values.get('backup_last_ok_at') %}
+      <div><span class="muted">آخرین بکاپ خودکار</span> <strong class="mono" dir="ltr">{{ values.get('backup_last_ok_at') }}</strong></div>
+      {% endif %}
+    </div>
+
+    <div id="backup-op-status" class="flash warn" {% if not st.state or st.state == 'idle' or st.state == 'done' %}hidden{% endif %}>
+      <strong id="backup-op-title">{% if st.state == 'running' %}عملیات در حال اجرا{% elif st.state == 'error' %}خطا{% else %}وضعیت{% endif %}</strong>
+      <span class="muted" id="backup-op-msg" style="display:block">{{ st.message or st.state or '' }}</span>
+      {% if st.safety_id %}<small id="backup-op-safety">بکاپ ایمنی: <code>{{ st.safety_id }}</code></small>{% endif %}
+    </div>
+
+    <div class="settings-grid">
+      <div class="setting-item full">
+        <label>یادداشت (اختیاری)
+          <input name="note" maxlength="200" placeholder="مثلاً قبل از تغییر بزرگ" />
+        </label>
+      </div>
+      <div class="setting-item">
+        <label class="support-enabled">
+          <span>شامل .env (توکن‌ها و اسرار)</span>
+          <span class="ui-switch">
+            <input type="checkbox" name="include_env" value="1" id="backup-include-env" />
+            <span class="ui-switch-track" aria-hidden="true"></span>
+          </span>
+        </label>
+      </div>
+      <div class="setting-item full" id="backup-env-confirm-wrap" hidden>
+        <div class="flash err" role="alert">
+          <strong>هشدار امنیتی:</strong>
+          با روشن کردن این گزینه، توکن ربات تلگرام، رمزها و اسرار سرور داخل ZIP می‌روند.
+          حتی بدون .env، فایل <code dir="ltr">web_admin.json</code> (ورود وب‌پنل) همچنان در بکاپ هست — فایل را جای امن نگه دارید.
+        </div>
+        <label class="support-enabled" style="margin-top:var(--space-2)">
+          <span>تأیید می‌کنم که .env (اسرار) داخل بکاپ برود</span>
+          <span class="ui-switch">
+            <input type="checkbox" name="confirm_include_env" value="1" id="backup-confirm-include-env" />
+            <span class="ui-switch-track" aria-hidden="true"></span>
+          </span>
+        </label>
+      </div>
+    </div>
+  </div>
+    <div class="actions sticky-actions">
+    <button class="btn" type="submit" id="backup-create-btn">ساخت بکاپ جدید</button>
+  </div>
+</form>
+
+<form method="post" action="/backup/upload" enctype="multipart/form-data" class="settings-form" id="backup-upload-form" data-busy-label="در حال آپلود…">
+  <div class="card settings-card">
+    <h2>آپلود بکاپ</h2>
+    <p class="muted update-card-caption">فایل ZIP بکاپ قبلی را برای بازیابی یا نگه‌داری آپلود کنید.</p>
+    <label class="upload-box">
+      <input type="file" name="file" accept=".zip,application/zip" required />
+      <span class="upload-box-plus" aria-hidden="true">+</span>
+      <span class="upload-box-title">انتخاب فایل بکاپ</span>
+      <span class="upload-box-hint muted">فایل ZIP را انتخاب کنید یا اینجا رها کنید</span>
+      <span class="upload-box-name muted" data-upload-name>فایلی انتخاب نشده</span>
+      <span class="upload-box-progress" hidden aria-hidden="true"><i class="upload-box-progress-bar"></i></span>
+    </label>
+  </div>
+  <div class="actions sticky-actions">
+    <button class="btn" type="submit" id="backup-upload-btn">آپلود</button>
+  </div>
+</form>
+
+{% if st.state and st.state != 'idle' and not restore_ops %}
+<div class="flash {% if st.state == 'error' %}err{% elif st.state == 'done' %}ok{% else %}warn{% endif %}">
+  وضعیت ریستور: {{ st.message or st.state }}
+  {% if st.safety_id %}<br/><small>بکاپ ایمنی: <code>{{ st.safety_id }}</code></small>{% endif %}
+</div>
+{% endif %}
+
+<div class="card settings-card" id="backup-restore-root"
+     data-running="{{ '1' if st.state == 'running' else '0' }}"
+     data-awaiting-restart="{{ '1' if st.awaiting_restart else '0' }}"
+     data-restart-required="{{ '1' if st.restart_required else '0' }}"
+     data-pre-boot="{{ st.pre_boot_id or '' }}"
+     data-show-ops="{{ '1' if restore_ops else '0' }}">
+  <h2>ریستور بکاپ</h2>
+  <p class="muted update-card-caption">
+    بعد از تأیید، مراحل بازیابی اینجا نمایش داده می‌شود — مشابه آپدیت پنل.
+  </p>
+  {% for warning in restore_warnings or [] %}
+  <div class="flash warn flash-has-ico" role="status">
+    {{ flash_warn_icon() }}
+    <span class="flash-copy">{{ warning }}</span>
+  </div>
+  {% endfor %}
+  <div id="backup-restore-ops" class="update-ops" {% if not restore_ops %}hidden{% endif %}>
+    <div class="flash warn update-stay-warn flash-has-ico" id="backup-restore-stay-warn" role="status">
+      {{ flash_warn_icon() }}
+      <span class="flash-copy">تا پایان عملیات از این صفحه خارج نشوید و رفرش نکنید؛ ممکن است چند دقیقه طول بکشد.</span>
+    </div>
+    <div class="progress-wrap" aria-label="نوار پیشرفت ریستور">
+      <div class="progress-bar">
+        <div class="progress-fill" id="backup-restore-fill" style="width: {{ (st.percent or 0) if restore_ops else 0 }}%"></div>
+      </div>
+      <div class="progress-meta">
+        <span id="backup-restore-step-label">{% if restore_ops %}{{ st.step or st.message or 'در حال ریستور…' }}{% else %}آماده{% endif %}</span>
+        <strong id="backup-restore-percent">{{ (st.percent or 0) if restore_ops else 0 }}٪</strong>
+      </div>
+    </div>
+    <p class="muted" id="backup-restore-state" style="margin:var(--space-2) 0 0">
+      {% if restore_ops %}{{ st.message or '' }}{% endif %}
+    </p>
+    {% if st.safety_id %}<small class="muted" id="backup-restore-safety">بکاپ ایمنی: <code>{{ st.safety_id }}</code></small>{% else %}
+    <small class="muted" id="backup-restore-safety" hidden></small>{% endif %}
+    <ol class="update-steps" id="backup-restore-steps">
+      <li data-step="validate"><span class="step-dot" aria-hidden="true"></span>بررسی بکاپ</li>
+      <li data-step="safety"><span class="step-dot" aria-hidden="true"></span>پشتیبان ایمنی</li>
+      <li data-step="db"><span class="step-dot" aria-hidden="true"></span>بازیابی دیتابیس</li>
+      <li data-step="uploads"><span class="step-dot" aria-hidden="true"></span>بازیابی فایل‌ها</li>
+      <li data-step="env"><span class="step-dot" aria-hidden="true"></span>بازیابی .env</li>
+      <li data-step="restart"><span class="step-dot" aria-hidden="true"></span>راه‌اندازی مجدد سرویس</li>
+      <li data-step="done"><span class="step-dot" aria-hidden="true"></span>تمام شد</li>
+    </ol>
+  </div>
+</div>
+
+<div class="card settings-card">
+  <h2>بکاپ‌های ذخیره‌شده</h2>
+  {% if not backups %}
+  <p class="muted">هنوز بکاپی ساخته نشده.</p>
+  {% else %}
+  <div class="snap-list">
+    {% for b in backups %}
+    <div class="snap-row" style="flex-wrap:wrap;gap: var(--space-1)">
+      <div style="flex:1;min-width:220px">
+        <strong>{{ b.filename }}</strong>
+        {% if loop.first %}
+          {% if values.get('backup_last_verify_ok') == '1' %}
+          <span class="badge ok backup-health-tag" title="آخرین بررسی سلامت موفق بود">سالم</span>
+          {% elif values.get('backup_last_verify_ok') == '0' %}
+          <span class="badge danger backup-health-tag" title="آخرین بررسی سلامت ناموفق بود">ناموفق</span>
+          {% else %}
+          <span class="badge neutral backup-health-tag" title="هنوز بررسی نشده">بررسی‌نشده</span>
+          {% endif %}
+        {% endif %}
+        <small class="muted" style="display:block">
+          {{ b.created_at }} · {{ b.size_human }} · v{{ b.app_version }}
+          {% if b.note %} · {{ b.note }}{% endif %}
+        </small>
+        {% if b.include_env %}
+        <span class="badge warn badge-inline" title="این بکاپ فایل .env (توکن‌ها و اسرار) را دارد">شامل .env</span>
+        {% else %}
+        <span class="badge neutral badge-inline" title="فایل .env داخل این بکاپ نیست">بدون .env</span>
+        {% endif %}
+        {% if b.sha256 %}<small class="mono muted" dir="ltr">sha256: {{ b.sha256[:16] }}…</small>{% endif %}
+      </div>
+      <div style="display:flex;flex-wrap:wrap;gap: var(--space-1);align-items:center">
+        {% if loop.first %}
+        <form method="post" action="/backup/verify-last" style="display:inline">
+          <button class="btn btn-ghost btn-sm" type="submit" title="بررسی ZIP و manifest آخرین بکاپ">بررسی سلامت</button>
+        </form>
+        {% endif %}
+        <a class="btn btn-ghost btn-sm" href="/backup/download/{{ b.id }}">دانلود</a>
+        <form method="post" action="/backup/delete/{{ b.id }}"
+              data-confirm="این بکاپ حذف شود؟"
+              data-confirm-title="تأیید حذف بکاپ"
+              data-confirm-danger="1"
+              data-confirm-label="حذف بکاپ">
+          <button class="btn btn-danger btn-sm" type="submit">حذف</button>
+        </form>
+        <button type="button" class="btn btn-sm"
+                data-modal-open="modal-backup-restore"
+                data-backup-id="{{ b.id }}"
+                data-backup-name="{{ b.filename }}"
+                data-backup-env="{{ '1' if b.include_env else '0' }}">ریستور</button>
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+  {% endif %}
+</div>
+
+<div class="ui-modal" id="modal-backup-restore" hidden>
+  <div class="ui-modal-backdrop" data-modal-close></div>
+  <div class="ui-modal-panel" role="dialog" aria-modal="true" aria-labelledby="backup-restore-title">
+    <div class="ui-modal-head">
+      {{ modal_title('overview', 'تأیید ریستور بکاپ', caption='این عمل را تأیید کنید', tone='neutral', heading_id='backup-restore-title') }}
+      <button type="button" class="icon-btn" data-modal-close aria-label="بستن"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
+    </div>
+    <form method="post" action="/backup/restore/0" class="form-stack" id="backup-restore-form">
+      <input type="hidden" name="confirm" value="1" />
+      <p class="muted">
+        همه داده‌های فعلی با بکاپ
+        <strong id="backup-restore-name">—</strong>
+        جایگزین می‌شود. قبل از ریستور یک بکاپ ایمنی خودکار ساخته می‌شود.
+      </p>
+      <label class="support-enabled">
+        <span>بازیابی .env هم <small class="muted">— برای انتقال به سرور جدید روشن کنید؛ آدرس دیتابیس و پورت همین سرور حفظ می‌شود.</small></span>
+        <span class="ui-switch">
+          <input type="checkbox" name="restore_env" value="1" id="backup-restore-env" />
+          <span class="ui-switch-track" aria-hidden="true"></span>
+        </span>
+      </label>
+      <div class="actions">
+        <button class="btn btn-danger" type="submit" id="backup-restore-btn">تأیید ریستور</button>
+        <button type="button" class="btn btn-ghost" data-modal-close>انصراف</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<div class="card settings-card">
+  <h2>نکات مهم</h2>
+  <ol class="update-steps">
+    <li class="done"><span class="step-dot"></span><span>بکاپ روی دیسک سرور در <code dir="ltr">data/backups/</code> ذخیره می‌شود (حداکثر ۲۰ مورد).</span></li>
+    <li class="done"><span class="step-dot"></span><span>پیش‌فرض بدون <code dir="ltr">.env</code> است؛ بکاپ با اسرار فقط با تأیید دو مرحله‌ای.</span></li>
+    <li class="done"><span class="step-dot"></span><span>حتی بدون .env، رمز ورود وب‌پنل (<code dir="ltr">web_admin.json</code>) داخل آرشیو است — دانلود را جای امن نگه دارید.</span></li>
+    <li class="done"><span class="step-dot"></span><span>ریستور سرویس را ری‌استارت می‌کند تا دیتابیس جدید لود شود.</span></li>
+    <li class="done"><span class="step-dot"></span><span>بکاپ کامل پلتفرم فقط برای مالک است؛ نماینده مسیر بکاپ سرور ندارد.</span></li>
+  </ol>
+</div>
+<script>
+(function () {
+  const createForm = document.getElementById('backup-create-form');
+  const includeEnv = document.getElementById('backup-include-env');
+  const confirmEnv = document.getElementById('backup-confirm-include-env');
+  const envWrap = document.getElementById('backup-env-confirm-wrap');
+  function syncEnvConfirm() {
+    if (!includeEnv || !envWrap) return;
+    const on = !!includeEnv.checked;
+    envWrap.hidden = !on;
+    if (!on && confirmEnv) confirmEnv.checked = false;
+  }
+  if (includeEnv) {
+    includeEnv.addEventListener('change', syncEnvConfirm);
+    syncEnvConfirm();
+  }
+  if (createForm) {
+    createForm.addEventListener('submit', function (e) {
+      if (includeEnv && includeEnv.checked && confirmEnv && !confirmEnv.checked) {
+        e.preventDefault();
+        envWrap && (envWrap.hidden = false);
+        if (window.showFlash) {
+          window.showFlash('برای بکاپ با .env باید تأیید امنیتی دوم را روشن کنید.', 'err');
+        } else {
+          alert('برای بکاپ با .env باید تأیید امنیتی دوم را روشن کنید.');
+        }
+      }
+    });
+  }
+  const uploadForm = document.getElementById('backup-upload-form');
+  const restoreForm = document.getElementById('backup-restore-form');
+  const restoreModal = document.getElementById('modal-backup-restore');
+  const restoreRoot = document.getElementById('backup-restore-root');
+  const restoreOps = document.getElementById('backup-restore-ops');
+  const nameEl = document.getElementById('backup-restore-name');
+  const envEl = document.getElementById('backup-restore-env');
+  const restoreBtn = document.getElementById('backup-restore-btn');
+  const statusBox = document.getElementById('backup-op-status');
+  const statusTitle = document.getElementById('backup-op-title');
+  const statusMsg = document.getElementById('backup-op-msg');
+  const fill = document.getElementById('backup-restore-fill');
+  const percentEl = document.getElementById('backup-restore-percent');
+  const stepLabel = document.getElementById('backup-restore-step-label');
+  const stateEl = document.getElementById('backup-restore-state');
+  const safetyEl = document.getElementById('backup-restore-safety');
+  const stepsRoot = document.getElementById('backup-restore-steps');
+  let pollTimer = null;
+  let waitingRestart = false;
+  let sawDown = false;
+  let restartStartedAt = 0;
+  let baselineBoot = null;
+  let baselinePid = null;
+  let blockLeave = false;
+  const STEP_ORDER = ['validate', 'safety', 'db', 'uploads', 'env', 'restart', 'done'];
+  const RESTART_MSG = 'سرویس در حال راه‌اندازی مجدد است — ممکن است چند دقیقه طول بکشد. از صفحه خارج نشوید و رفرش نکنید.';
+  const STAY_WARN = 'لطفاً تا پایان عملیات از این صفحه خارج نشوید و صفحه را رفرش نکنید.';
+
+  function setBlockLeave(on) { blockLeave = !!on; }
+  window.addEventListener('beforeunload', function (e) {
+    if (!blockLeave) return;
+    e.preventDefault();
+    e.returnValue = STAY_WARN;
+    return STAY_WARN;
+  });
+
+  function setFormBusy(f, busy, label) {
+    if (!f) return;
+    const btn = f.querySelector('button[type="submit"], button[type="button"].btn-danger');
+    if (btn) {
+      btn.disabled = !!busy;
+      if (busy && label) {
+        if (!btn.dataset.idleLabel) btn.dataset.idleLabel = btn.textContent;
+        btn.textContent = label;
+      } else if (!busy && btn.dataset.idleLabel) {
+        btn.textContent = btn.dataset.idleLabel;
+      }
+    }
+  }
+
+  function showOp(title, msg, kind) {
+    if (!statusBox) return;
+    statusBox.hidden = false;
+    statusBox.className = 'flash ' + (kind || 'warn');
+    if (statusTitle) statusTitle.textContent = title || 'وضعیت';
+    if (statusMsg) statusMsg.textContent = msg || '';
+  }
+
+  function showRestoreOps(on) {
+    if (restoreOps) restoreOps.hidden = !on;
+    if (restoreRoot) restoreRoot.dataset.showOps = on ? '1' : '0';
+    if (!on) setBlockLeave(false);
+  }
+
+  function markSteps(stepKey) {
+    if (!stepsRoot) return;
+    const idx = STEP_ORDER.indexOf(stepKey);
+    stepsRoot.querySelectorAll('li[data-step]').forEach(function (li) {
+      const key = li.getAttribute('data-step');
+      const i = STEP_ORDER.indexOf(key);
+      li.classList.remove('done', 'current');
+      if (idx < 0) return;
+      if (i < idx) li.classList.add('done');
+      else if (i === idx) li.classList.add('current');
+    });
+  }
+
+  function markRestartUi(extra) {
+    showRestoreOps(true);
+    setBlockLeave(true);
+    setFormBusy(restoreForm, true, 'در حال راه‌اندازی مجدد…');
+    setFormBusy(createForm, true);
+    if (stepLabel) stepLabel.textContent = 'راه‌اندازی مجدد سرویس';
+    if (stateEl) stateEl.textContent = extra || RESTART_MSG;
+    if (fill) fill.style.width = '98%';
+    if (percentEl) percentEl.textContent = '۹۸٪';
+    markSteps('restart');
+  }
+
+  async function probeHealth() {
+    try {
+      const r = await fetch('/health/detail?_=' + Date.now(), { cache: 'no-store', credentials: 'same-origin' });
+      if (!r.ok) return null;
+      return await r.json();
+    } catch (_) { return null; }
+  }
+
+  function processChanged(h) {
+    if (!h) return false;
+    if (baselineBoot && h.boot_id && String(h.boot_id) !== baselineBoot) return true;
+    if (baselinePid && h.pid && Number(h.pid) !== baselinePid) return true;
+    return false;
+  }
+
+  function finishReload() {
+    waitingRestart = false;
+    setBlockLeave(false);
+    showRestoreOps(false);
+    clearInterval(pollTimer);
+    pollTimer = null;
+    setTimeout(function () {
+      const url = new URL(location.href);
+      url.searchParams.set('tab', 'backup');
+      url.searchParams.set('ok', 'ریستور با موفقیت انجام شد');
+      location.href = url.pathname + '?' + url.searchParams.toString();
+    }, 400);
+  }
+
+  async function beginWaitingRestart(st) {
+    if (waitingRestart) return;
+    waitingRestart = true;
+    sawDown = false;
+    restartStartedAt = Date.now();
+    markRestartUi();
+    if (st && st.pre_boot_id) baselineBoot = String(st.pre_boot_id);
+    const h0 = await probeHealth();
+    if (!baselineBoot && h0 && h0.boot_id) baselineBoot = String(h0.boot_id);
+    if (h0 && h0.pid) baselinePid = Number(h0.pid);
+    if (st && st.pre_boot_id && h0 && processChanged(h0)) {
+      finishReload();
+      return;
+    }
+    startPoll();
+  }
+
+  function applyRestoreStatus(d) {
+    if (!d || !d.state || d.state === 'idle') return;
+    if (d.safety_id && safetyEl) {
+      safetyEl.hidden = false;
+      safetyEl.innerHTML = 'بکاپ ایمنی: <code>' + d.safety_id + '</code>';
+    }
+    if (d.pre_boot_id && !baselineBoot) baselineBoot = String(d.pre_boot_id);
+
+    if (waitingRestart) {
+      if (!d.awaiting_restart && d.state !== 'running') {
+        if (d.state === 'error' || d.restart_required) {
+          waitingRestart = false;
+          showRestoreOps(true);
+          setFormBusy(restoreForm, false);
+          setFormBusy(createForm, false);
+          if (stateEl) stateEl.textContent = d.message || d.error || 'خطا';
+          clearInterval(pollTimer);
+          pollTimer = null;
+          return;
+        }
+        if (d.state === 'idle' || d.state === 'done') {
+          finishReload();
+          return;
+        }
+      }
+      markRestartUi();
+      return;
+    }
+
+    if (d.awaiting_restart) {
+      beginWaitingRestart(d);
+      return;
+    }
+
+    if (d.state === 'running' || d.state === 'error' || d.restart_required) showRestoreOps(true);
+
+    const pct = Number(d.percent || 0);
+    if (fill) fill.style.width = pct + '%';
+    if (percentEl) percentEl.textContent = pct + '٪';
+    const stepKey = d.step_key || '';
+    if (stepLabel) {
+      stepLabel.textContent = d.step || d.message || (d.state === 'running' ? 'در حال ریستور…' : 'آماده');
+    }
+    if (stateEl) stateEl.textContent = d.message || '';
+    if (stepKey) markSteps(stepKey);
+
+    if (d.state === 'running') {
+      setBlockLeave(true);
+      setFormBusy(restoreForm, true, 'در حال ریستور…');
+      setFormBusy(createForm, true);
+      showOp('ریستور در حال اجرا', d.message || 'لطفاً صبر کنید…', 'warn');
+    } else if (d.state === 'error' || d.restart_required) {
+      setFormBusy(restoreForm, false);
+      setFormBusy(createForm, false);
+      setBlockLeave(false);
+      showOp(
+        d.restart_required ? 'ری‌استارت دستی لازم است' : 'ریستور ناموفق',
+        d.message || d.error || 'خطای ناشناخته',
+        'err'
+      );
+      clearInterval(pollTimer);
+      pollTimer = null;
+    } else if (d.state === 'done' && !d.awaiting_restart) {
+      setFormBusy(restoreForm, false);
+      setFormBusy(createForm, false);
+      showOp('ریستور انجام شد', d.message || 'موفق', 'ok');
+      clearInterval(pollTimer);
+      pollTimer = null;
+    }
+  }
+
+  async function pollStatus() {
+    if (waitingRestart) {
+      const elapsed = Date.now() - restartStartedAt;
+      const h = await probeHealth();
+      if (!h) {
+        sawDown = true;
+        markRestartUi(elapsed > 180000 ? (RESTART_MSG + ' در صورت نیاز: sudo systemctl restart pgclockbot') : RESTART_MSG);
+        return;
+      }
+      const changed = processChanged(h);
+      if (!changed && !sawDown) {
+        markRestartUi('منتظر راه‌اندازی مجدد…');
+        try {
+          const res = await fetch('/backup/status', { credentials: 'same-origin', cache: 'no-store' });
+          if (res.ok) {
+            const data = await res.json();
+            if (!data.awaiting_restart) applyRestoreStatus(data);
+          }
+        } catch (_) {}
+        return;
+      }
+      if (!changed && sawDown) {
+        markRestartUi('سرویس برگشت؛ در حال تأیید…');
+        return;
+      }
+      if (changed) {
+        finishReload();
+        return;
+      }
+      markRestartUi();
+      return;
+    }
+    try {
+      const res = await fetch('/backup/status', { credentials: 'same-origin', cache: 'no-store' });
+      if (!res.ok) return;
+      const data = await res.json();
+      applyRestoreStatus(data);
+      if (data.state === 'running' || data.awaiting_restart) return;
+      if (data.state === 'error' || (data.state === 'done' && !data.awaiting_restart)) {
+        clearInterval(pollTimer);
+        pollTimer = null;
+      }
+    } catch (_) {}
+  }
+
+  function startPoll() {
+    if (pollTimer) return;
+    pollTimer = setInterval(function () {
+      if (!document.hidden) pollStatus();
+    }, 1500);
+    pollStatus();
+  }
+
+  document.addEventListener('visibilitychange', function () {
+    if (!document.hidden && pollTimer) pollStatus();
+  });
+
+  document.addEventListener('click', function (e) {
+    const btn = e.target.closest('[data-modal-open="modal-backup-restore"]');
+    if (!btn || !restoreForm) return;
+    const id = btn.getAttribute('data-backup-id') || '';
+    restoreForm.action = '/backup/restore/' + id;
+    if (nameEl) nameEl.textContent = btn.getAttribute('data-backup-name') || '—';
+    if (envEl) envEl.checked = btn.getAttribute('data-backup-env') === '1';
+  });
+
+  if (restoreForm) {
+    restoreForm.addEventListener('submit', async function (e) {
+      e.preventDefault();
+      const action = restoreForm.action || '';
+      if (!action || action.endsWith('/0')) return;
+      showRestoreOps(true);
+      setFormBusy(restoreForm, true, 'شروع ریستور…');
+      setBlockLeave(true);
+      waitingRestart = false;
+      sawDown = false;
+      baselineBoot = null;
+      baselinePid = null;
+      if (restoreModal) restoreModal.hidden = true;
+      try {
+        if (window.panelEnsureCsrfField) window.panelEnsureCsrfField(restoreForm);
+        const body = new FormData(restoreForm);
+        const res = await fetch(action, {
+          method: 'POST',
+          credentials: 'same-origin',
+          headers: { 'Accept': 'application/json', 'X-Requested-With': 'fetch' },
+          body,
+        });
+        const text = await res.text();
+        let data = null;
+        try { data = text ? JSON.parse(text) : null; } catch (_) { data = null; }
+        if (!res.ok || !data || typeof data !== 'object') {
+          const err = (data && data.error) || (
+            res.status === 403
+              ? 'نشست امنیتی منقضی شده؛ صفحه را تازه کنید و دوباره تلاش کنید.'
+              : (res.ok ? 'پاسخ نامعتبر از سرور' : ('خطای سرور (' + res.status + ')'))
+          );
+          if (stateEl) stateEl.textContent = err;
+          setFormBusy(restoreForm, false);
+          setBlockLeave(false);
+          showOp('ریستور ناموفق', err, 'err');
+          return;
+        }
+        if (!data.ok) {
+          if (stateEl) stateEl.textContent = data.error || 'شروع ریستور ممکن نشد';
+          setFormBusy(restoreForm, false);
+          setBlockLeave(false);
+          showOp('ریستور ناموفق', data.error || 'شروع ریستور ممکن نشد', 'err');
+          return;
+        }
+        if (data.status) applyRestoreStatus(data.status);
+        startPoll();
+      } catch (err) {
+        if (stateEl) stateEl.textContent = 'خطا در شروع ریستور — اتصال یا نشست را بررسی کنید';
+        setFormBusy(restoreForm, false);
+        setBlockLeave(false);
+        showOp('خطا', 'خطا در شروع ریستور', 'err');
+      }
+    });
+  }
+
+  ['backup-create-form', 'backup-upload-form'].forEach(function (id) {
+    const f = document.getElementById(id);
+    if (!f) return;
+    f.addEventListener('submit', function () {
+      const label = f.getAttribute('data-busy-label') || 'در حال انجام…';
+      setFormBusy(f, true, label);
+      showOp('عملیات در حال اجرا', label, 'warn');
+    });
+  });
+
+  if (!new URLSearchParams(location.search).get('ok') && restoreRoot && restoreRoot.dataset.awaitingRestart === '1') {
+    beginWaitingRestart({
+      pre_boot_id: restoreRoot.dataset.preBoot || '',
+    });
+  }
+  if (restoreRoot && restoreRoot.dataset.running === '1') {
+    startPoll();
+    if ('{{ st.step_key or "" }}') markSteps('{{ st.step_key or "validate" }}');
+  }
+})();
+</script>

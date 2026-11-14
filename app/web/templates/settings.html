@@ -1,0 +1,222 @@
+{% extends "base.html" %}
+{% from "macros.html" import page_title, modal_title %}
+{% from "_settings_tabs.html" import settings_tabs %}
+{% from "_panel_settings_tabs.html" import panel_settings_tabs %}
+{% block title %}{% if is_panel_settings %}تنظیمات وب پنل{% else %}تنظیمات{% endif %}{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div>
+    {% if is_panel_settings %}
+    {{ page_title('panel-settings', 'تنظیمات وب پنل', 'neutral', help='settings-panel') }}
+    {% else %}
+    {{ page_title('bot-settings', 'تنظیمات ربات', help='settings-bot') }}
+    {% endif %}
+  </div>
+</div>
+
+{% if is_panel_settings %}
+{{ panel_settings_tabs(tab) }}
+{% elif tabs %}
+{{ settings_tabs(tab, tabs, tab_nav|default(none)) }}
+{% endif %}
+
+<div class="settings-layout {% if tab in ['menu','welcome','messages','buttons','qr','appearance','daily_report'] %}can-preview{% endif %}" id="settings-layout">
+  <div class="settings-main">
+
+  {% if tab == 'general' %}
+    {% include "_settings_general.html" %}
+  {% elif tab == 'update' %}
+    {% include "_settings_update.html" %}
+  {% elif tab == 'pwa' %}
+    {% include "_settings_pwa.html" %}
+  {% elif tab == 'ssl' %}
+    {% include "_settings_ssl.html" %}
+  {% elif tab == 'backup' %}
+    {% include "_settings_backup.html" %}
+  {% elif tab == 'colors' %}
+    {% set settings_action = '/settings?tab=colors' %}
+    {% include "_settings_colors.html" %}
+    {% set reset_action = '/settings?tab=colors' %}
+    {% include "_settings_reset_defaults.html" %}
+  {% elif tab == 'notifications' %}
+    {% include "_settings_notifications.html" %}
+  {% elif tab == 'daily_report' %}
+    {% set settings_action = '/settings?tab=daily_report' %}
+    {% include "_settings_daily_report.html" %}
+  {% elif tab == 'bot' %}
+    {% include "_settings_bot.html" %}
+  {% elif tab == 'links' %}
+    {% include "_settings_links.html" %}
+  {% elif tab == 'limits' %}
+    <form method="post" action="/settings?tab=limits" enctype="multipart/form-data" class="settings-form" id="settings-form">
+      {% for group_name in tab_groups %}
+      {% set fields = groups[group_name] %}
+      <div class="card settings-card">
+        <h2>{{ group_name }}</h2>
+        {% include "_settings_group_notice.html" %}
+        <div class="settings-grid">
+        {% for field in fields %}
+          {% include "_settings_field.html" %}
+        {% endfor %}
+        </div>
+      </div>
+      {% endfor %}
+      <div class="actions sticky-actions">
+        <button class="btn" type="submit">ذخیره محدودیت‌ها</button>
+      </div>
+    </form>
+  {% elif tab == 'guides' %}
+    <form method="post" action="/settings?tab=guides" enctype="multipart/form-data" class="settings-form" id="settings-form">
+      {% for group_name in tab_groups %}
+      {% set fields = groups[group_name] %}
+      <div class="card settings-card">
+        <h2>{{ group_name }}</h2>
+        <div class="settings-grid">
+        {% for field in fields %}
+          {% include "_settings_field.html" %}
+        {% endfor %}
+        </div>
+      </div>
+      {% endfor %}
+      <div class="actions sticky-actions">
+        <button class="btn" type="submit">ذخیره آموزش‌ها</button>
+      </div>
+    </form>
+  {% elif tab == 'terms' %}
+    <form method="post" action="/settings?tab=terms" enctype="multipart/form-data" class="settings-form" id="settings-form">
+      {% for group_name in tab_groups %}
+      {% set fields = groups[group_name] %}
+      <div class="card settings-card">
+        <h2>{{ group_name }}</h2>
+        {% include "_settings_group_notice.html" %}
+        <div class="settings-grid">
+        {% for field in fields %}
+          {% include "_settings_field.html" %}
+        {% endfor %}
+        </div>
+      </div>
+      {% endfor %}
+      <div class="actions sticky-actions">
+        <button class="btn" type="submit">ذخیره تنظیمات</button>
+      </div>
+    </form>
+  {% elif tab == 'forcejoin' %}
+    <form method="post" action="/settings?tab=forcejoin" enctype="multipart/form-data" class="settings-form" id="settings-form">
+      {% for group_name in tab_groups %}
+      {% set fields = groups[group_name] %}
+      <div class="card settings-card">
+        <h2>{{ group_name }}</h2>
+        {% include "_settings_group_notice.html" %}
+        <div class="settings-grid">
+        {% for field in fields %}
+          {% include "_settings_field.html" %}
+        {% endfor %}
+        </div>
+      </div>
+      {% endfor %}
+      <div class="actions sticky-actions">
+        <button class="btn" type="submit">ذخیره تنظیمات</button>
+      </div>
+    </form>
+  {% elif tab == 'appearance' %}
+    {% set settings_action = '/settings?tab=appearance' %}
+    {% include "_settings_appearance.html" %}
+  {% elif tab == 'miniapp' %}
+    {% set miniapp_brand_action = '/settings/miniapp-brand' %}
+    {% set settings_base = '/settings' %}
+    {% include "_settings_miniapp.html" %}
+  {% elif tab == 'menu' %}
+    {% include "_settings_menu.html" %}
+    {% set reset_action = '/settings?tab=menu' %}
+    {% set reset_confirm = 'ترتیب و چیدمان دکمه‌های منو به حالت اولیهٔ ربات برمی‌گردد. ادامه می‌دهید؟' %}
+    {% include "_settings_reset_defaults.html" %}
+  {% elif tab == 'naming' %}
+    {% include "_settings_naming.html" %}
+    <form method="post" action="/settings?tab=naming" enctype="multipart/form-data" class="settings-form" id="settings-form">
+      {% for group_name in tab_groups %}
+      {% set fields = groups[group_name] %}
+      <div class="card settings-card">
+        <h2>{{ group_name }}</h2>
+        <div class="settings-grid">
+        {% for field in fields %}
+          {% include "_settings_field.html" %}
+        {% endfor %}
+        </div>
+      </div>
+      {% endfor %}
+      <div class="actions sticky-actions">
+        <button class="btn" type="submit">ذخیره نام‌گذاری</button>
+      </div>
+    </form>
+  {% else %}
+    {% if tab == 'service_import' %}
+      {% include "_settings_service_import.html" %}
+    {% endif %}
+    <form method="post" action="/settings?tab={{ tab }}" enctype="multipart/form-data" class="settings-form" id="settings-form">
+      {% for group_name in tab_groups %}
+      {% set fields = groups[group_name] %}
+      <div class="card settings-card">
+        <h2>{{ group_name }}</h2>
+        <div class="settings-grid">
+        {% for field in fields %}
+          {% include "_settings_field.html" %}
+        {% endfor %}
+        </div>
+      </div>
+      {% endfor %}
+      <div class="actions sticky-actions">
+        <button class="btn" type="submit">ذخیره تنظیمات</button>
+      </div>
+    </form>
+    {% set reset_action = '/settings?tab=' ~ tab %}
+    {% include "_settings_reset_defaults.html" %}
+  {% endif %}
+
+  </div>
+
+  {% if tab == 'appearance' %}
+  {% include "_tg_preview_appearance.html" %}
+  {% elif tab in ['menu','welcome','messages','buttons','qr','daily_report'] %}
+  {% include "_tg_preview_chat.html" %}
+  {% endif %}
+</div>
+
+{% if tab == 'appearance' %}
+{% include "_tg_preview_appearance_js.html" %}
+{% endif %}
+{% if tab in ['menu','welcome','messages','buttons','qr','daily_report'] %}
+{% include "_tg_preview_chat_js.html" %}
+{% endif %}
+{% if tab == 'naming' %}
+<script>
+(function(){
+  const form = document.getElementById('settings-form');
+  const sample = document.getElementById('naming-sample');
+  if (!form || !sample) return;
+  function rnd(){ return Math.random().toString(36).slice(2,10); }
+  function render(){
+    const prefix = (form.querySelector('[name="s_pg_username_prefix"]')||{}).value || 'clk';
+    const suffix = (form.querySelector('[name="s_pg_username_suffix"]')||{}).value || '';
+    const pattern = (form.querySelector('[name="s_pg_username_pattern"]')||{}).value || '{prefix}_{random}{suffix}';
+    let out;
+    try {
+      out = pattern
+        .replaceAll('{prefix}', prefix)
+        .replaceAll('{suffix}', suffix)
+        .replaceAll('{random}', rnd())
+        .replaceAll('{id}', '42')
+        .replaceAll('{plan_volume}', '30')
+        .replaceAll('{plan_unit}', 'GB')
+        .replaceAll('{username}', 'ali_user');
+    } catch (e) {
+      out = prefix + '_' + rnd() + suffix;
+    }
+    sample.textContent = out;
+  }
+  form.addEventListener('input', render);
+  form.addEventListener('change', render);
+  render();
+})();
+</script>
+{% endif %}
+{% endblock %}

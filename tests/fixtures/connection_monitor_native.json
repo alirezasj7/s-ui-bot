@@ -1,0 +1,220 @@
+{
+  "native_configs": [
+    {
+      "remarks": "نام متغیر 1",
+      "routing": {
+        "rules": [
+          {
+            "outboundTag": "direct"
+          }
+        ]
+      },
+      "outbounds": [
+        {
+          "protocol": "vless",
+          "tag": "proxy",
+          "settings": {
+            "vnext": [
+              {
+                "address": "edge-b.example",
+                "port": 443,
+                "users": [
+                  {
+                    "id": "11111111-1111-4111-8111-111111111111",
+                    "encryption": "none",
+                    "flow": "xtls-rprx-vision"
+                  }
+                ]
+              }
+            ]
+          },
+          "streamSettings": {
+            "network": "tcp",
+            "security": "reality",
+            "tcpSettings": {
+              "header": {
+                "type": "none"
+              }
+            },
+            "realitySettings": {
+              "serverName": "cover.example",
+              "fingerprint": "chrome",
+              "show": false,
+              "publicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+              "shortId": "abcd",
+              "spiderX": "/"
+            }
+          }
+        },
+        {
+          "protocol": "freedom",
+          "tag": "direct",
+          "settings": {}
+        }
+      ]
+    },
+    {
+      "remarks": "نام متغیر 2",
+      "outbounds": [
+        {
+          "protocol": "vless",
+          "tag": "proxy",
+          "settings": {
+            "vnext": [
+              {
+                "address": "cdn.example",
+                "port": 8443,
+                "users": [
+                  {
+                    "id": "11111111-1111-4111-8111-111111111111",
+                    "encryption": "none"
+                  }
+                ]
+              }
+            ]
+          },
+          "streamSettings": {
+            "network": "ws",
+            "security": "tls",
+            "tlsSettings": {
+              "serverName": "tls.example",
+              "fingerprint": "chrome",
+              "allowInsecure": false,
+              "alpn": [
+                "http/1.1"
+              ]
+            },
+            "wsSettings": {
+              "path": "/transport?ed=2048",
+              "host": "ws.example",
+              "headers": {}
+            }
+          }
+        },
+        {
+          "protocol": "freedom",
+          "tag": "direct",
+          "settings": {}
+        }
+      ]
+    },
+    {
+      "remarks": "Synthetic VLESS XHTTP TLS",
+      "outbounds": [
+        {
+          "protocol": "vless",
+          "tag": "proxy",
+          "settings": {
+            "vnext": [
+              {
+                "address": "cdn.example",
+                "port": 8443,
+                "users": [
+                  {
+                    "id": "11111111-1111-4111-8111-111111111111",
+                    "encryption": "none"
+                  }
+                ]
+              }
+            ]
+          },
+          "streamSettings": {
+            "network": "xhttp",
+            "security": "tls",
+            "tlsSettings": {
+              "serverName": "tls.example",
+              "fingerprint": "chrome",
+              "allowInsecure": false,
+              "alpn": [
+                "http/1.1"
+              ]
+            },
+            "xhttpSettings": {
+              "host": "cdn.example",
+              "path": "/upload",
+              "mode": "auto"
+            }
+          }
+        },
+        {
+          "protocol": "freedom",
+          "tag": "direct",
+          "settings": {}
+        }
+      ]
+    },
+    {
+      "remarks": "Synthetic Shadowsocks TCP",
+      "outbounds": [
+        {
+          "protocol": "shadowsocks",
+          "tag": "proxy",
+          "settings": {
+            "servers": [
+              {
+                "address": "ss.example",
+                "port": 8388,
+                "method": "chacha20-ietf-poly1305",
+                "password": "synthetic-password"
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "remarks": "Synthetic VMess TCP",
+      "outbounds": [
+        {
+          "protocol": "vmess",
+          "tag": "proxy",
+          "settings": {
+            "vnext": [
+              {
+                "address": "vmess.example",
+                "port": 443,
+                "users": [
+                  {
+                    "id": "11111111-1111-4111-8111-111111111111",
+                    "security": "auto",
+                    "alterId": 0
+                  }
+                ]
+              }
+            ]
+          },
+          "streamSettings": {
+            "network": "tcp",
+            "security": "none"
+          }
+        }
+      ]
+    },
+    {
+      "remarks": "Synthetic Trojan TCP TLS",
+      "outbounds": [
+        {
+          "protocol": "trojan",
+          "tag": "proxy",
+          "settings": {
+            "servers": [
+              {
+                "address": "trojan.example",
+                "port": 443,
+                "password": "synthetic-password"
+              }
+            ]
+          },
+          "streamSettings": {
+            "network": "tcp",
+            "security": "tls",
+            "tlsSettings": {
+              "serverName": "tls.example",
+              "allowInsecure": false
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

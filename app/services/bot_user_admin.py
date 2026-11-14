@@ -1,0 +1,1267 @@
+"""Shared admin ops for Telegram bot users (web panel + bot handlers).
+
+Money uses ``credit_wallet`` / ``debit_wallet`` (platform purse by default;
+pass shop_id for shop purse). Never write balances outside those helpers.
+VPN quota/links are live from PasarGuard through ``UserService.pg_user_id``.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+import time
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
+from typing import Any
+
+import httpx
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
+
+from app.db.models import BotUser, BotUserShop, Plan, Role, UserService, WalletTransaction
+from app.services.formatting import (
+    expire_remaining_days,
+    format_bytes,
+    format_bytes_ratio,
+    format_expire_short,
+    is_on_hold_status,
+    on_hold_expire_duration_seconds,
+    status_label_plain,
+    time_remaining_label,
+)
+from app.services.numbers import normalize_number_text
+from app.services.pasarguard import (
+    PasarGuardError,
+    absolutize_subscription_url,
+    build_user_modify_payload,
+    extract_sub_token,
+    get_pg,
+    user_subscription_url,
+)
+from app.services.redact import user_safe_error
+from app.services.wallet import credit_wallet, debit_wallet, list_transactions
+from app.services.service_scope import assert_service_in_shop, service_shop_id, shop_services_clause
+from app.services.shop_membership import ensure_member
+from app.services.provision_gate import (
+    ProvisionError,
+    hold_limit_change,
+    hold_plan_create,
+    new_hold_key,
+    settle_failed_hold,
+)
+from app.services.volume_allocation import HeldVolume, is_hard_panel_rejection, release_volume_hold
+
+logger = logging.getLogger(__name__)
+
+GB = 1024**3
+MAX_ADMIN_WALLET_CREDIT = 50_000_000  # 50M toman hard cap per op
+MAX_ADMIN_WALLET_DEBIT = MAX_ADMIN_WALLET_CREDIT
+MIN_ADMIN_WALLET_ADJUST = 1_000  # absolute toman floor for manual adjust UI/API
+MAX_EXTEND_DAYS = 3650
+MAX_EXTEND_GB = 10_000
+MIN_TELEGRAM_ID = 1
+# Live service status: one panel read is cut off after this, and a few run at once.
+SNAPSHOT_TIMEOUT_SECONDS = 3.0
+SNAPSHOT_CONCURRENCY = 4
+# A customer screen lists at most this many services with live status.
+SNAPSHOT_LIMIT = 30
+# Panel read failures that only mean «status unknown»: the stored row is shown instead.
+PANEL_READ_ERRORS = (asyncio.TimeoutError, PasarGuardError, httpx.HTTPError, ValueError)
+MAX_TELEGRAM_ID = 9_007_199_254_740_991  # signed int64 safe upper bound
+
+
+def parse_admin_wallet_amount(text: str | None) -> int:
+    """Parse a positive integer toman amount (no float / no sign).
+
+    Direction (credit vs debit) is chosen separately — never via a leading minus.
+    """
+    raw = normalize_number_text(text).replace("−", "-").replace("–", "-")
+    if not raw:
+        raise ValueError("مبلغ نامعتبر است")
+    if any(ch in raw for ch in ".eE"):
+        raise ValueError("مبلغ باید عدد صحیح تومان باشد")
+    if raw.startswith("+"):
+        raw = raw[1:]
+    if not raw or raw.startswith("-"):
+        raise ValueError("مبلغ باید مثبت باشد؛ نوع عملیات را جداگانه انتخاب کنید")
+    try:
+        amount = int(raw)
+    except ValueError as exc:
+        raise ValueError("مبلغ نامعتبر است") from exc
+    if amount <= 0:
+        raise ValueError("مبلغ باید مثبت باشد")
+    return amount
+
+
+def parse_admin_wallet_mode(raw: str | None) -> str:
+    """Normalize adjust mode to ``credit`` or ``debit``."""
+    mode = (raw or "").strip().lower()
+    if mode in {"credit", "debit"}:
+        return mode
+    # Persian / UI aliases
+    if mode in {"افزایش", "شارژ", "plus", "inc", "increase"}:
+        return "credit"
+    if mode in {"کاهش", "کسر", "minus", "dec", "decrease"}:
+        return "debit"
+    raise ValueError("نوع تنظیم نامعتبر است — افزایش یا کاهش را انتخاب کنید")
+
+
+def _require_admin_wallet_amount(amount: object) -> int:
+    """Reject bool / non-int; return a plain int (bool is a subclass of int)."""
+    if isinstance(amount, bool) or not isinstance(amount, int):
+        raise ValueError("مبلغ نامعتبر است")
+    return int(amount)
+
+
+@dataclass(frozen=True)
+class ServiceSnapshot:
+    service: UserService
+    pg: dict[str, Any] | None
+    status_fa: str
+    used_text: str
+    limit_text: str
+    volume_text: str
+    remain_gb_text: str
+    days_left: int | None
+    expire_text: str
+    subscription_url: str | None
+    error: str | None = None
+
+    @property
+    def time_label(self) -> str:
+        """Remaining-time label — never «نامحدود» for on_hold + null days."""
+        status = (self.pg or {}).get("status") if self.pg else None
+        return time_remaining_label(days_left=self.days_left, status=status)
+
+
+def assert_staff_pg_user_action(staff: dict | None, action: str) -> None:
+    """Fail closed when web staff lacks the PasarGuard users.* action.
+
+    Bot/internal callers pass ``staff=None`` and skip this check (they have their
+    own auth). Web panel must always pass the live staff session.
+    """
+    if staff is None:
+        return
+    from app.services.pg_access import staff_user_actions
+
+    acts = staff_user_actions(staff)
+    if acts.get(action):
+        return
+    labels = {
+        "create": "ساخت کاربر پاسارگارد",
+        "update": "ویرایش کاربر پاسارگارد",
+        "delete": "حذف کاربر پاسارگارد",
+        "disable": "غیرفعال‌سازی کاربر پاسارگارد",
+        "reset_usage": "ریست مصرف پاسارگارد",
+    }
+    raise ValueError(
+        f"نقش پاسارگارد شما اجازه {labels.get(action, action)} را ندارد"
+    )
+
+
+async def _pg_client_for_bot_service(
+    session: AsyncSession, service: UserService
+):
+    """PG client for a shop service — reseller shop uses that shop's PG admin.
+
+    Never fall through to the Owner env token for tenant services (isolation).
+    """
+    rid = await service_shop_id(session, service)
+    if rid:
+        from app.services.pasarguard import get_pg_for_reseller
+
+        return await get_pg_for_reseller(session, rid)
+    return get_pg()
+
+
+async def load_user_services(
+    session: AsyncSession, bot_user_id: int, *, shop_id: int | None
+) -> list[UserService]:
+    rows = (
+        await session.execute(
+            select(UserService)
+            .where(UserService.bot_user_id == int(bot_user_id), shop_services_clause(shop_id))
+            .options(selectinload(UserService.plan))
+            .order_by(UserService.id.desc())
+        )
+    ).scalars().all()
+    return list(rows)
+
+
+def _snapshot_without_panel(service: UserService, url: str | None, *, status_fa: str, error: str) -> ServiceSnapshot:
+    return ServiceSnapshot(
+        service=service,
+        pg=None,
+        status_fa=status_fa,
+        used_text="—",
+        limit_text="—",
+        volume_text="—",
+        remain_gb_text="—",
+        days_left=None,
+        expire_text="—",
+        subscription_url=url,
+        error=error,
+    )
+
+
+def _stored_subscription_url(service: UserService) -> str | None:
+    url = absolutize_subscription_url(service.subscription_url) or ((service.subscription_url or "").strip() or None)
+    if url and url != (service.subscription_url or "").strip():
+        service.subscription_url = url
+    return url
+
+
+async def _fetch_panel_user(pg: Any, pg_user_id: int) -> dict | BaseException:
+    """The panel's user record, or the error; bounded so a slow panel never stalls a screen."""
+    try:
+        info = await asyncio.wait_for(pg.get_user_by_id(int(pg_user_id)), timeout=SNAPSHOT_TIMEOUT_SECONDS)
+    except PANEL_READ_ERRORS as exc:
+        return exc
+    if not isinstance(info, dict):
+        return ValueError("پاسخ نامعتبر پاسارگارد")
+    return info
+
+
+def _snapshot_from_panel(service: UserService, url: str | None, info: dict) -> ServiceSnapshot:
+    used = int(info.get("used_traffic") or 0)
+    limit = info.get("data_limit")
+    try:
+        limit_n = int(limit) if limit not in (None, "") else 0
+    except (TypeError, ValueError):
+        limit_n = 0
+    remain_gb = format_bytes(max(0, limit_n - used)) if limit_n > 0 else "نامحدود"
+    live_url = user_subscription_url(info) or url
+    if live_url and live_url != service.subscription_url:
+        service.subscription_url = live_url
+        token = extract_sub_token(live_url)
+        if token:
+            service.subscription_token = token
+    # Keep users-list cache warm whenever we successfully read live PG.
+    sync_service_quota_cache(service, info)
+    status_raw = info.get("status")
+    exp_raw = info.get("expire") if "expire" in info else info.get("expire_date")
+    hold_dur = on_hold_expire_duration_seconds(info)
+    days_left = expire_remaining_days(exp_raw, status=status_raw, expire_duration=hold_dur)
+    # on_hold without a known duration never shows «نامحدود» for remaining days.
+    if is_on_hold_status(status_raw) and days_left is None and not exp_raw:
+        days_left = None
+    return ServiceSnapshot(
+        service=service,
+        pg=info,
+        status_fa=status_label_plain(status_raw),
+        used_text=format_bytes(used),
+        limit_text=format_bytes(limit_n) if limit_n > 0 else "نامحدود",
+        volume_text=format_bytes_ratio(used, limit_n if limit_n > 0 else None),
+        remain_gb_text=remain_gb,
+        days_left=days_left,
+        expire_text=format_expire_short(exp_raw, status=status_raw, expire_duration=hold_dur),
+        subscription_url=live_url or url,
+        error=None,
+    )
+
+
+def _build_snapshot(service: UserService, url: str | None, fetched: dict | BaseException) -> ServiceSnapshot:
+    if isinstance(fetched, BaseException):
+        logger.debug("service snapshot failed id=%s", service.id, exc_info=fetched)
+        error = "پاسارگارد پاسخ نداد" if isinstance(fetched, asyncio.TimeoutError) else user_safe_error(fetched, limit=160)
+        return _snapshot_without_panel(service, url, status_fa="خطا", error=error)
+    return _snapshot_from_panel(service, url, fetched)
+
+
+async def service_snapshot(session: AsyncSession, service: UserService) -> ServiceSnapshot:
+    """Live PG status for one shop service."""
+    snapshots = await _snapshots(session, [service])
+    return snapshots[0]
+
+
+async def _client_or_error(session: AsyncSession, service: UserService) -> Any:
+    """The service's panel client, None when it has no panel user, or why it cannot be reached."""
+    if not service.pg_user_id:
+        return None
+    try:
+        return await _pg_client_for_bot_service(session, service)
+    except PANEL_READ_ERRORS as exc:
+        return exc
+
+
+async def _snapshots(session: AsyncSession, services: list[UserService]) -> list[ServiceSnapshot]:
+    """Live status of ``services``; the panel is asked for all of them at once, a few at a time.
+
+    The database is read first (one session must not run queries concurrently), then the panel
+    calls run together, so a customer with many services waits about one call, not one per service.
+    """
+    urls = [_stored_subscription_url(service) for service in services]
+    clients = [await _client_or_error(session, s) for s in services]
+    gate = asyncio.Semaphore(SNAPSHOT_CONCURRENCY)
+
+    async def fetch(service: UserService, pg: Any) -> dict | BaseException | None:
+        if pg is None or isinstance(pg, BaseException):
+            return pg
+        async with gate:
+            return await _fetch_panel_user(pg, int(service.pg_user_id))
+
+    fetched = await asyncio.gather(*(fetch(s, pg) for s, pg in zip(services, clients, strict=True)))
+    return [
+        _snapshot_without_panel(s, url, status_fa="بدون پنل", error="سرویس به پاسارگارد وصل نیست")
+        if result is None
+        else _build_snapshot(s, url, result)
+        for s, url, result in zip(services, urls, fetched, strict=True)
+    ]
+
+
+async def list_service_snapshots(
+    session: AsyncSession, bot_user_id: int, *, shop_id: int | None
+) -> list[ServiceSnapshot]:
+    services = await load_user_services(session, bot_user_id, shop_id=shop_id)
+    out = await _snapshots(session, services[:SNAPSHOT_LIMIT])
+    await session.commit()  # persist refreshed subscription urls
+    return out
+
+
+def _plan_matches_shop(plan: Plan, shop_id: int | None) -> bool:
+    """Plan catalog tenant must match the shop that provisions the service."""
+    plan_rid = plan.owner_reseller_id
+    if shop_id is None:
+        return plan_rid is None
+    return plan_rid is not None and int(plan_rid) == int(shop_id)
+
+
+def _normalize_telegram_username(raw: str | None) -> str | None:
+    if not raw:
+        return None
+    name = str(raw).strip().lstrip("@")[:64]
+    return name or None
+
+
+async def admin_create_bot_user(
+    session: AsyncSession,
+    *,
+    telegram_id: int,
+    username: str | None = None,
+    full_name: str | None = None,
+    reseller_id: int | None = None,
+    staff: dict | None = None,
+    color_tag: str | None = None,
+) -> BotUser:
+    """Create a shop BotUser manually (web panel). Always role=user.
+
+    When ``staff`` is provided, shop ownership is forced from session scope:
+    Owner → platform (``reseller_id=None``); reseller → own shop id only.
+    """
+    import secrets
+    import string
+
+    from app.services.color_tags import normalize_color_tag
+    from app.services.platform_identity import (
+        deliverable_telegram_id,
+        is_explicit_owner_staff,
+    )
+
+    if staff is not None:
+        from app.services.shop_scope import ShopScopeError, resolve_shop_scope_id
+
+        if is_explicit_owner_staff(staff):
+            reseller_id = None
+        else:
+            try:
+                scope = resolve_shop_scope_id(staff)
+            except ShopScopeError as exc:
+                raise ValueError(exc.message) from exc
+            if not scope:
+                raise ValueError("محدوده فروشگاه مشخص نیست")
+            reseller_id = int(scope)
+
+    try:
+        tid = int(telegram_id)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("شناسه تلگرام نامعتبر است") from exc
+    if tid < MIN_TELEGRAM_ID or tid > MAX_TELEGRAM_ID:
+        raise ValueError("شناسه تلگرام نامعتبر است")
+
+    if deliverable_telegram_id(tid) is None:
+        raise ValueError("شناسه تلگرام باید عدد مثبت واقعی باشد")
+
+    existing = (
+        await session.execute(select(BotUser).where(BotUser.telegram_id == tid))
+    ).scalar_one_or_none()
+    if existing is not None:
+        raise ValueError("این شناسه تلگرام قبلاً ثبت شده است")
+
+    if reseller_id is not None:
+        try:
+            rid = int(reseller_id)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("فروشگاه نامعتبر است") from exc
+        if rid <= 0:
+            raise ValueError("فروشگاه نامعتبر است")
+        owner = await session.get(BotUser, rid)
+        if owner is None or owner.role != Role.RESELLER.value:
+            raise ValueError("نماینده فروشگاه یافت نشد")
+        assign_reseller = rid
+    else:
+        assign_reseller = None
+
+    alphabet = string.ascii_uppercase + string.digits
+    referral_code = "".join(secrets.choice(alphabet) for _ in range(8))
+
+    user = BotUser(
+        telegram_id=tid,
+        username=_normalize_telegram_username(username),
+        full_name=(str(full_name).strip()[:255] if full_name else None) or None,
+        role=Role.USER.value,
+        referral_code=referral_code,
+        reseller_id=assign_reseller,
+        # A shop's tag lives on its membership row; only the platform's lives on the person.
+        color_tag=normalize_color_tag(color_tag if assign_reseller is None else None),
+    )
+    session.add(user)
+    if assign_reseller is not None:
+        await session.flush()
+        session.add(BotUserShop(bot_user_id=user.id, shop_id=assign_reseller, color_tag=normalize_color_tag(color_tag)))
+    await session.commit()
+    await session.refresh(user)
+    return user
+
+
+async def admin_provision_service(
+    session: AsyncSession,
+    user: BotUser,
+    plan: Plan,
+    *,
+    shop_id: int | None,
+    staff: dict | None = None,
+    actor: str | None = None,
+) -> UserService:
+    """Assign a new VPN service (PG user + UserService) without an order.
+
+    ``shop_id`` is the acting shop (None = platform): the plan, the panel admin and the
+    stored service all belong to it, whatever shop the customer is attributed to.
+    """
+    import time
+
+    from app.services.orders import _reseller_pg_link, generate_pg_username
+    from app.services.pasarguard import (
+        build_user_create_payload,
+        extract_sub_token,
+        parse_group_ids,
+    )
+    from app.services.plans_catalog import plan_belongs_to_staff
+    from app.services.provision_gate import assert_provision_create
+
+    if not plan.is_active:
+        raise ValueError("پلن غیرفعال است")
+    if plan.is_trial:
+        raise ValueError("پلن تست برای اختصاص دستی مجاز نیست")
+    if not _plan_matches_shop(plan, shop_id):
+        raise ValueError("این پلن متعلق به فروشگاه شما نیست")
+    if staff is not None and not plan_belongs_to_staff(plan, staff):
+        raise ValueError("دسترسی به این پلن ندارید")
+    # Shop isolation ∧ PasarGuard ACL (same axis as /pg/users create).
+    assert_staff_pg_user_action(staff, "create")
+
+    shop_rid = int(shop_id) if shop_id else None
+    if shop_rid:
+        from app.services.pasarguard import get_pg_for_reseller
+
+        pg = await get_pg_for_reseller(session, shop_rid)
+    else:
+        from app.services.pasarguard import get_pg
+
+        pg = get_pg()
+
+    pg_owner, pg_role_id = await _reseller_pg_link(session, shop_rid)
+    data_limit = None
+    expire = None
+    if plan.data_limit_gb is not None:
+        data_limit = int(float(plan.data_limit_gb) * GB)
+    if plan.duration_days:
+        expire = int(time.time()) + int(plan.duration_days) * 86400
+
+    # Always run provision gate when staff is present (Owner Hybrid limited role too).
+    # Reseller shop also passes username/role for quota ownership checks.
+    if staff is not None or shop_rid:
+        try:
+            await assert_provision_create(
+                session,
+                staff=staff,
+                reseller_user_id=shop_rid,
+                pg_admin_username=pg_owner,
+                pg_role_id=pg_role_id,
+                data_limit=data_limit,
+                expire_ts=expire,
+                from_template=bool(plan.pg_template_id),
+                quantity=1,
+            )
+        except ProvisionError as e:
+            raise ValueError(e.message) from e
+
+    group_ids = None
+    if not plan.pg_template_id:
+        group_ids = parse_group_ids(getattr(plan, "pg_group_ids", None))
+        if not group_ids:
+            raise ValueError(
+                "هیچ گروهی برای ساخت کاربر انتخاب نشده — در وب‌پنل برای پلن، گروه پاسارگارد را انتخاب کنید"
+            )
+
+    actor_label = (actor or "admin")[:64]
+    note = f"PGClockBot manual assign by {actor_label}"
+
+    username = await generate_pg_username(
+        session,
+        user_id=int(user.id),
+        plan=plan,
+        reseller_id=shop_rid,
+    )
+
+    hold = await _hold_assign_volume(session, shop_rid, pg, plan, data_limit)
+    pg_uid: int | None = None
+    try:
+        if plan.pg_template_id:
+            pg_user = await pg.create_user_from_template(
+                {
+                    "username": username,
+                    "user_template_id": plan.pg_template_id,
+                    "note": note,
+                }
+            )
+        else:
+            pg_user = await pg.create_user(
+                build_user_create_payload(
+                    username=username,
+                    group_ids=group_ids or [],
+                    data_limit=data_limit,
+                    expire_ts=expire,
+                    note=note,
+                )
+            )
+        raw_uid = pg_user.get("id") if isinstance(pg_user, dict) else None
+        if raw_uid:
+            pg_uid = int(raw_uid)
+
+        if shop_rid and getattr(pg, "_login_username", None) is None:
+            owner_name = (pg_owner or "").strip()
+            if not owner_name or not pg_uid:
+                raise ValueError(
+                    "کاربر ساخته شد ولی مالکیت قابل تنظیم نیست — اختصاص لغو شد"
+                )
+            await pg.set_owner_by_id(int(pg_uid), owner_name)
+        elif shop_rid and not pg_uid:
+            raise ValueError("ساخت کاربر پاسارگارد شناسه برنگرداند — اختصاص لغو شد")
+
+        sub_url = user_subscription_url(pg_user if isinstance(pg_user, dict) else None)
+        service = UserService(
+            bot_user_id=int(user.id),
+            plan_id=int(plan.id),
+            pg_user_id=pg_uid,
+            pg_username=(pg_user.get("username", username) if isinstance(pg_user, dict) else username),
+            subscription_url=sub_url,
+            subscription_token=extract_sub_token(sub_url),
+            remark=f"manual:{actor_label}",
+            shop_id=shop_rid,
+        )
+        plan_days = int(getattr(plan, "duration_days", 0) or 0) or None
+        if isinstance(pg_user, dict):
+            sync_service_quota_cache(
+                service, pg_user, fallback_duration_days=plan_days
+            )
+        else:
+            sync_service_quota_cache(
+                service,
+                expire_ts=expire,
+                data_limit_bytes=data_limit,
+                fallback_duration_days=plan_days,
+            )
+        session.add(service)
+        await ensure_member(session, int(user.id), shop_rid)
+        await release_volume_hold(session, hold)
+        await session.commit()
+        await session.refresh(service)
+        return service
+    except Exception as exc:
+        if pg_uid:
+            try:
+                await pg.delete_user_by_id(int(pg_uid))
+            except Exception:
+                logger.debug(
+                    "rollback PG user failed uid=%s", pg_uid, exc_info=True
+                )
+        await session.rollback()
+        await settle_failed_hold(session, hold, exc, panel_touched=True)
+        from app.services.pasarguard import PasarGuardError
+
+        if isinstance(exc, PasarGuardError):
+            raise ValueError(
+                exc.user_message(
+                    fallback="ساخت کاربر در پاسارگارد ناموفق بود"
+                )
+            ) from exc
+        if isinstance(exc, ValueError):
+            raise
+        from app.services.redact import user_safe_error
+
+        raise ValueError(
+            user_safe_error(exc, fallback="اختصاص پلن ناموفق بود", limit=400)
+        ) from exc
+
+
+async def admin_credit_user_wallet(
+    session: AsyncSession,
+    user: BotUser,
+    amount: int,
+    *,
+    actor: str,
+    note: str | None = None,
+    shop_id: int | None = None,
+) -> BotUser:
+    """Increase platform or shop wallet (admin). Positive amounts only."""
+    amt = _require_admin_wallet_amount(amount)
+    if amt <= 0:
+        raise ValueError("مبلغ شارژ باید مثبت باشد")
+    if amt > MAX_ADMIN_WALLET_CREDIT:
+        raise ValueError(f"سقف شارژ دستی {MAX_ADMIN_WALLET_CREDIT:,} تومان است")
+    reason = f"شارژ ادمین ({(actor or 'admin')[:64]})"
+    if note:
+        reason = f"{reason}: {note.strip()[:120]}"
+    return await credit_wallet(session, user, amt, reason, shop_id=shop_id)
+
+
+async def admin_debit_user_wallet(
+    session: AsyncSession,
+    user: BotUser,
+    amount: int,
+    *,
+    actor: str,
+    note: str | None = None,
+    shop_id: int | None = None,
+) -> BotUser:
+    """Decrease platform or shop wallet (admin). Fail-closed on shortfall."""
+    amt = _require_admin_wallet_amount(amount)
+    if amt <= 0:
+        raise ValueError("مبلغ کسر باید مثبت باشد")
+    if amt > MAX_ADMIN_WALLET_DEBIT:
+        raise ValueError(f"سقف کسر دستی {MAX_ADMIN_WALLET_DEBIT:,} تومان است")
+    reason = f"کسر ادمین ({(actor or 'admin')[:64]})"
+    if note:
+        reason = f"{reason}: {note.strip()[:120]}"
+    return await debit_wallet(session, user, amt, reason, shop_id=shop_id)
+
+
+async def admin_adjust_user_wallet(
+    session: AsyncSession,
+    user: BotUser,
+    amount: int,
+    *,
+    mode: str,
+    actor: str,
+    note: str | None = None,
+    shop_id: int | None = None,
+    min_abs: int = MIN_ADMIN_WALLET_ADJUST,
+) -> BotUser:
+    """Admin adjust: positive ``amount`` + ``mode`` credit|debit (atomic shortfall)."""
+    direction = parse_admin_wallet_mode(mode)
+    amt = _require_admin_wallet_amount(amount)
+    if amt <= 0:
+        raise ValueError("مبلغ باید مثبت باشد")
+    floor = int(min_abs)
+    if floor > 0 and amt < floor:
+        raise ValueError(f"حداقل مبلغ {floor:,} تومان است")
+    if direction == "credit":
+        return await admin_credit_user_wallet(
+            session, user, amt, actor=actor, note=note, shop_id=shop_id
+        )
+    return await admin_debit_user_wallet(
+        session, user, amt, actor=actor, note=note, shop_id=shop_id
+    )
+
+
+async def list_wallet_txs(
+    session: AsyncSession,
+    user_id: int,
+    *,
+    limit: int = 20,
+    shop_id: int | None = None,
+) -> list[WalletTransaction]:
+    """Ledger for one purse (platform when ``shop_id`` is None, else that shop)."""
+    return await list_transactions(
+        session, user_id, limit=limit, shop_id=shop_id
+    )
+
+
+async def get_owned_service(
+    session: AsyncSession, *, bot_user_id: int, service_id: int, shop_id: int | None
+) -> UserService:
+    """Load one service the acting shop sold, with plan eagerly (async-safe for Telegram cards).
+
+    ``shop_id`` is the acting scope (None = platform). A customer's service sold by
+    another shop is refused even when the customer is attributed to the acting shop.
+    """
+    svc = (
+        await session.execute(
+            select(UserService)
+            .where(UserService.id == int(service_id))
+            .options(selectinload(UserService.plan))
+        )
+    ).scalar_one_or_none()
+    if svc is None or int(svc.bot_user_id) != int(bot_user_id):
+        raise ValueError("سرویس یافت نشد")
+    await assert_service_in_shop(session, svc, shop_id)
+    return svc
+
+
+def _cache_quota_status(service: UserService, info: dict[str, Any]) -> None:
+    """Remember the panel status so audience queries need no live panel call."""
+    status = info.get("status")
+    if isinstance(status, str):
+        service.quota_status = status.strip().lower()[:32]
+
+
+def sync_service_quota_cache(
+    service: UserService,
+    info: dict[str, Any] | None = None,
+    *,
+    expire_ts: int | None = None,
+    data_limit_bytes: int | None = None,
+    fallback_duration_days: int | None = None,
+) -> None:
+    """Persist PG expire/data_limit onto UserService for users-list summaries.
+
+    Prefer a live PG ``info`` dict when present. Otherwise apply absolute
+    ``expire_ts`` / ``data_limit_bytes`` from the write just issued (partial OK).
+    ``quota_expire_at is None`` + synced ⇒ unlimited time;
+    ``quota_data_limit_bytes == 0`` + synced ⇒ unlimited volume.
+
+    PasarGuard ``on_hold`` users often have ``expire=0`` until first connect, with
+    ``expire_duration`` holding the real TTL — that must NOT sync as unlimited.
+
+    Never lazy-load ``service.plan`` (AsyncSession → MissingGreenlet / xd2s).
+    Pass ``fallback_duration_days`` from an already-loaded Plan when available.
+    """
+    from app.services.formatting import parse_expire
+
+    touched = False
+    if isinstance(info, dict):
+        _cache_quota_status(service, info)
+        has_expire = "expire" in info or "expire_date" in info
+        if has_expire:
+            exp_raw = info["expire"] if "expire" in info else info.get("expire_date")
+            # PG: 0 / null ⇒ unlimited *unless* on_hold with expire_duration
+            if exp_raw in (None, "", 0, 0.0) or (
+                isinstance(exp_raw, (int, float)) and int(exp_raw) <= 0
+            ):
+                hold_dur = on_hold_expire_duration_seconds(info)
+                if hold_dur is not None:
+                    service.quota_expire_at = datetime.now(timezone.utc) + timedelta(
+                        seconds=int(hold_dur)
+                    )
+                elif is_on_hold_status(info.get("status")):
+                    # Pending start — approximate from plan so list never shows
+                    # «نامحدود» for a timed on_hold service.
+                    # CRITICAL: never touch ``service.plan`` relationship here.
+                    # Under AsyncSession, lazy-load raises MissingGreenlet /
+                    # greenlet_spawn (SQLAlchemy xd2s) and aborts first-time
+                    # approve/delivery — second click then resumes successfully.
+                    # Only use an already-loaded plan, or the optional override.
+                    plan = service.__dict__.get("plan")
+                    days = int(getattr(plan, "duration_days", 0) or 0) if plan else 0
+                    if days <= 0 and fallback_duration_days is not None:
+                        try:
+                            days = int(fallback_duration_days or 0)
+                        except (TypeError, ValueError):
+                            days = 0
+                    service.quota_expire_at = datetime.now(timezone.utc) + timedelta(
+                        days=max(1, days)
+                    )
+                else:
+                    service.quota_expire_at = None
+            else:
+                exp_dt = parse_expire(exp_raw)
+                if exp_dt is not None and exp_dt.tzinfo is None:
+                    exp_dt = exp_dt.replace(tzinfo=timezone.utc)
+                service.quota_expire_at = exp_dt
+            touched = True
+        if "data_limit" in info:
+            try:
+                lim = info.get("data_limit")
+                service.quota_data_limit_bytes = (
+                    0 if lim in (None, "") else max(0, int(lim))
+                )
+            except (TypeError, ValueError):
+                service.quota_data_limit_bytes = 0
+            touched = True
+    else:
+        if expire_ts is not None:
+            if int(expire_ts) <= 0:
+                service.quota_expire_at = None
+            else:
+                service.quota_expire_at = datetime.fromtimestamp(
+                    int(expire_ts), tz=timezone.utc
+                )
+            touched = True
+        if data_limit_bytes is not None:
+            service.quota_data_limit_bytes = max(0, int(data_limit_bytes))
+            touched = True
+    if touched:
+        service.quota_synced_at = datetime.now(timezone.utc)
+
+
+async def _hold_assign_volume(
+    session: AsyncSession, shop_rid: int | None, pg: Any, plan: Plan, data_limit: int | None
+) -> HeldVolume | None:
+    """Hold a manual assignment's volume in the shop's ceiling before the panel create."""
+    try:
+        return await hold_plan_create(
+            session, shop_id=shop_rid, pg=pg, template_id=plan.pg_template_id,
+            data_limit=data_limit, key=new_hold_key("assign"),
+        )
+    except ProvisionError as e:
+        raise ValueError(e.message) from e
+
+
+async def _hold_quota_change(
+    session: AsyncSession, service: UserService, data_limit_bytes: int | None
+) -> HeldVolume | None:
+    """Hold a staff quota increase in the shop's volume ceiling before the panel write."""
+    if data_limit_bytes is None or service.shop_id is None:
+        return None
+    try:
+        return await hold_limit_change(
+            session, shop_id=int(service.shop_id), current_limit=service.quota_data_limit_bytes,
+            new_limit=int(data_limit_bytes), key=new_hold_key("svc-quota"),
+        )
+    except ProvisionError as e:
+        raise ValueError(e.message) from e
+
+
+async def _modify_with_hold(
+    session: AsyncSession, pg: Any, service: UserService, payload: dict[str, Any], hold: HeldVolume | None
+) -> Any:
+    try:
+        return await pg.modify_user_by_id(int(service.pg_user_id), payload)
+    except Exception as exc:
+        # A refused write granted nothing; an unknown outcome keeps the hold until it expires.
+        if is_hard_panel_rejection(exc):
+            await release_volume_hold(session, hold)
+            await session.commit()
+        raise
+
+
+async def admin_set_service_quota(
+    session: AsyncSession,
+    service: UserService,
+    *,
+    data_limit_bytes: int | None = None,
+    expire_ts: int | None = None,
+    reset_traffic: bool = False,
+    activate: bool = True,
+    staff: dict | None = None,
+) -> ServiceSnapshot:
+    """Set absolute quota on the linked PG user and refresh local link + list cache."""
+    if not service.pg_user_id:
+        raise ValueError("سرویس به پاسارگارد وصل نیست")
+    assert_staff_pg_user_action(staff, "update")
+    pg = await _pg_client_for_bot_service(session, service)
+    hold = await _hold_quota_change(session, service, data_limit_bytes)
+    # Reset is a separate PG ACL (users.reset_usage). Without it, still allow
+    # quota update — never use Owner token to bypass a missing reset right.
+    do_reset = bool(reset_traffic)
+    if do_reset and staff is not None:
+        from app.services.pg_access import staff_user_actions
+
+        if not staff_user_actions(staff).get("reset_usage"):
+            do_reset = False
+    if do_reset:
+        try:
+            await pg.reset_user_by_id(int(service.pg_user_id))
+        except Exception:
+            logger.debug("reset traffic failed uid=%s", service.pg_user_id, exc_info=True)
+    payload = build_user_modify_payload(
+        data_limit=data_limit_bytes,
+        expire_ts=expire_ts,
+        status="active" if activate else None,
+    )
+    if not payload and not reset_traffic:
+        raise ValueError("تغییری برای اعمال نیست")
+    info: dict | None = None
+    if payload:
+        info = await _modify_with_hold(session, pg, service, payload, hold)
+        if isinstance(info, dict):
+            live = user_subscription_url(info)
+            if live:
+                service.subscription_url = live
+                from app.services.pasarguard import extract_sub_token
+
+                tok = extract_sub_token(live)
+                if tok:
+                    service.subscription_token = tok
+            sync_service_quota_cache(service, info)
+        # Absolute values we just wrote win when PG GET/modify is laggy or partial
+        if expire_ts is not None or data_limit_bytes is not None:
+            sync_service_quota_cache(
+                service,
+                expire_ts=expire_ts,
+                data_limit_bytes=data_limit_bytes,
+            )
+    else:
+        # Traffic reset only — refresh cache from live PG when possible
+        try:
+            live_info = await pg.get_user_by_id(int(service.pg_user_id))
+            if isinstance(live_info, dict):
+                sync_service_quota_cache(service, live_info)
+        except Exception:
+            logger.debug("quota cache refresh failed uid=%s", service.pg_user_id, exc_info=True)
+    service.notified_expire = False
+    service.notified_traffic = False
+    await release_volume_hold(session, hold)
+    await session.commit()
+    snap = await service_snapshot(session, service)
+    # Persist any cache refresh from the live snapshot read
+    await session.commit()
+    return snap
+
+
+async def admin_renew_service(
+    session: AsyncSession,
+    service: UserService,
+    *,
+    days: int | None = None,
+    data_limit_gb: float | None = None,
+    plan: Plan | None = None,
+    reset_traffic: bool = True,
+    staff: dict | None = None,
+) -> ServiceSnapshot:
+    """Admin renew: set expire from now + days and optional data limit (from plan or args)."""
+    if plan is not None:
+        if plan.is_trial:
+            raise ValueError("پلن تست برای تمدید مجاز نیست")
+        days = int(plan.duration_days or 0) or days
+        if plan.data_limit_gb is not None:
+            data_limit_gb = float(plan.data_limit_gb)
+        service.plan_id = int(plan.id)
+
+    if days is not None:
+        days_n = int(days)
+        if days_n < 0 or days_n > MAX_EXTEND_DAYS:
+            raise ValueError("تعداد روز نامعتبر است")
+        expire_ts = int(time.time()) + days_n * 86400 if days_n > 0 else 0
+    else:
+        expire_ts = None
+
+    if data_limit_gb is not None:
+        gb = float(data_limit_gb)
+        if gb < 0 or gb > MAX_EXTEND_GB:
+            raise ValueError("حجم نامعتبر است")
+        data_limit_bytes = int(gb * GB) if gb > 0 else 0
+    else:
+        data_limit_bytes = None
+
+    return await admin_set_service_quota(
+        session,
+        service,
+        data_limit_bytes=data_limit_bytes,
+        expire_ts=expire_ts,
+        reset_traffic=reset_traffic,
+        activate=True,
+        staff=staff,
+    )
+
+
+async def admin_extend_service(
+    session: AsyncSession,
+    service: UserService,
+    *,
+    extra_days: int = 0,
+    extra_gb: float = 0,
+    staff: dict | None = None,
+) -> ServiceSnapshot:
+    """Adjust days/GB on current PG remaining (admin). Signed deltas allowed (±MAX)."""
+    days_n = int(extra_days or 0)
+    gb_n = float(extra_gb or 0)
+    if days_n == 0 and gb_n == 0:
+        raise ValueError("حداقل یک مقدار غیرصفر وارد کنید")
+    if abs(days_n) > MAX_EXTEND_DAYS:
+        raise ValueError("تعداد روز نامعتبر است")
+    if abs(gb_n) > MAX_EXTEND_GB:
+        raise ValueError("حجم نامعتبر است")
+    if not service.pg_user_id:
+        raise ValueError("سرویس به پاسارگارد وصل نیست")
+
+    pg = await _pg_client_for_bot_service(session, service)
+    info = await pg.get_user_by_id(int(service.pg_user_id))
+    if not isinstance(info, dict):
+        raise ValueError("کاربر پاسارگارد یافت نشد")
+
+    expire_ts = None
+    if days_n != 0:
+        from app.services.formatting import parse_expire
+
+        cur = parse_expire(info.get("expire") or info.get("expire_date"))
+        now = datetime.now(timezone.utc)
+        if days_n > 0:
+            # Extend from remaining future expire, else from now
+            base = cur if cur and cur > now else now
+        else:
+            # Reduce from current expire (or now if already expired / missing)
+            base = cur if cur else now
+        expire_ts = int(base.timestamp()) + days_n * 86400
+        # Guard absurd negative unix stamps; past expire is allowed (shows expired)
+        if expire_ts < 0:
+            expire_ts = 0
+
+    data_limit_bytes = None
+    if gb_n != 0:
+        try:
+            cur_lim = int(info.get("data_limit") or 0)
+        except (TypeError, ValueError):
+            cur_lim = 0
+        if cur_lim <= 0:
+            if gb_n < 0:
+                raise ValueError("حجم نامحدود است")
+            # Unlimited (0) → start from purchased extra only
+            data_limit_bytes = int(gb_n * GB)
+        else:
+            data_limit_bytes = max(0, cur_lim + int(gb_n * GB))
+
+    return await admin_set_service_quota(
+        session,
+        service,
+        data_limit_bytes=data_limit_bytes,
+        expire_ts=expire_ts,
+        reset_traffic=False,
+        activate=True,
+        staff=staff,
+    )
+
+
+async def _pg_user_presence(pg: Any, pg_uid: int) -> str:
+    """Probe whether a PasarGuard user still exists.
+
+    Returns ``absent`` (clean GET HTTP 404), ``present`` (GET returned a user),
+    or ``unknown`` (403/5xx/network/odd body). Only ``absent`` may authorize
+    wiping a local shop row after a DELETE 404 — never treat uncertainty as gone.
+    """
+    from app.services.pasarguard import is_pg_not_found
+
+    try:
+        info = await pg.get_user_by_id(int(pg_uid))
+    except Exception as exc:
+        if is_pg_not_found(exc):
+            return "absent"
+        return "unknown"
+    if isinstance(info, dict) and info.get("id") is not None:
+        return "present"
+    # Empty / unexpected body — do not guess.
+    return "unknown"
+
+
+def _raise_pg_not_removed(presence: str, *, cause: BaseException) -> None:
+    """Fail closed; message distinguishes confirmed-present vs uncertain."""
+    if presence == "present":
+        raise ValueError(
+            "حذف در پاسارگارد ناموفق بود (کاربر هنوز موجود است) — سرویس محلی حذف نشد"
+        ) from cause
+    raise ValueError(
+        "حذف در پاسارگارد ناموفق بود — سرویس محلی حذف نشد"
+    ) from cause
+
+
+async def ensure_pg_user_removed_or_absent(
+    pg: Any,
+    pg_uid: int,
+    *,
+    staff: dict | None = None,
+    allow_disable_fallback: bool = True,
+) -> str:
+    """Delete a PasarGuard user, treating clean 404 as already-gone.
+
+    Returns one of ``deleted`` | ``already_absent`` | ``disabled``.
+
+    Security contract:
+    - DELETE success → ``deleted``
+    - DELETE HTTP 404 + GET-by-id also 404 → ``already_absent`` (idempotent OK)
+    - DELETE HTTP 404 but GET still finds the user → raise (inconsistent API)
+    - DELETE HTTP 404 but GET uncertain (403/5xx/network) → raise (fail closed)
+    - Other DELETE failures → optional disable fallback
+    - DISABLE success → ``disabled``
+    - DISABLE HTTP 404 + GET 404 → ``already_absent``
+    - Network / 5xx / unknown → raise ValueError (fail closed; local row kept)
+
+    Local shop rows are removed only after a confirmed end-state (deleted,
+    already absent, or disabled). A lone DELETE 404 is never enough.
+    """
+    from app.services.pasarguard import is_pg_not_found
+
+    uid = int(pg_uid)
+    assert_staff_pg_user_action(staff, "delete")
+    try:
+        await pg.delete_user_by_id(uid)
+        return "deleted"
+    except Exception as del_exc:
+        if is_pg_not_found(del_exc):
+            presence = await _pg_user_presence(pg, uid)
+            if presence == "absent":
+                logger.info("PG user %s already absent (DELETE+GET 404)", uid)
+                return "already_absent"
+            # Present or unknown — never wipe local on unconfirmed absence.
+            _raise_pg_not_removed(presence, cause=del_exc)
+        logger.warning(
+            "PG delete failed uid=%s — trying disable fallback",
+            uid,
+            exc_info=True,
+        )
+
+    if not allow_disable_fallback:
+        raise ValueError(
+            "حذف در پاسارگارد ناموفق بود — سرویس محلی حذف نشد"
+        )
+
+    try:
+        assert_staff_pg_user_action(staff, "disable")
+        await pg.set_disabled_by_id(uid, True)
+        return "disabled"
+    except ValueError:
+        # Missing users.disable permission — surface as-is.
+        raise
+    except Exception as dis_exc:
+        if is_pg_not_found(dis_exc):
+            presence = await _pg_user_presence(pg, uid)
+            if presence == "absent":
+                logger.info("PG user %s absent after disable 404 (GET 404)", uid)
+                return "already_absent"
+            _raise_pg_not_removed(presence, cause=dis_exc)
+        logger.debug("PG disable fallback failed uid=%s", uid, exc_info=True)
+        raise ValueError(
+            "حذف/غیرفعال‌سازی در پاسارگارد ناموفق بود — سرویس محلی حذف نشد"
+        ) from dis_exc
+
+
+async def admin_delete_service(
+    session: AsyncSession,
+    service: UserService,
+    *,
+    delete_pg: bool = True,
+    staff: dict | None = None,
+) -> dict[str, Any]:
+    """Hard-delete one shop service and optionally its linked PasarGuard user.
+
+    Caller must verify ownership / shop scope before invoking. Nulls FK refs on
+    orders / loyalty / wheel spins, then removes the ``UserService`` row.
+    Web staff must have PasarGuard ``users.delete`` (disable fallback needs
+    ``users.disable`` / update).
+
+    Idempotent on PasarGuard: a confirmed HTTP 404 (user already gone) allows
+    local cleanup. Transport/5xx failures stay fail-closed so live PG users are
+    never orphaned by wiping the shop row too early.
+    """
+    from sqlalchemy import delete, update
+
+    from app.db.models import LuckyWheelSpin, Order, RewardRedemption
+
+    svc_id = int(service.id)
+    bot_user_id = int(service.bot_user_id)
+    pg_uid = int(service.pg_user_id) if service.pg_user_id else None
+    pg_deleted = False
+    pg_disabled = False
+    pg_already_absent = False
+
+    if pg_uid:
+        # Detaching a service from the list needs the same right as deleting its panel user.
+        # ACL before any PG network call (fail closed on missing users.delete).
+        assert_staff_pg_user_action(staff, "delete")
+    if delete_pg and pg_uid:
+        pg = await _pg_client_for_bot_service(session, service)
+        outcome = await ensure_pg_user_removed_or_absent(
+            pg, pg_uid, staff=staff, allow_disable_fallback=True
+        )
+        if outcome == "deleted":
+            pg_deleted = True
+        elif outcome == "already_absent":
+            pg_deleted = True
+            pg_already_absent = True
+        elif outcome == "disabled":
+            pg_disabled = True
+
+    await session.execute(
+        update(Order).where(Order.service_id == svc_id).values(service_id=None)
+    )
+    await session.execute(
+        update(RewardRedemption)
+        .where(RewardRedemption.service_id == svc_id)
+        .values(service_id=None)
+    )
+    await session.execute(
+        update(LuckyWheelSpin)
+        .where(LuckyWheelSpin.service_id == svc_id)
+        .values(service_id=None)
+    )
+    await session.execute(delete(UserService).where(UserService.id == svc_id))
+    await session.commit()
+    return {
+        "service_id": svc_id,
+        "bot_user_id": bot_user_id,
+        "pg_user_id": pg_uid,
+        "pg_deleted": pg_deleted,
+        "pg_disabled": pg_disabled,
+        "pg_already_absent": pg_already_absent,
+    }
+
+
+async def detach_local_services_for_pg_user(
+    session: AsyncSession,
+    pg_user_id: int,
+    *,
+    commit: bool = True,
+) -> int:
+    """Remove local ``UserService`` rows after a PasarGuard user was deleted.
+
+    Does not call PasarGuard again — used by web/bot PG delete paths (admin +
+    reseller) so shop records do not orphan.
+    """
+    from sqlalchemy import delete, update
+
+    from app.db.models import LuckyWheelSpin, Order, RewardRedemption
+
+    pg_uid = int(pg_user_id)
+    rows = list(
+        (
+            await session.execute(
+                select(UserService).where(UserService.pg_user_id == pg_uid)
+            )
+        ).scalars().all()
+    )
+    if not rows:
+        return 0
+    svc_ids = [int(s.id) for s in rows]
+    await session.execute(
+        update(Order).where(Order.service_id.in_(svc_ids)).values(service_id=None)
+    )
+    await session.execute(
+        update(RewardRedemption)
+        .where(RewardRedemption.service_id.in_(svc_ids))
+        .values(service_id=None)
+    )
+    await session.execute(
+        update(LuckyWheelSpin)
+        .where(LuckyWheelSpin.service_id.in_(svc_ids))
+        .values(service_id=None)
+    )
+    await session.execute(delete(UserService).where(UserService.id.in_(svc_ids)))
+    if commit:
+        await session.commit()
+    return len(svc_ids)
+
+
+def snapshot_telegram_lines(snap: ServiceSnapshot) -> str:
+    svc = snap.service
+    plan_name = svc.plan.name if svc.plan else "—"
+    lines = [
+        f"📦 سرویس #{svc.id} · {plan_name}",
+        f"وضعیت: {snap.status_fa}",
+        f"حجم: {snap.volume_text} (مانده {snap.remain_gb_text})",
+        f"زمان: {snap.expire_text} · مانده {snap.time_label}",
+    ]
+    if snap.subscription_url:
+        lines.append(f"لینک: {snap.subscription_url}")
+    if snap.error:
+        lines.append(f"⚠️ {snap.error}")
+    return "\n".join(lines)

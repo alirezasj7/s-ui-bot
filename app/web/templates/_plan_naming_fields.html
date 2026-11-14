@@ -1,0 +1,42 @@
+{# Shared per-plan / custom-plan username naming fields.
+   Expects optional:
+     naming_prefix / naming_suffix / naming_pattern
+     naming_prefix_name / naming_suffix_name / naming_pattern_name
+     naming_preview_id
+     global_prefix / global_suffix / global_pattern  (fallback for live sample)
+#}
+{% set np = naming_prefix if naming_prefix is defined else '' %}
+{% set ns = naming_suffix if naming_suffix is defined else '' %}
+{% set npat = naming_pattern if naming_pattern is defined else '' %}
+{% set nk_p = naming_prefix_name if naming_prefix_name is defined else 'pg_username_prefix' %}
+{% set nk_s = naming_suffix_name if naming_suffix_name is defined else 'pg_username_suffix' %}
+{% set nk_pat = naming_pattern_name if naming_pattern_name is defined else 'pg_username_pattern' %}
+{% set nprev = naming_preview_id if naming_preview_id is defined else 'plan-naming-sample' %}
+{% set gp = global_prefix if global_prefix is defined else 'clk' %}
+{% set gs = global_suffix if global_suffix is defined else '' %}
+{% set gpat = global_pattern if global_pattern is defined else '{prefix}_{random}{suffix}' %}
+<div class="plan-naming-block" data-plan-naming
+     data-global-prefix="{{ gp }}"
+     data-global-suffix="{{ gs }}"
+     data-global-pattern="{{ gpat }}">
+  <h3 class="plan-naming-title">نام‌گذاری سرویس در پاسارگارد</h3>
+  <p class="muted update-card-caption">
+    اختیاری — اگر خالی بگذارید از تنظیمات سراسری «نام‌گذاری سرویس» استفاده می‌شود.
+    متغیرها: <code dir="ltr">{prefix}</code> <code dir="ltr">{random}</code> <code dir="ltr">{suffix}</code> <code dir="ltr">{id}</code> <code dir="ltr">{plan_volume}</code> <code dir="ltr">{plan_unit}</code> <code dir="ltr">{username}</code>
+    حجم و واحد جدا هستند؛ یوزرنیم تلگرام بدون @ است. برای کاربر بدون یوزرنیم، آیدی عددی جایگزین می‌شود.
+  </p>
+  <div class="form-row">
+    <label class="form-field">پیشوند
+      <input name="{{ nk_p }}" value="{{ np or '' }}" dir="ltr" placeholder="مثلاً vip — خالی = پیش‌فرض سراسری" maxlength="64" data-naming-prefix autocomplete="off" />
+    </label>
+    <label class="form-field">پسوند
+      <input name="{{ nk_s }}" value="{{ ns or '' }}" dir="ltr" placeholder="اختیاری — خالی = پیش‌فرض سراسری" maxlength="64" data-naming-suffix autocomplete="off" />
+    </label>
+  </div>
+  <label class="form-field">الگوی نام
+    <input name="{{ nk_pat }}" value="{{ npat or '' }}" dir="ltr" placeholder="{prefix}_{random}{suffix}" maxlength="255" data-naming-pattern autocomplete="off" />
+  </label>
+  <div class="naming-preview plan-naming-preview">
+    نمونه نام: <strong class="mono" data-naming-sample id="{{ nprev }}" dir="ltr">—</strong>
+  </div>
+</div>

@@ -1,0 +1,53 @@
+{# Single-root dash body for /home and /home/body fragment swap. #}
+{% from "macros.html" import page_title, card_title %}
+{% set ov = overview %}
+{% set bot = ov.bot %}
+{% set nodes = ov.nodes %}
+{% set show_pg_nodes = show_pg_nodes if show_pg_nodes is defined else ('pg_nodes' in (staff.get('pg_permissions') or [])) %}
+
+<div class="home-dash" id="home-dash">
+  {% if request is defined and request.url.path == '/home/body' %}{% include "_pg_connection_notice.html" %}{% endif %}
+  {% if dashboard_degraded %}
+  <div class="flash warn home-update-banner">
+    <div class="home-update-copy">
+      <strong>بارگذاری ناقص داشبورد</strong>
+      <span class="muted">بعضی بخش‌ها خوانده نشدند. صفحه را تازه کنید یا لاگ سرویس را ببینید.</span>
+    </div>
+    <a class="btn btn-sm btn-ghost" href="/home">تلاش دوباره</a>
+  </div>
+  {% endif %}
+
+  <div class="page-head">
+    <div>
+      {{ page_title('home', 'داشبورد', 'neutral', help='home') }}
+    </div>
+  </div>
+
+  {% from "_home_widgets.html" import kpi_strip, status_tiles, update_notice %}
+  {{ update_notice(update if update is defined else none) }}
+  {{ kpi_strip(periods, action_center, trend if trend is defined else none, kpi_links if kpi_links is defined else none) }}
+
+  {% set tiles = [] %}
+  {% set bot_state = 'neutral' if bot.unchecked else ('ok' if bot.ok else 'err') %}
+  {% set bot_detail = 'بررسی نشده' if bot.unchecked else (('@' ~ bot.username) if (bot.ok and bot.username) else ('آنلاین' if bot.ok else (bot.error or 'قطع'))) %}
+  {% set _ = tiles.append({'name': 'ربات تلگرام', 'detail': bot_detail, 'state': bot_state, 'icon': 'bot', 'href': '/settings?tab=bot'}) %}
+  {% set pg_state = 'neutral' if (pg_health and pg_health.unchecked) else ('ok' if (pg_health and pg_health.ok) else 'err') %}
+  {% set pg_detail = 'بررسی نشده' if (pg_health and pg_health.unchecked) else (('نسخه ' ~ pg_health.version) if (pg_health and pg_health.ok and pg_health.version) else ('آنلاین' if (pg_health and pg_health.ok) else ((pg_health.error if pg_health else none) or 'قطع'))) %}
+  {% set _ = tiles.append({'name': 'پاسارگارد', 'detail': pg_detail, 'state': pg_state, 'icon': 'pg', 'href': '/pg', 'id': 'home-pg-health'}) %}
+  {% if show_pg_nodes %}
+  {% set node_state = 'ok' if (nodes.ok and nodes.overall == 'ok') else ('warn' if (nodes.ok and nodes.overall == 'warn') else ('err' if (not nodes.ok or nodes.overall == 'err') else 'neutral')) %}
+  {% set node_detail = (nodes.connected ~ '/' ~ nodes.total ~ ' متصل') if (nodes.ok and nodes.total) else (nodes.error or 'ثبت‌نشده') %}
+  {% set _ = tiles.append({'name': 'نود', 'detail': node_detail, 'state': node_state, 'icon': 'nodes', 'href': '/pg/nodes'}) %}
+  {% endif %}
+  {{ status_tiles(tiles) }}
+  {% if pg_link_health %}{% include "_pg_link_health.html" %}{% endif %}
+
+
+
+  {% if pg_limits and pg_limits.ready %}
+  {% from "_pg_limit_cards.html" import pg_overview_limit_board %}
+  {{ pg_overview_limit_board(pg_limits) }}
+  {% endif %}
+
+  {% include "_home_ops.html" %}
+</div>

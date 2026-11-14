@@ -1,0 +1,119 @@
+{# Shared home ops block: portals → work queue → period sales
+   Expects: periods, action_center (optional), portal_bot_href, portal_pg_href,
+            portal_bot_show (bool, default true), portal_pg_show (bool, default true)
+#}
+{% from "macros.html" import action_center_icon, inbox_dismiss_btn, card_title %}
+{% from "_home_widgets.html" import account_card %}
+{% set ac = action_center or {} %}
+{% set periods = periods or {} %}
+{% set day = periods.day or {} %}
+{% set week = periods.week or {} %}
+{% set month = periods.month or {} %}
+{% set show_bot = portal_bot_show if portal_bot_show is defined else true %}
+{% set show_pg = portal_pg_show if portal_pg_show is defined else true %}
+{% set bot_href = portal_bot_href or '/dashboard' %}
+{% set pg_href = portal_pg_href or '/pg' %}
+
+{% if show_bot or show_pg %}
+<div class="home-portal-row" role="navigation" aria-label="نمای کلی">
+  {% if show_bot %}
+  <a class="home-portal home-portal-bot" href="{{ bot_href }}">
+    <span class="home-portal-ico" aria-hidden="true">
+      <svg viewBox="0 0 24 24"><rect x="4" y="8" width="16" height="11" rx="2.5"/><path d="M12 8V5H9"/><path d="M2 14h2M20 14h2"/><circle cx="9.5" cy="13.5" r="1.1"/><circle cx="14.5" cy="13.5" r="1.1"/><path d="M9.5 17h5"/></svg>
+    </span>
+    <span class="home-portal-copy">
+      <strong>نمای کلی ربات</strong>
+      <span class="muted">فروشگاه، کاربران و مالی</span>
+    </span>
+    <span class="home-portal-go" aria-hidden="true">
+      <svg viewBox="0 0 24 24"><path d="M15 6l-6 6 6 6"/></svg>
+    </span>
+  </a>
+  {% endif %}
+  {% if show_pg %}
+  <a class="home-portal home-portal-pg" href="{{ pg_href }}">
+    <span class="home-portal-ico" aria-hidden="true">
+      <svg viewBox="0 0 24 24"><rect x="3" y="4" width="7" height="7" rx="1.5"/><rect x="14" y="4" width="7" height="7" rx="1.5"/><rect x="8.5" y="13" width="7" height="7" rx="1.5"/></svg>
+    </span>
+    <span class="home-portal-copy">
+      <strong>نمای کلی پاسارگارد</strong>
+      <span class="muted">نود، کاربر پنل و ظرفیت</span>
+    </span>
+    <span class="home-portal-go" aria-hidden="true">
+      <svg viewBox="0 0 24 24"><path d="M15 6l-6 6 6 6"/></svg>
+    </span>
+  </a>
+  {% endif %}
+</div>
+{% endif %}
+
+<div class="home-main-grid">
+{% include "_home_sales_chart.html" %}
+<section class="card home-action-card" aria-label="صف کار">
+  {{ card_title('queue', 'صف کار') }}
+  {% if ac.has_items and ac.entries %}
+  <div class="home-action-list">
+    {% for item in ac.entries %}
+    <div class="home-action-item tone-{{ item.tone or 'neutral' }}">
+      <a class="home-action-item-link" href="{{ item.href }}">
+        <span class="home-action-leading">
+          {{ action_center_icon(item.key) }}
+          <span class="home-action-copy">
+            <strong>{{ item.title }}</strong>
+            <span class="muted">{{ item.detail }}</span>
+          </span>
+        </span>
+        <span class="btn btn-sm btn-ghost">برو</span>
+      </a>
+      {{ inbox_dismiss_btn('ac:' ~ item.key) }}
+    </div>
+    {% endfor %}
+  </div>
+  {% else %}
+  <div class="home-action-empty" role="status">
+    <svg class="home-action-empty-ico" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M8 12.5l2.7 2.7L16 9.8"/></svg>
+    <strong>صف کار خالی است</strong>
+    <span class="muted">الان کاری منتظر شما نیست؛ رسید، خطا یا سرویس رو به انقضا که بیاید، اینجا نشان داده می‌شود.</span>
+  </div>
+  {% endif %}
+</section>
+</div>
+
+<div class="home-bottom-grid{% if wallet_card is defined and wallet_card %} has-account{% endif %}">
+{% if wallet_card is defined and wallet_card %}{{ account_card(wallet_card) }}{% endif %}
+<section class="card home-periods-card" aria-label="فروش دوره‌ای">
+  <header class="home-periods-head">
+    {{ card_title('sales', 'فروش دوره‌ای') }}
+    <p class="muted">امروز · 7 روز · 30 روز</p>
+  </header>
+  <div class="home-period-grid">
+    <article class="home-period">
+      <h3 class="home-period-label">امروز</h3>
+      <dl class="home-period-metrics">
+        <div><dt>سفارش</dt><dd>{{ day.orders | num }}</dd></div>
+        <div><dt>خرید موفق</dt><dd>{{ day.delivered | num }}</dd></div>
+        <div><dt>درآمد</dt><dd><span dir="ltr">{{ day.revenue | money }}</span></dd></div>
+        <div><dt>کاربر جدید</dt><dd>{{ day.new_users | num }}</dd></div>
+      </dl>
+    </article>
+    <article class="home-period">
+      <h3 class="home-period-label">7 روز</h3>
+      <dl class="home-period-metrics">
+        <div><dt>سفارش</dt><dd>{{ week.orders | num }}</dd></div>
+        <div><dt>خرید موفق</dt><dd>{{ week.delivered | num }}</dd></div>
+        <div><dt>درآمد</dt><dd><span dir="ltr">{{ week.revenue | money }}</span></dd></div>
+        <div><dt>کاربر جدید</dt><dd>{{ week.new_users | num }}</dd></div>
+      </dl>
+    </article>
+    <article class="home-period">
+      <h3 class="home-period-label">30 روز</h3>
+      <dl class="home-period-metrics">
+        <div><dt>سفارش</dt><dd>{{ month.orders | num }}</dd></div>
+        <div><dt>خرید موفق</dt><dd>{{ month.delivered | num }}</dd></div>
+        <div><dt>درآمد</dt><dd><span dir="ltr">{{ month.revenue | money }}</span></dd></div>
+        <div><dt>کاربر جدید</dt><dd>{{ month.new_users | num }}</dd></div>
+      </dl>
+    </article>
+  </div>
+</section>
+</div>

@@ -1,0 +1,47 @@
+{# Tiers editor — used inside loyalty settings modal #}
+{% from "macros.html" import switch %}
+<div class="loyalty-stack">
+  <div class="card settings-card">
+    <h2>سطوح باشگاه</h2>
+    {% if not is_platform_admin %}
+    <p class="muted update-card-caption">سطوح سراسری هستند و فقط ادمین اصلی می‌تواند آن‌ها را ویرایش کند.</p>
+    {% else %}
+    <p class="muted update-card-caption">بازه امتیاز و ضریب پاداش هر سطح را تنظیم کنید. ضریب بر حسب bps است (۱۰۰۰۰ = ۱×).</p>
+    {% endif %}
+  </div>
+  {% for tier in tiers %}
+  {% if is_platform_admin %}
+  <div class="card settings-card loyalty-editor">
+    <div class="loyalty-editor-head">
+      <div class="loyalty-editor-title">
+        <strong>{{ tier.name }}</strong>
+        {% if tier.enabled %}
+        <span class="badge ok">فعال</span>
+        {% else %}
+        <span class="badge neutral">غیرفعال</span>
+        {% endif %}
+      </div>
+    </div>
+    <form method="post" action="/loyalty/tiers/{{ tier.id }}/save" class="form-stack">
+      <label class="form-field">نام<input name="name" value="{{ tier.name }}" required /></label>
+      <div class="form-row">
+        <label class="form-field">حداقل امتیاز<input name="min_points" type="number" min="0" value="{{ tier.min_points }}" dir="ltr" /></label>
+        <label class="form-field">حداکثر (خالی=بدون سقف)<input name="max_points" type="number" min="0" value="{{ tier.max_points if tier.max_points is not none else '' }}" dir="ltr" /></label>
+        <label class="form-field">ضریب (bps)<input name="multiplier_bps" type="number" min="0" value="{{ tier.multiplier_bps }}" dir="ltr" /></label>
+      </div>
+      <div class="ui-switch-list">
+        {{ switch('enabled', 'فعال', checked=tier.enabled) }}
+      </div>
+      <div class="actions"><button class="btn" type="submit">ذخیره سطح</button></div>
+    </form>
+  </div>
+  {% else %}
+  <div class="card loyalty-tier-readonly">
+    <strong>{{ tier.name }}</strong>
+    <span class="muted">از {{ tier.min_points | num }}{% if tier.max_points is not none %} تا {{ tier.max_points | num }}{% else %}+{% endif %} · ضریب {{ (tier.multiplier_bps / 10000) }}×</span>
+  </div>
+  {% endif %}
+  {% else %}
+  <div class="card"><p class="muted">سطحی تعریف نشده.</p></div>
+  {% endfor %}
+</div>

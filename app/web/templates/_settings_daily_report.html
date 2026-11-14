@@ -1,0 +1,68 @@
+{# Daily report customization — owner + shop (same IA). #}
+{% set actor = daily_report_actor or 'owner' %}
+{% set enabled_metrics = daily_report_enabled_metrics or [] %}
+{% set metric_groups = daily_report_metric_groups or [] %}
+{% set settings_action = settings_action or ('/shop-settings?tab=daily_report' if shop_mode|default(false) else '/settings?tab=daily_report') %}
+<form method="post" action="{{ settings_action }}" enctype="multipart/form-data" class="settings-form" id="settings-form">
+  <div class="card settings-card">
+    <h2>ارسال گزارش</h2>
+    <p class="muted update-card-caption">
+      گزارش روزانه فقط آمار همان فروشگاه/نقش شما را می‌فرستد.
+      گزارش نمایندگان فقط زیرمجموعه‌های مستقیم شما را خلاصه می‌کند؛ دادهٔ فروشگاه‌های دیگر نشت نمی‌کند.
+    </p>
+    <div class="settings-grid">
+      {% for field in groups.get('گزارش روزانه', []) %}
+        {% if field[0] != 'admin_daily_report_template' %}
+          {% include "_settings_field.html" %}
+        {% endif %}
+      {% endfor %}
+    </div>
+  </div>
+
+  <div class="card settings-card">
+    <h2>آمار داخل گزارش</h2>
+    <p class="muted update-card-caption">
+      فقط موارد روشن در متن گزارش مقدار می‌گیرند؛ بقیه خالی می‌مانند.
+      {% if actor == 'owner' %}نمایندگان آمار سطح مالک سیستم را نمی‌بینند.{% endif %}
+    </p>
+    {% for g in metric_groups %}
+    <div class="ui-switch-section">
+      <span class="ui-switch-section-title">{{ g.label }}</span>
+      <div class="notify-list ui-switch-list">
+        {% for m in g.metrics %}
+        <label class="notify-row ui-switch-row">
+          <span class="notify-meta ui-switch-copy">
+            <strong>{{ m.title_fa }}</strong>
+            <small>{{ m.description_fa }} · <code class="mono" dir="ltr">{{ m.token }}</code></small>
+          </span>
+          <span class="ui-switch">
+            <input type="checkbox" name="m_{{ m.key }}" value="1"
+                   {% if m.key in enabled_metrics %}checked{% endif %} />
+            <span class="ui-switch-track" aria-hidden="true"></span>
+          </span>
+        </label>
+        {% endfor %}
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+
+  <div class="card settings-card">
+    <h2>متن گزارش</h2>
+    <p class="muted update-card-caption">
+      از متغیرهای <span class="mono" dir="ltr">&#123;users_new&#125;</span> و بقیه استفاده کنید.
+      فهرست کامل: <a href="/message-variables">متغیرهای پیام</a>.
+    </p>
+    <div class="settings-grid">
+      {% for field in groups.get('گزارش روزانه', []) %}
+        {% if field[0] == 'admin_daily_report_template' %}
+          {% include "_settings_field.html" %}
+        {% endif %}
+      {% endfor %}
+    </div>
+  </div>
+
+  <div class="actions sticky-actions">
+    <button class="btn" type="submit">ذخیره گزارش روزانه</button>
+  </div>
+</form>

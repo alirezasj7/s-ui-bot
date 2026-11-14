@@ -1,0 +1,48 @@
+{% extends "base.html" %}
+{% from "macros.html" import page_title %}
+{% block title %}اینباندهای پاسارگارد{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div>
+    {{ page_title('inbounds', 'اینباندها', 'pg', help='pg-inbounds') }}
+  </div>
+</div>
+<div class="card card-flush">
+  <h2>تگ‌های اینباند</h2>
+  {% if not inbounds %}
+  <p class="muted">اینباندی نیست.</p>
+  {% else %}
+  <div class="checks">
+    {% for item in inbounds %}
+      <span class="badge">{{ item if item is string else (item.get('tag') or item.get('name') or item) }}</span>
+    {% endfor %}
+  </div>
+  {% endif %}
+  <p class="muted card-flush-note">
+    برای ساخت گروه و هاست از همین تگ‌ها استفاده کنید.
+  </p>
+</div>
+
+{% if details %}
+<div class="card card-flush">
+  <h2>جزئیات</h2>
+  <div class="table-wrap">
+  {% if details is mapping %}
+  <table>
+    <thead><tr><th>کلید</th><th>مقدار</th></tr></thead>
+    <tbody>
+    {% for k, v in details.items() %}
+      <tr>
+        <td class="mono">{{ k }}</td>
+        <td class="mono muted" style="max-width:480px;word-break:break-word">{{ v }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <pre class="mono muted" style="white-space:pre-wrap;margin: 0;padding: var(--space-2)">{{ details }}</pre>
+  {% endif %}
+  </div>
+</div>
+{% endif %}
+{% endblock %}

@@ -1,0 +1,117 @@
+{% extends "base.html" %}
+{% from "macros.html" import switch, row_actions, page_title, table_select_head, table_select_cell, table_bulk_bar, modal_title %}
+{% block title %}پلن‌های نمایندگی{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div>
+    {{ page_title('plans', 'پلن‌های نمایندگی', help='plans') }}
+  </div>
+  <button type="button" class="btn" data-modal-open="modal-plan-create">پلن جدید</button>
+</div>
+
+<div class="section-tabs">
+  {% for t in tabs %}
+  <a href="{{ t.href }}" class="{% if tab == t.id %}active{% endif %}">{{ t.label }}</a>
+  {% endfor %}
+</div>
+
+<div class="card card-flush">
+  <h2>پلن‌های موجود</h2>
+  {{ table_bulk_bar('/resellers/plans/bulk-action', [
+    {'key': 'toggle', 'label': 'روشن/خاموش', 'confirm': 'وضعیت {n} پلن نمایندگی تغییر کند؟', 'confirm_title': 'تغییر وضعیت گروهی', 'confirm_label': 'اعمال'},
+    {'key': 'delete', 'label': 'حذف', 'class': 'btn-danger', 'confirm': '{n} پلن نمایندگی حذف شوند؟', 'confirm_title': 'حذف گروهی', 'confirm_label': 'حذف', 'danger': true},
+  ]) }}
+  <div class="table-wrap">
+  <table class="table-compact table-list-sm" data-bulk-select>
+    <thead><tr>{{ table_select_head() }}<th>نام</th><th>قیمت</th><th>وضعیت</th><th class="col-actions"></th><th class="li-head" scope="col"><span class="li-count">{{ plans | length | num }} پلن</span></th></tr></thead>
+    <tbody>
+    {% for p in plans %}
+      <tr data-bulk-ops="toggle,delete">
+        {{ table_select_cell(p.id) }}
+        <td class="li-title"><span dir="auto">{{ p.name }}</span>{% if p.description %}<br class="li-hide"><small class="muted li-hide">{{ p.description }}</small>{% endif %}</td>
+        <td class="mono li-value" dir="ltr">{{ p.price | money }}</td>
+        <td class="li-badge"><span class="li-hide">{{ "فعال" if p.is_active else "خاموش" }}</span><span class="li-only badge {{ 'active' if p.is_active else 'warn' }}">{{ "فعال" if p.is_active else "خاموش" }}</span></td>
+        <td class="col-actions">
+          {% call row_actions() %}
+          <a class="btn btn-ghost btn-sm" href="/resellers/plans/{{ p.id }}/edit">ویرایش</a>
+          <form method="post" action="/resellers/plans/{{ p.id }}/toggle"><button class="btn btn-ghost btn-sm" type="submit">روشن/خاموش</button></form>
+          <form method="post" action="/resellers/plans/{{ p.id }}/delete"
+                data-confirm="این پلن نمایندگی حذف شود؟"
+                data-confirm-title="تأیید حذف"
+                data-confirm-danger="1"
+                data-confirm-label="حذف"><button class="btn btn-danger btn-sm" type="submit">حذف</button></form>
+          {% endcall %}
+        </td>
+        <td class="li-only-cell li-sub"><span dir="auto">{{ p.description or '—' }}</span></td>
+      </tr>
+    {% else %}
+      <tr><td colspan="5" class="muted">پلنی نیست — تا پلن نسازید دکمه درخواست در بات برای کاربر بی‌فایده است</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  </div>
+</div>
+
+<div class="ui-modal" id="modal-plan-create" hidden>
+  <div class="ui-modal-backdrop" data-modal-close></div>
+  <div class="ui-modal-panel ui-modal-panel-lg" role="dialog" aria-modal="true">
+    <div class="ui-modal-head">
+      {{ modal_title('plans', 'پلن جدید', caption='پلن نمایندگی جدید بسازید', tone='brand') }}
+      <button type="button" class="icon-btn" data-modal-close aria-label="بستن"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
+    </div>
+    <form method="post" action="/resellers/plans" class="form-stack">
+      <div class="form-row">
+        <div>
+          <label class="form-field">نام
+            <input name="name" required placeholder="نمایندگی نقره‌ای" />
+          </label>
+        </div>
+        <div>
+          <label class="form-field">قیمت (تومان)
+            
+            <input name="price" type="number" data-money value="0" />
+        <small class="muted">۰ = رایگان؛ فقط تأیید ادمین</small>
+          </label>
+        </div>
+        <div>
+          <label class="form-field">ترتیب
+            <input name="sort_order" type="number" value="0" />
+          </label>
+        </div>
+      </div>
+      <label class="form-field">توضیح
+        <textarea name="description" rows="2"></textarea>
+      </label>
+
+      <div class="ui-switch-section">
+        <span class="ui-switch-section-title">دسترسی پیش‌فرض (وب = بات)</span>
+        <p class="ui-switch-section-hint">این دسترسی‌ها هنگام تأیید درخواست نمایندگی اعمال می‌شوند.</p>
+        <div class="ui-switch-list">
+          {% for key, label in feature_perms %}
+          {{ switch('perm_' ~ key, label, checked=true) }}
+          {% endfor %}
+        </div>
+      </div>
+
+      <div class="ui-switch-list">
+        {{ switch('create_pg_admin', 'ساخت ادمین پاسارگارد هنگام تأیید', checked=true, help='با نقش پاسارگارد پلن؛ برای مالکیت کاربران لازم است') }}
+        {{ switch('share_pg_panel_url', 'ارسال لینک و یوزر/رمز پنل پاسارگارد', checked=false, help='اگر خاموش باشد، نماینده فقط از وب‌پنل ربات مدیریت می‌کند') }}
+        {{ switch('is_active', 'پلن فعال', checked=true) }}
+      </div>
+
+      <label class="form-field">نقش پاسارگارد
+        <select name="pg_role_id">
+          <option value="">—</option>
+          {% for r in pg_roles %}
+          <option value="{{ r.get('id') }}">{{ r.get('name') or r.get('id') }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <div class="actions">
+        <button class="btn" type="submit">ذخیره پلن</button>
+        <button type="button" class="btn btn-ghost" data-modal-close>انصراف</button>
+      </div>
+    </form>
+  </div>
+</div>
+{% endblock %}

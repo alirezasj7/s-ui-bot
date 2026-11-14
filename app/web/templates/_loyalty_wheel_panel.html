@@ -1,0 +1,244 @@
+{# Lucky wheel editor — used inside loyalty settings modal #}
+{% from "macros.html" import switch %}
+{% set submenu_labels = {
+  'loy_referral': 'دعوت دوستان',
+  'loy_points': 'امتیاز من',
+  'loy_rewards': 'جوایز',
+  'loy_wheel': 'چرخ شانس',
+  'loy_history': 'تاریخچه',
+} %}
+<div class="loyalty-stack">
+  <div class="card settings-card">
+    <h2>تنظیمات چرخ شانس</h2>
+    <p class="muted update-card-caption">
+      چرخ فقط وقتی فعال است که باشگاه مشتریان هم روشن باشد.
+      متن دکمه از تنظیمات «متن دکمه‌های منو» (<code>btn_loy_wheel</code>) و جایگاه دکمه باشگاه از <code>menu_order</code> تغییر می‌کند.
+    </p>
+    <form method="post" action="/loyalty/wheel/settings" class="form-stack">
+      <div class="ui-switch-list">
+        {{ switch('lucky_wheel_enabled', 'فعال بودن چرخ شانس', checked=(lucky_wheel_enabled in ['1','true','yes','on'])) }}
+      </div>
+      <div class="form-row">
+        <label class="form-field">هزینه هر چرخش (امتیاز)
+          <input name="lucky_wheel_spin_cost_points" type="number" min="0" max="1000000" value="{{ lucky_wheel_spin_cost_points }}" dir="ltr" />
+          <small class="muted">۰ = رایگان (بدون امتیاز)</small>
+        </label>
+        <label class="form-field">سقف روزانه
+          <input name="lucky_wheel_daily_limit" type="number" min="0" max="100" value="{{ lucky_wheel_daily_limit }}" dir="ltr" />
+          <small class="muted">۰ = نامحدود</small>
+        </label>
+        <label class="form-field">کولدون (ثانیه)
+          <input name="lucky_wheel_cooldown_seconds" type="number" min="0" max="86400" value="{{ lucky_wheel_cooldown_seconds }}" dir="ltr" />
+        </label>
+        <label class="form-field">چرخش رایگان روزانه
+          <input name="lucky_wheel_free_spins_daily" type="number" min="0" max="50" value="{{ lucky_wheel_free_spins_daily }}" dir="ltr" />
+        </label>
+      </div>
+
+      <h3 class="loyalty-editor-title">ترتیب زیرمنوی باشگاه</h3>
+      <p class="muted">ترتیب و نمایش دکمه‌های باشگاه در ربات. دکمه‌ای که از لیست حذف شود در ربات پنهان می‌شود. اگر کلید بالا خاموش باشد، گردونه هم نمایش داده نمی‌شود.</p>
+      <input type="hidden" name="loyalty_submenu_order" id="loyalty_submenu_order" value="{{ loyalty_submenu_order }}" />
+      <div class="dnd-cols">
+        <div class="card dnd-card">
+          <h4>فعال در زیرمنو</h4>
+          <ul class="dnd-list" id="loyalty-submenu-list" data-zone="active">
+            {% for key in loyalty_submenu_active %}
+            <li class="dnd-item" data-key="{{ key }}">
+              <div class="meta">
+                <strong>{{ submenu_labels.get(key, key) }}</strong>
+                <div class="muted">{{ key }}</div>
+              </div>
+              <div class="dnd-actions">
+                <button type="button" class="icon-btn icon-move btn-up" title="بالا" aria-label="بالا"><svg class="ico" viewBox="0 0 16 16" aria-hidden="true"><path d="M4 10l4-4 4 4"/></svg></button>
+                <button type="button" class="icon-btn icon-move btn-down" title="پایین" aria-label="پایین"><svg class="ico" viewBox="0 0 16 16" aria-hidden="true"><path d="M4 6l4 4 4-4"/></svg></button>
+                <button type="button" class="icon-btn icon-remove btn-remove" title="حذف" aria-label="حذف"><svg class="ico" viewBox="0 0 16 16" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8"/></svg></button>
+              </div>
+            </li>
+            {% endfor %}
+          </ul>
+        </div>
+        <div class="card dnd-card">
+          <h4>مخفی / مخزن</h4>
+          <ul class="dnd-list" id="loyalty-submenu-pool" data-zone="pool">
+            {% for key in loyalty_submenu_pool %}
+            <li class="dnd-item" data-key="{{ key }}">
+              <div class="meta">
+                <strong>{{ submenu_labels.get(key, key) }}</strong>
+                <div class="muted">{{ key }}</div>
+              </div>
+              <div class="dnd-actions">
+                <button type="button" class="icon-btn icon-add btn-add" title="افزودن" aria-label="افزودن"><svg class="ico" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 3v10M3 8h10"/></svg></button>
+              </div>
+            </li>
+            {% endfor %}
+            <li class="pool-empty" id="loyalty-submenu-pool-empty" {% if loyalty_submenu_pool %}style="display:none"{% endif %}>همه دکمه‌ها در زیرمنو هستند</li>
+          </ul>
+        </div>
+      </div>
+      <div class="actions"><button class="btn" type="submit">ذخیره تنظیمات چرخ</button></div>
+    </form>
+  </div>
+
+  <div class="card settings-card">
+    <h2>افزودن بخش چرخ</h2>
+    <p class="muted update-card-caption">وزن بالاتر = شانس بیشتر. انتخاب جایزه فقط سمت سرور انجام می‌شود.</p>
+    <form method="post" action="/loyalty/wheel/prizes/create" class="form-stack">
+      <label class="form-field">برچسب<input name="label" required maxlength="128" placeholder="مثلاً ۱۰ گیگ" /></label>
+      <div class="form-row">
+        <label class="form-field">نوع
+          <select name="prize_type">
+            {% for k,v in wheel_prize_type_labels.items() %}
+            <option value="{{ k }}">{{ v }}</option>
+            {% endfor %}
+          </select>
+        </label>
+        <label class="form-field">مقدار<input name="prize_value" type="number" data-money-kind="prize_type" data-money-value="wallet_credit" min="0" value="0" dir="ltr" /></label>
+        <label class="form-field">وزن<input name="weight" type="number" min="1" max="10000" value="10" dir="ltr" /></label>
+        <label class="form-field">ترتیب<input name="sort_order" type="number" value="100" dir="ltr" /></label>
+      </div>
+      <p class="muted">فقط برای تخفیف درصدی:</p>
+      <div class="form-row">
+        <label class="form-field">حداقل خرید (تومان)<input name="min_purchase_toman" type="number" data-money min="0" value="0" dir="ltr" /></label>
+        <label class="form-field">سقف تخفیف (تومان)<input name="max_discount_toman" type="number" data-money min="0" placeholder="اختیاری" dir="ltr" /></label>
+        <label class="form-field">انقضا (روز)<input name="expires_days" type="number" min="1" placeholder="اختیاری" dir="ltr" /></label>
+      </div>
+      <div class="actions"><button class="btn" type="submit">ایجاد بخش</button></div>
+    </form>
+  </div>
+
+  {% set ns = namespace(has_prize=false) %}
+  {% for prize in wheel_prizes if not prize.archived %}
+  {% set ns.has_prize = true %}
+  <div class="card settings-card loyalty-editor">
+    <div class="loyalty-editor-head">
+      <div class="loyalty-editor-title">
+        <strong>{{ prize.label }}</strong>
+        <span class="muted">{{ wheel_prize_type_labels.get(prize.prize_type, prize.prize_type) }} · برد: {{ prize.win_count | num }} · وزن: {{ prize.weight }}</span>
+        {% if prize.enabled %}
+        <span class="badge ok">فعال</span>
+        {% else %}
+        <span class="badge neutral">غیرفعال</span>
+        {% endif %}
+      </div>
+    </div>
+    <form method="post" action="/loyalty/wheel/prizes/{{ prize.id }}/save" class="form-stack">
+      <label class="form-field">برچسب<input name="label" value="{{ prize.label }}" required maxlength="128" /></label>
+      <div class="form-row">
+        <label class="form-field">مقدار<input name="prize_value" type="number" {% if prize.prize_type == 'wallet_credit' %}data-money{% endif %} min="0" value="{{ prize.prize_value }}" dir="ltr" /></label>
+        <label class="form-field">وزن<input name="weight" type="number" min="1" max="10000" value="{{ prize.weight }}" dir="ltr" /></label>
+        <label class="form-field">ترتیب<input name="sort_order" type="number" value="{{ prize.sort_order }}" dir="ltr" /></label>
+        <label class="form-field">سقف کل<input name="max_wins_global" type="number" min="0" value="{{ prize.max_wins_global if prize.max_wins_global is not none else '' }}" placeholder="نامحدود" dir="ltr" /></label>
+        <label class="form-field">سقف هر کاربر<input name="max_wins_per_user" type="number" min="0" value="{{ prize.max_wins_per_user if prize.max_wins_per_user is not none else '' }}" placeholder="نامحدود" dir="ltr" /></label>
+      </div>
+      {% if prize.prize_type == 'discount_percent' %}
+      <div class="form-row">
+        <label class="form-field">حداقل خرید<input name="min_purchase_toman" type="number" data-money min="0" value="{{ prize.min_purchase_toman or 0 }}" dir="ltr" /></label>
+        <label class="form-field">سقف تخفیف<input name="max_discount_toman" type="number" data-money min="0" value="{{ prize.max_discount_toman if prize.max_discount_toman is not none else '' }}" dir="ltr" /></label>
+        <label class="form-field">انقضا (روز)<input name="expires_days" type="number" min="1" value="{{ prize.expires_days if prize.expires_days is not none else '' }}" dir="ltr" /></label>
+      </div>
+      {% endif %}
+      <div class="ui-switch-list">
+        {{ switch('enabled', 'فعال', checked=prize.enabled) }}
+      </div>
+      <div class="actions">
+        <button class="btn" type="submit">ذخیره</button>
+      </div>
+    </form>
+    <form method="post" action="/loyalty/wheel/prizes/{{ prize.id }}/archive" class="loyalty-editor-danger"
+          data-confirm="این بخش حذف شود؟ از استخر چرخش خارج می‌شود." data-confirm-title="حذف بخش چرخ" data-confirm-danger="1" data-confirm-label="حذف">
+      <div class="actions">
+        <button class="btn btn-danger" type="submit">حذف</button>
+      </div>
+    </form>
+  </div>
+  {% endfor %}
+  {% if not ns.has_prize %}
+  <div class="card"><p class="muted">بخشی برای چرخ تعریف نشده.</p></div>
+  {% endif %}
+
+  <div class="card settings-card">
+    <h2>چرخش‌های اخیر</h2>
+    <div class="table-wrap">
+      <table class="table-compact table-list-sm">
+        <thead>
+          <tr>
+            <th>شناسه</th>
+            <th>کاربر</th>
+            <th>جایزه</th>
+            <th>هزینه</th>
+            <th>وضعیت</th>
+            <th class="li-head" scope="col"><span class="li-count">{{ wheel_spins | length | num }} چرخش</span></th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in wheel_spins %}
+          <tr>
+            <td class="mono">#{{ row.id }}</td>
+            <td class="li-title"><span dir="auto">{{ row.user_label }}</span> <span class="li-only li-id" dir="ltr">(#{{ row.id }})</span></td>
+            <td class="li-sub"><span dir="auto">{{ row.prize_label_snapshot }}</span> <span class="muted">({{ wheel_prize_type_labels.get(row.prize_type, row.prize_type) }})</span></td>
+            <td class="mono li-value">{% if row.used_free_spin %}رایگان{% else %}{{ row.cost_points | num }}{% endif %}</td>
+            <td class="li-badge"><span class="badge neutral">{{ row.status }}</span></td>
+          </tr>
+          {% else %}
+          <tr><td colspan="5" class="muted">هنوز چرخشی ثبت نشده</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+<script>
+(function () {
+  const list = document.getElementById('loyalty-submenu-list');
+  const pool = document.getElementById('loyalty-submenu-pool');
+  const input = document.getElementById('loyalty_submenu_order');
+  const empty = document.getElementById('loyalty-submenu-pool-empty');
+  if (!list || !pool || !input) return;
+  function sync() {
+    input.value = [...list.querySelectorAll('.dnd-item')].map((el) => el.dataset.key).join(',');
+    if (empty) empty.style.display = pool.querySelector('.dnd-item') ? 'none' : '';
+  }
+  function setActiveActions(li) {
+    li.querySelectorAll('.dnd-actions').forEach((n) => n.remove());
+    const actions = document.createElement('div');
+    actions.className = 'dnd-actions';
+    actions.innerHTML =
+      '<button type="button" class="icon-btn icon-move btn-up" title="بالا" aria-label="بالا"><svg class="ico" viewBox="0 0 16 16" aria-hidden="true"><path d="M4 10l4-4 4 4"/></svg></button>' +
+      '<button type="button" class="icon-btn icon-move btn-down" title="پایین" aria-label="پایین"><svg class="ico" viewBox="0 0 16 16" aria-hidden="true"><path d="M4 6l4 4 4-4"/></svg></button>' +
+      '<button type="button" class="icon-btn icon-remove btn-remove" title="حذف" aria-label="حذف"><svg class="ico" viewBox="0 0 16 16" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8"/></svg></button>';
+    li.appendChild(actions);
+  }
+  function setPoolActions(li) {
+    li.querySelectorAll('.dnd-actions').forEach((n) => n.remove());
+    const actions = document.createElement('div');
+    actions.className = 'dnd-actions';
+    actions.innerHTML =
+      '<button type="button" class="icon-btn icon-add btn-add" title="افزودن" aria-label="افزودن"><svg class="ico" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 3v10M3 8h10"/></svg></button>';
+    li.appendChild(actions);
+  }
+  function onClick(e) {
+    const btn = e.target.closest('button');
+    if (!btn) return;
+    const li = btn.closest('.dnd-item');
+    if (!li) return;
+    if (btn.classList.contains('btn-up') && li.parentElement === list && li.previousElementSibling) {
+      list.insertBefore(li, li.previousElementSibling);
+      sync();
+    } else if (btn.classList.contains('btn-down') && li.parentElement === list && li.nextElementSibling) {
+      list.insertBefore(li.nextElementSibling, li);
+      sync();
+    } else if (btn.classList.contains('btn-remove') && li.parentElement === list) {
+      setPoolActions(li);
+      pool.insertBefore(li, empty);
+      sync();
+    } else if (btn.classList.contains('btn-add') && li.parentElement === pool) {
+      setActiveActions(li);
+      list.appendChild(li);
+      sync();
+    }
+  }
+  list.addEventListener('click', onClick);
+  pool.addEventListener('click', onClick);
+  sync();
+})();
+</script>

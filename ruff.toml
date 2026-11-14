@@ -1,0 +1,37 @@
+# Lint configuration for PGClockBot.
+#
+# The codebase predates this file, so `ruff check app` reports many existing
+# findings. Do not try to clear them in a feature change. Instead run
+# `scripts/lint_changed.sh`, which fails only when a changed file gets *more*
+# findings than it had on the base branch (a ratchet). The cleanup order lives
+# in docs/ENGINEERING_REMEDIATION_PLAN.md.
+
+target-version = "py312"
+line-length = 120
+extend-exclude = ["data"]
+
+[lint]
+select = [
+    "E9",     # syntax errors
+    "F",      # pyflakes: unused/undefined names, redefinitions
+    "B",      # bugbear: real bugs (raise-from, loop-variable capture, mutable defaults)
+    "ASYNC",  # blocking calls inside async functions
+    "S110",   # try/except/pass swallows errors silently
+    "S112",   # try/except/continue swallows errors silently
+    "T20",    # print() instead of logging
+    "DTZ",    # naive datetimes (the project stores timezone-aware UTC)
+    "PERF",   # avoidable loop/list/dict overhead
+    "C901",   # cyclomatic complexity
+]
+ignore = [
+    "B008",   # FastAPI uses Depends(...) / Query(...) as argument defaults
+]
+
+[lint.mccabe]
+max-complexity = 15
+
+[lint.per-file-ignores]
+"tests/**" = ["B", "PERF", "C901", "S110", "S112", "DTZ", "T20"]
+"alembic/**" = ["C901", "T20"]
+"app/cli/**" = ["T20"]  # CLI commands print to the terminal on purpose
+"scripts/**" = ["T20"]

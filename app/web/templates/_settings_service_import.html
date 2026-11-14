@@ -1,0 +1,57 @@
+{# «افزودن سرویس قبلی»: live status, a link test and the recent tries; the settings form follows. #}
+<div class="card settings-card bot-conn-overview" id="si-panel" data-status-url="/service-import/status" data-test-url="/service-import/test">
+  <h2>وضعیت اتصال</h2>
+  <p class="muted update-card-caption">ربات با کدام ادمین پاسارگارد وارد پنل می‌شود و لینک با چه مسیر و ادمینی پذیرفته می‌شود.</p>
+  <div class="bot-conn-row" role="list" id="si-conn" aria-live="polite">
+    <div class="bot-conn is-neutral" role="listitem">
+      <span class="bot-conn-text"><span class="bot-conn-k">در حال بررسی</span></span>
+    </div>
+  </div>
+  <div class="actions">
+    <button type="button" class="btn btn-ghost" id="si-refresh">بررسی مجدد</button>
+  </div>
+</div>
+
+<div class="card settings-card">
+  <h2>تست لینک</h2>
+  <p class="muted update-card-caption">لینک اشتراک یک مشتری را بچسبانید تا ببینید پذیرفته می‌شود یا نه و دلیل رد را بدانید. چیزی اضافه یا ذخیره نمی‌شود.</p>
+  <div class="settings-grid">
+    <div class="setting-item full">
+      <label for="si-link">لینک اشتراک
+        <input id="si-link" type="text" dir="ltr" autocomplete="off" spellcheck="false" maxlength="2048" />
+      </label>
+    </div>
+  </div>
+  <div class="actions">
+    <button type="button" class="btn" id="si-test">بررسی لینک</button>
+  </div>
+  <div id="si-test-result" role="status" aria-live="polite"></div>
+</div>
+
+<div class="card settings-card card-flush" id="si-requests" data-url="/service-import/requests" hidden>
+  <div class="card-flush-head"><h2>درخواست‌های در انتظار</h2></div>
+  <div class="table-wrap">
+    <table class="table-compact">
+      <thead>
+        <tr><th>مشتری</th><th>کاربر پنل</th><th>انقضا</th><th>تصمیم</th></tr>
+      </thead>
+      <tbody id="si-requests-body"></tbody>
+    </table>
+  </div>
+  <div id="si-requests-msg" class="muted" role="status" aria-live="polite"></div>
+</div>
+
+<div class="card settings-card card-flush">
+  <div class="card-flush-head"><h2>آخرین تلاش‌های مشتریان</h2></div>
+  <div class="table-wrap">
+    <table class="table-compact">
+      <thead>
+        <tr><th>زمان</th><th>مشتری</th><th>نتیجه</th><th>علت</th></tr>
+      </thead>
+      <tbody id="si-attempts">
+        <tr><td colspan="4" class="muted">در حال بارگذاری…</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+<script src="/static/service-import-admin.js?v={{ app_version }}"{% if csp_nonce %} nonce="{{ csp_nonce }}"{% endif %} defer></script>

@@ -1,0 +1,2678 @@
+from __future__ import annotations
+
+import html
+import logging
+
+from aiogram import Bot, F, Router
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
+from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
+from sqlalchemy import select
+from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.services.chat_records import keep_sent
+from app.services.service_scope import list_customer_services
+from app.services.users import current_shop_reseller_id
+from app.services.catalog_pricing import PriceTarget, active_discounts, displayed_quote, price_html, quote_price, sale_price
+from app.bot import bbc_checkout_view as bbc_view
+from app.bot import keyboards as kb
+from app.bot.chat_cleanup import keep_message
+from app.bot.handlers.purchase_contact import prompt_purchase_contact_if_needed
+from app.bot.handlers.psp_check import PICK_GATEWAY_TEXT, psp_check_button, psp_gateway_picker
+from app.bot.tg_utils import safe_edit_text
+from app.config import get_settings
+from app.db.models import BotUser, Order, Payment, PaymentMethod
+from app.services.bbc_settlement import CUSTOMER_UNAVAILABLE, BbcNotReady, ensure_gateway_ready, start_bbc_checkout
+from app.services.db_safe import rollback_quiet
+from app.services.redact import user_safe_error
+from app.services.trial_notify import notify_trial_claimed
+from app.services.crypto_rates import attach_quote, display_amount, quote_from_settings, validity_note
+from app.services.purchase_contact import verified_contact_phone_hash
+from app.services.checkout_summary import checkout_summary
+from app.services.delivery import send_delivery_to_user
+from app.services.formatting import (
+    format_message,
+    format_plan_duration_days,
+    format_toman,
+    info_block,
+    kv_line,
+)
+from app.services.psp_gateways import gateway_choices
+from app.services.orders import (
+    is_customer_order_in_current_shop,
+    apply_discount_to_order,
+    calc_custom_plan_price,
+    calc_wholesale_price,
+    create_custom_order,
+    create_order,
+    create_wholesale_order,
+    DeliveryAttempt,
+    deliver_order,
+    get_catalog_plan,
+    get_plan,
+    list_active_plans,
+    mark_order_free_paid,
+    parse_wholesale_tiers,
+    pay_with_wallet,
+    settle_failed_free_delivery,
+    stars_amount_for_toman,
+    start_card_payment,
+    start_method_payment,
+    wholesale_bounds,
+    wholesale_description,
+    wholesale_tier_percent,
+)
+from app.services.users import get_all_settings, on
+from app.services.message_variables import DOMAIN_PAYMENT, render_message_template
+from app.services import bot_feedback_texts as feedback
+
+DISCOUNT_APPLIED = "✅ تخفیف اعمال شد"
+
+router = Router(name="shop")
+logger = logging.getLogger(__name__)
+
+FREE_DELIVERY_UNDER_REVIEW = (
+    "پنل به ساخت سرویس پاسخ نداد. پشتیبانی وضعیت را بررسی می‌کند و سرویس را تحویل می‌دهد؛"
+    " نیازی به درخواست دوباره نیست."
+)
+
+
+async def _notify_free_delivery_stuck(
+    bot: Bot, session: AsyncSession, payment: Payment, db_user: BotUser, error: str
+) -> None:
+    # Local import: notifications pulls in handler modules.
+    from app.services.notifications import notify_approved_delivery_stuck
+
+    try:
+        await notify_approved_delivery_stuck(bot, session, payment, db_user.telegram_id, error=error)
+    except Exception:
+        # The failed-delivery queue still lists the order for staff.
+        logger.warning("free delivery stuck notice failed payment=%s", payment.id, exc_info=True)
+
+
+async def _deliver_free_order(
+    bot: Bot, session: AsyncSession, db_user: BotUser, order: Order
+) -> tuple[Order | None, str]:
+    """Deliver a zero-amount order now; on failure return ``(None, text for the buyer)``."""
+    await mark_order_free_paid(session, order, db_user.id)
+    attempt = DeliveryAttempt()
+    try:
+        delivered = await deliver_order(session, order, attempt=attempt)
+    except Exception as exc:
+        logger.warning("free delivery failed order=%s", order.id, exc_info=True)
+        error = str(exc)
+        failure = format_message("❌ خطا در تحویل", user_safe_error(exc))
+    else:
+        await notify_trial_claimed(bot, session, order=delivered, user=db_user)
+        return delivered, ""
+    try:
+        payment = await settle_failed_free_delivery(session, order, attempt=attempt, error=error)
+    except SQLAlchemyError:
+        # Nothing was released: the order stays paid and its trial claim stays spent.
+        logger.warning("free delivery settle failed order=%s", order.id, exc_info=True)
+        await rollback_quiet(session)
+        return None, failure
+    if payment is None:
+        return None, failure
+    await _notify_free_delivery_stuck(bot, session, payment, db_user, error)
+    return None, format_message("⏳ تحویل در حال بررسی", FREE_DELIVERY_UNDER_REVIEW)
+
+async def _show_order_pay(
+    message,
+    session,
+    db_user,
+    order_id,
+    state,
+    text: str,
+    *,
+    is_reseller_bot: bool = False,
+    reseller_owner_id: int | None = None,
+):
+    """Show order summary + payment methods in one inline edit."""
+    from app.bot.menu_nav import present_order_pay
+
+    if message is not None:
+        await present_order_pay(
+            message,
+            session,
+            db_user,
+            order_id,
+            state=state,
+            summary=text,
+            is_reseller_bot=is_reseller_bot,
+            reseller_owner_id=reseller_owner_id,
+        )
+
+async def shop_under_maintenance(session: AsyncSession, ui: dict | None = None) -> str | None:
+    """Return maintenance message if shop buying is gated; renew flows stay open."""
+    if ui is None:
+        ui = await get_all_settings(session)
+    if on(ui.get("shop_maintenance_enabled")):
+        from app.services.rich_text import rich_plain_text
+
+        raw = ui.get("shop_maintenance_text")
+        return (
+            raw
+            if rich_plain_text(raw).strip()
+            else "فروشگاه موقتاً در حال به‌روزرسانی است.\nتمدید و پشتیبانی فعال است."
+        )
+    return None
+
+async def _answer_shop_maintenance(callback: CallbackQuery, session: AsyncSession, ui: dict | None = None) -> bool:
+    """If maintenance is on, answer the callback and return True (caller should return)."""
+    from app.services.rich_text import outbound_setting_text, rich_plain_text
+
+    msg = await shop_under_maintenance(session, ui)
+    if not msg:
+        return False
+    await callback.answer(rich_plain_text(msg)[:180], show_alert=True)
+    if callback.message:
+        try:
+            text, send_kw = outbound_setting_text(msg, title="🛠 فروشگاه")
+            await callback.message.answer(text, **send_kw)
+        except Exception:
+            logger.debug("_answer_shop_maintenance: ignored failure", exc_info=True)
+    return True
+
+async def _record_shop_funnel(
+    session: AsyncSession,
+    db_user: BotUser,
+    step: str,
+    *,
+    ui: dict | None = None,
+    plan_id: int | None = None,
+    order_id: int | None = None,
+) -> None:
+    if ui is None:
+        ui = await get_all_settings(session)
+    if not on(ui.get("funnel_tracking_enabled", "1")):
+        return
+    try:
+        from app.services.ux20 import record_funnel_event
+
+        await record_funnel_event(
+            session,
+            step=step,
+            user_id=int(db_user.id),
+            reseller_id=int(db_user.reseller_id) if db_user.reseller_id else None,
+            plan_id=int(plan_id) if plan_id else None,
+            order_id=int(order_id) if order_id else None,
+        )
+    except Exception:
+        logger.debug("_record_shop_funnel: ignored failure", exc_info=True)
+
+class ShopStates(StatesGroup):
+    discount = State()
+    custom_gb_input = State()
+    custom_days_input = State()
+    wholesale_qty_input = State()
+    trial_contact = State()
+
+def _custom_bounds(ui: dict) -> tuple[int, int, int, int, int, int]:
+    min_gb = max(1, int(float(ui.get("custom_plan_min_gb") or 1)))
+    max_gb = max(min_gb, int(float(ui.get("custom_plan_max_gb") or 500)))
+    min_days = max(1, int(float(ui.get("custom_plan_min_days") or 1)))
+    max_days = max(min_days, int(float(ui.get("custom_plan_max_days") or 365)))
+    price_gb = int(float(ui.get("custom_plan_price_per_gb") or 1000))
+    price_day = int(float(ui.get("custom_plan_price_per_day") or 500))
+    return min_gb, max_gb, min_days, max_days, price_gb, price_day
+
+def _custom_has_pg_link(ui: dict) -> bool:
+    tpl = (ui.get("custom_plan_template_id") or "").strip()
+    groups = (ui.get("custom_plan_group_ids") or "").strip()
+    return bool(tpl or groups)
+
+async def _custom_available_for_users(
+    session: AsyncSession,
+    ui: dict,
+    *,
+    plans: list | None = None,
+) -> bool:
+    """Custom plan only when enabled, linked, AND at least one catalog plan exists."""
+    if not on(ui.get("custom_plan_enabled")):
+        return False
+    from app.services.users import current_shop_reseller_id
+
+    shop_rid = current_shop_reseller_id()
+    if shop_rid is not None:
+        # Mirror create_custom_order: reseller shops need their own PG link, not platform inheritance
+        from app.db.models import ResellerSetting
+
+        own = await session.execute(
+            select(ResellerSetting).where(
+                ResellerSetting.reseller_user_id == int(shop_rid),
+                ResellerSetting.key.in_(
+                    ("custom_plan_template_id", "custom_plan_group_ids")
+                ),
+            )
+        )
+        own_map = {r.key: (r.value or "").strip() for r in own.scalars().all()}
+        if not (own_map.get("custom_plan_template_id") or own_map.get("custom_plan_group_ids")):
+            return False
+    elif not _custom_has_pg_link(ui):
+        return False
+    if plans is None:
+        plans = await list_active_plans(session, include_trial=True)
+    catalog = [p for p in plans if not p.is_trial]
+    return bool(catalog)
+
+async def _custom_gate(
+    session: AsyncSession,
+    ui: dict,
+    state: FSMContext | None = None,
+    *,
+    plans: list | None = None,
+) -> bool:
+    """Reuse FSM gate after first full check — steppers skip catalog re-query."""
+    if state is not None:
+        data = await state.get_data()
+        if data.get("custom_gate_ok") and on(ui.get("custom_plan_enabled")):
+            return True
+    ok = await _custom_available_for_users(session, ui, plans=plans)
+    if ok and state is not None:
+        await state.update_data(custom_gate_ok=True)
+    return ok
+
+async def _shop_kind_flags(
+    session: AsyncSession,
+    db_user: BotUser,
+) -> tuple[dict, bool, bool, bool, bool, list, list, list]:
+    """UI + enabled kinds + plan lists for the shop kind picker."""
+    ui = await get_all_settings(session)
+    trial_setting = on(ui.get("trial_enabled"))
+    plans = await list_active_plans(session, include_trial=True)
+    if not trial_setting:
+        plans = [p for p in plans if not p.is_trial]
+    has_svc = await list_customer_services(session, db_user.id, current_shop_reseller_id(), limit=1)
+    if has_svc:
+        plans = [p for p in plans if not p.is_trial]
+    fixed_plans = [p for p in plans if not p.is_trial]
+    trial_plans = [p for p in plans if p.is_trial]
+    custom_on = await _custom_available_for_users(session, ui, plans=plans)
+    wholesale_on = on(ui.get("wholesale_enabled")) and bool(fixed_plans)
+    fixed_on = bool(fixed_plans)
+    trial_on = bool(trial_plans) and trial_setting
+    return (
+        ui,
+        fixed_on,
+        trial_on,
+        custom_on,
+        wholesale_on,
+        plans,
+        fixed_plans,
+        trial_plans,
+    )
+
+async def _shop_category_menu(
+    session: AsyncSession, fixed_plans: list
+) -> tuple[list, bool]:
+    """Return (categories_for_buttons, include_uncategorized_other)."""
+    from app.services.plan_categories import (
+        shop_categories_for_menu,
+        uncategorized_fixed_plans,
+    )
+
+    cats = await shop_categories_for_menu(session, fixed_plans=fixed_plans)
+    other = bool(cats) and bool(uncategorized_fixed_plans(fixed_plans))
+    return cats, other
+
+def _shop_picker_copy(*, use_categories: bool) -> tuple[str, str]:
+    """(body_html, inline_caption) for the shop kind/category step."""
+    if use_categories:
+        return (
+            feedback.PICK_CATEGORY_BELOW,
+            "دسته:",
+        )
+    return (
+        "ابتدا <b>نوع پلن</b> را از دکمه‌های زیر پیام انتخاب کنید.",
+        "نوع پلن:",
+    )
+
+async def present_shop_kind_picker(
+    message: Message,
+    *,
+    ui: dict,
+    body: str,
+    fixed_on: bool,
+    trial_on: bool,
+    custom_on: bool,
+    wholesale_on: bool,
+    categories: list | None = None,
+    include_uncategorized: bool = False,
+    mode: str = "send",
+) -> None:
+    """Show shop kind/category picker with inline buttons on the shop bubble.
+
+    Telegram allows only one ``reply_markup`` per message, so ReplyKeyboard and
+    InlineKeyboard cannot share the shop bubble. Contract:
+
+    * ``mode="edit"`` — refresh an existing shop message (back from plan list).
+    * ``mode="send"`` — send shop text with the inline kind/category
+      keyboard via ``present_inline_only`` (Option B; thin main KB stays put).
+
+    Never use ReplyKeyboard→Inline ``edit_reply_markup`` (Telegram rejects
+    that conversion and hides category buttons).
+    """
+    from app.bot.nav_inline import present_inline_only
+
+    text = format_message("🛒 فروشگاه", body)
+    inline = kb.shop_kind_keyboard(
+        ui,
+        fixed_on=fixed_on,
+        trial_on=trial_on,
+        custom_on=custom_on,
+        wholesale_on=wholesale_on,
+        categories=categories,
+        include_uncategorized=include_uncategorized,
+    )
+    if mode == "edit":
+        await safe_edit_text(message, text, reply_markup=inline)
+        return
+
+    await present_inline_only(message, text=text, inline=inline)
+
+@router.callback_query(F.data == "shop:list")
+async def shop_list(callback: CallbackQuery, session: AsyncSession, db_user: BotUser, state: FSMContext):
+    ui_gate = await get_all_settings(session)
+    if await _answer_shop_maintenance(callback, session, ui_gate):
+        return
+    await callback.answer()
+    # Keep reply-nav stack — wiping it made keyboard «بازگشت» jump to home.
+    from app.bot import menu_nav as nav
+
+    await nav.clear_fsm_keep_nav(state)
+    await nav.set_nav_level(state, nav.NAV_SHOP, push=False)
+    ui, fixed_on, trial_on, custom_on, wholesale_on, _plans, fixed_plans, _trial = (
+        await _shop_kind_flags(session, db_user)
+    )
+    await _record_shop_funnel(session, db_user, "shop_open", ui=ui)
+    if not any((fixed_on, trial_on, custom_on, wholesale_on)):
+        from app.services.rich_text import outbound_setting_text
+
+        text, send_kw = outbound_setting_text(
+            ui.get("shop_empty_text")
+            or feedback.NO_PLANS_FOR_SALE,
+            title="🛒 فروشگاه",
+        )
+        if callback.message:
+            await safe_edit_text(callback.message, text, reply_markup=kb.back_home(ui), **send_kw)
+        return
+    cats, include_other = await _shop_category_menu(session, fixed_plans)
+    body, _cap = _shop_picker_copy(use_categories=bool(cats))
+    if callback.message:
+        await state.update_data(_shop_custom=custom_on, _shop_wholesale=wholesale_on)
+        await present_shop_kind_picker(
+            callback.message,
+            ui=ui,
+            body=body,
+            fixed_on=fixed_on,
+            trial_on=trial_on,
+            custom_on=custom_on,
+            wholesale_on=wholesale_on,
+            categories=cats,
+            include_uncategorized=include_other,
+            mode="edit",
+        )
+
+@router.callback_query(F.data == "shop:kind:fixed")
+async def shop_kind_fixed(
+    callback: CallbackQuery, session: AsyncSession, db_user: BotUser, state: FSMContext
+):
+    if await _answer_shop_maintenance(callback, session):
+        return
+    await callback.answer()
+    from app.bot import menu_nav as nav
+
+    await nav.set_shop_step(state, "plans")
+    ui, fixed_on, *_rest, fixed_plans, _trial = await _shop_kind_flags(session, db_user)
+    if not fixed_on:
+        await callback.answer("پلن ثابت فعال نیست.", show_alert=True)
+        return
+    # If shop uses categories, bounce to category picker (legacy callback safety).
+    cats, include_other = await _shop_category_menu(session, fixed_plans)
+    if cats:
+        body, _cap = _shop_picker_copy(use_categories=True)
+        _, _f, trial_on, custom_on, wholesale_on, *_r = await _shop_kind_flags(
+            session, db_user
+        )
+        if callback.message:
+            await safe_edit_text(
+                callback.message,
+                format_message("🛒 فروشگاه", body),
+                reply_markup=kb.shop_kind_keyboard(
+                    ui,
+                    fixed_on=True,
+                    trial_on=trial_on,
+                    custom_on=custom_on,
+                    wholesale_on=wholesale_on,
+                    categories=cats,
+                    include_uncategorized=include_other,
+                ),
+            )
+        return
+    from app.services.plan_categories import list_shop_categories
+
+    all_cats = await list_shop_categories(session, active_only=True)
+    cat_names = {int(c.id): c.name for c in all_cats}
+    if callback.message:
+        await safe_edit_text(
+            callback.message,
+            format_message("پلن ثابت", "یکی از پلن‌ها را انتخاب کنید:"),
+            reply_markup=kb.plans_keyboard(
+                fixed_plans,
+                ui,
+                back_callback="shop:list",
+                kind="fixed",
+                category_names=cat_names,
+                categories={int(c.id): c for c in all_cats},
+            ),
+        )
+
+@router.callback_query(F.data.startswith("shop:cat:"))
+async def shop_category_pick(
+    callback: CallbackQuery, session: AsyncSession, db_user: BotUser, state: FSMContext
+):
+    if await _answer_shop_maintenance(callback, session):
+        return
+    from app.bot import menu_nav as nav
+
+    await nav.set_shop_step(state, "plans")
+    raw = (callback.data or "").split(":")[-1]
+    ui, fixed_on, *_rest, fixed_plans, _trial = await _shop_kind_flags(session, db_user)
+    if not fixed_on:
+        await callback.answer("پلن ثابت فعال نیست.", show_alert=True)
+        return
+    from app.services.plan_categories import (
+        category_matches_shop,
+        list_shop_categories,
+        plans_in_category,
+    )
+    from app.services.users import current_shop_reseller_id
+
+    cats = await list_shop_categories(session, active_only=True)
+    cat_map = {int(c.id): c for c in cats}
+    if raw == "none":
+        cat_id = None
+        title = "سایر"
+        plans = plans_in_category(fixed_plans, None)
+    else:
+        try:
+            cat_id = int(raw)
+        except ValueError:
+            await callback.answer(feedback.CATEGORY_INVALID, show_alert=True)
+            return
+        cat = cat_map.get(cat_id)
+        if not cat or not category_matches_shop(cat, current_shop_reseller_id()):
+            await callback.answer(feedback.CATEGORY_NOT_FOUND, show_alert=True)
+            return
+        title = kb._category_button_label(cat)
+        plans = plans_in_category(fixed_plans, cat_id)
+    if not plans:
+        await callback.answer(feedback.NO_PLANS_IN_CATEGORY, show_alert=True)
+        return
+    await callback.answer()
+    if callback.message:
+        await safe_edit_text(
+            callback.message,
+            format_message(title, "یکی از پلن‌ها را انتخاب کنید:"),
+            reply_markup=kb.plans_keyboard(
+                plans,
+                ui,
+                back_callback="shop:list",
+                kind="fixed",
+                categories=cat_map,
+            ),
+        )
+
+@router.callback_query(F.data == "shop:kind:trial")
+async def shop_kind_trial(
+    callback: CallbackQuery, session: AsyncSession, db_user: BotUser, state: FSMContext
+):
+    if await _answer_shop_maintenance(callback, session):
+        return
+    from app.bot import menu_nav as nav
+
+    await nav.set_shop_step(state, "plans")
+    ui, _fixed, trial_on, *_rest, _fixed_plans, trial_plans = await _shop_kind_flags(
+        session, db_user
+    )
+    if not trial_on or not trial_plans:
+        await callback.answer("پلن تست در دسترس نیست.", show_alert=True)
+        return
+    await callback.answer()
+    if callback.message:
+        await safe_edit_text(
+            callback.message,
+            format_message("پلن تست", "پلن تست را انتخاب کنید:"),
+            reply_markup=kb.plans_keyboard(
+                trial_plans,
+                ui,
+                back_callback="shop:list",
+                kind="trial",
+            ),
+        )
+
+@router.callback_query(F.data == "shop:kind:custom")
+async def shop_kind_custom(
+    callback: CallbackQuery, session: AsyncSession, state: FSMContext
+):
+    if await _answer_shop_maintenance(callback, session):
+        return
+    await custom_start(callback, session, state)
+
+@router.callback_query(F.data == "shop:kind:wholesale")
+async def shop_kind_wholesale(
+    callback: CallbackQuery, session: AsyncSession, state: FSMContext
+):
+    if await _answer_shop_maintenance(callback, session):
+        return
+    await wholesale_start(callback, session, state)
+
+@router.callback_query(F.data == "shop:custom:noop")
+async def custom_noop(callback: CallbackQuery):
+    await callback.answer()
+
+@router.callback_query(F.data == "shop:custom")
+async def custom_start(callback: CallbackQuery, session: AsyncSession, state: FSMContext):
+    ui = await get_all_settings(session)
+    if await _answer_shop_maintenance(callback, session, ui):
+        return
+    if not await _custom_gate(session, ui, state):
+        await callback.answer(
+            "پلن دلخواه در دسترس نیست (پلنی تعریف نشده یا غیرفعال است).",
+            show_alert=True,
+        )
+        return
+    from app.bot import menu_nav as nav
+
+    await nav.set_shop_step(state, "custom")
+    await callback.answer()
+    min_gb, max_gb, _, _, _, _ = _custom_bounds(ui)
+    data = await state.get_data()
+    gb = int(data.get("custom_gb") or min_gb)
+    gb = max(min_gb, min(max_gb, gb))
+    await state.update_data(custom_gb=gb, custom_days=data.get("custom_days"), custom_gate_ok=True)
+    text = format_message(
+        "✨ پلن دلخواه — حجم",
+        f"حجم سرویس را انتخاب کنید ({min_gb} تا {max_gb} گیگابایت):\n"
+        f"فعلی: <b>{gb}</b> گیگابایت",
+    )
+    if callback.message:
+        await safe_edit_text(callback.message, text, reply_markup=kb.custom_gb_keyboard(gb, ui))
+
+@router.callback_query(F.data.in_({"shop:custom:gb:+", "shop:custom:gb:-"}))
+async def custom_gb_step(callback: CallbackQuery, session: AsyncSession, state: FSMContext):
+    ui = await get_all_settings(session)
+    if not await _custom_gate(session, ui, state):
+        await callback.answer("پلن دلخواه در دسترس نیست", show_alert=True)
+        return
+    min_gb, max_gb, _, _, _, _ = _custom_bounds(ui)
+    data = await state.get_data()
+    gb = int(data.get("custom_gb") or min_gb)
+    if callback.data.endswith("+"):
+        gb = min(max_gb, gb + 1)
+    else:
+        gb = max(min_gb, gb - 1)
+    await state.update_data(custom_gb=gb)
+    await callback.answer()
+    text = format_message(
+        "✨ پلن دلخواه — حجم",
+        f"حجم سرویس را انتخاب کنید ({min_gb} تا {max_gb} گیگابایت):\n"
+        f"فعلی: <b>{gb}</b> گیگابایت",
+    )
+    if callback.message:
+        await safe_edit_text(callback.message, text, reply_markup=kb.custom_gb_keyboard(gb, ui))
+
+@router.callback_query(F.data == "shop:custom:gb:input")
+async def custom_gb_ask(callback: CallbackQuery, session: AsyncSession, state: FSMContext):
+    from app.bot.nav_input import ask_text
+
+    ui = await get_all_settings(session)
+    if not await _custom_gate(session, ui, state):
+        await callback.answer("پلن دلخواه در دسترس نیست", show_alert=True)
+        return
+    await callback.answer()
+    min_gb, max_gb, _, _, _, _ = _custom_bounds(ui)
+    await ask_text(
+        callback,
+        state,
+        prompt=f"حجم را به گیگابایت بفرستید؛ بین {min_gb} تا {max_gb}.",
+        cancel_code="c_gb",
+        fsm_state=ShopStates.custom_gb_input,
+        edit=True,
+    )
+
+@router.message(ShopStates.custom_gb_input)
+async def custom_gb_entered(
+    message: Message,
+    state: FSMContext,
+    session: AsyncSession,
+    db_user: BotUser,
+    is_reseller_bot: bool = False,
+    reseller_owner_id: int | None = None,
+):
+    from app.bot.nav_input import finish_text_step, try_legacy_cancel
+
+    ui = await get_all_settings(session)
+    if kb.is_cancel_text(message.text):
+        if await try_legacy_cancel(
+            message,
+            state,
+            session,
+            db_user,
+            is_reseller_bot=is_reseller_bot,
+            reseller_owner_id=reseller_owner_id,
+        ):
+            return
+        from app.bot.menu_nav import restore_main_reply
+
+        await restore_main_reply(
+            message,
+            session,
+            db_user,
+            text=feedback.CANCELLED,
+            state=state,
+            is_reseller_bot=is_reseller_bot,
+            reseller_owner_id=reseller_owner_id,
+        )
+        return
+    min_gb, max_gb, _, _, _, _ = _custom_bounds(ui)
+    try:
+        gb = int(float((message.text or "").replace(",", "").replace("٬", "").strip()))
+    except (ValueError, OverflowError):
+        await message.answer(feedback.ENTER_VALID_NUMBER_SHORT)
+        return
+    if gb < min_gb or gb > max_gb:
+        await message.answer(f"حجم باید بین {min_gb} تا {max_gb} باشد")
+        return
+    await state.set_state(None)
+    await state.update_data(custom_gb=gb)
+    await finish_text_step(
+        message,
+        state,
+        text=format_message(
+            "✨ پلن دلخواه — حجم",
+            f"حجم انتخاب‌شده: <b>{gb}</b> گیگابایت",
+        ),
+        inline=kb.custom_gb_keyboard(gb, ui),
+    )
+
+@router.callback_query(F.data == "shop:custom:gb:next")
+async def custom_days_start(callback: CallbackQuery, session: AsyncSession, state: FSMContext):
+    ui = await get_all_settings(session)
+    if not await _custom_gate(session, ui, state):
+        await callback.answer("پلن دلخواه در دسترس نیست", show_alert=True)
+        return
+    await callback.answer()
+    _, _, min_days, max_days, _, _ = _custom_bounds(ui)
+    data = await state.get_data()
+    gb = int(data.get("custom_gb") or _custom_bounds(ui)[0])
+    days = int(data.get("custom_days") or min_days)
+    days = max(min_days, min(max_days, days))
+    await state.update_data(custom_gb=gb, custom_days=days)
+    text = format_message(
+        "✨ پلن دلخواه — مدت",
+        f"حجم: <b>{gb}</b> گیگابایت\n"
+        f"مدت را انتخاب کنید ({min_days} تا {max_days} روز):\n"
+        f"فعلی: <b>{days}</b> روز",
+    )
+    if callback.message:
+        await safe_edit_text(callback.message, text, reply_markup=kb.custom_days_keyboard(days, ui))
+
+@router.callback_query(F.data.in_({"shop:custom:days:+", "shop:custom:days:-"}))
+async def custom_days_step(callback: CallbackQuery, session: AsyncSession, state: FSMContext):
+    ui = await get_all_settings(session)
+    if not await _custom_gate(session, ui, state):
+        await callback.answer("پلن دلخواه در دسترس نیست", show_alert=True)
+        return
+    _, _, min_days, max_days, _, _ = _custom_bounds(ui)
+    data = await state.get_data()
+    gb = int(data.get("custom_gb") or _custom_bounds(ui)[0])
+    days = int(data.get("custom_days") or min_days)
+    if callback.data.endswith("+"):
+        days = min(max_days, days + 1)
+    else:
+        days = max(min_days, days - 1)
+    await state.update_data(custom_days=days)
+    await callback.answer()
+    text = format_message(
+        "✨ پلن دلخواه — مدت",
+        f"حجم: <b>{gb}</b> گیگابایت\n"
+        f"مدت را انتخاب کنید ({min_days} تا {max_days} روز):\n"
+        f"فعلی: <b>{days}</b> روز",
+    )
+    if callback.message:
+        await safe_edit_text(callback.message, text, reply_markup=kb.custom_days_keyboard(days, ui))
+
+@router.callback_query(F.data == "shop:custom:days:input")
+async def custom_days_ask(callback: CallbackQuery, session: AsyncSession, state: FSMContext):
+    from app.bot.nav_input import ask_text
+
+    ui = await get_all_settings(session)
+    if not await _custom_gate(session, ui, state):
+        await callback.answer("پلن دلخواه در دسترس نیست", show_alert=True)
+        return
+    await callback.answer()
+    _, _, min_days, max_days, _, _ = _custom_bounds(ui)
+    await ask_text(
+        callback,
+        state,
+        prompt=f"مدت به روز را وارد کنید ({min_days} تا {max_days}):",
+        cancel_code="c_days",
+        fsm_state=ShopStates.custom_days_input,
+        edit=True,
+    )
+
+@router.message(ShopStates.custom_days_input)
+async def custom_days_entered(
+    message: Message,
+    state: FSMContext,
+    session: AsyncSession,
+    db_user: BotUser,
+    is_reseller_bot: bool = False,
+    reseller_owner_id: int | None = None,
+):
+    from app.bot.nav_input import finish_text_step, try_legacy_cancel
+
+    ui = await get_all_settings(session)
+    if kb.is_cancel_text(message.text):
+        if await try_legacy_cancel(
+            message,
+            state,
+            session,
+            db_user,
+            is_reseller_bot=is_reseller_bot,
+            reseller_owner_id=reseller_owner_id,
+        ):
+            return
+        from app.bot.menu_nav import restore_main_reply
+
+        await restore_main_reply(
+            message,
+            session,
+            db_user,
+            text=feedback.CANCELLED,
+            state=state,
+            is_reseller_bot=is_reseller_bot,
+            reseller_owner_id=reseller_owner_id,
+        )
+        return
+    _, _, min_days, max_days, _, _ = _custom_bounds(ui)
+    try:
+        days = int((message.text or "").replace(",", "").replace("٬", "").strip())
+    except ValueError:
+        await message.answer(feedback.ENTER_VALID_NUMBER_SHORT)
+        return
+    if days < min_days or days > max_days:
+        await message.answer(f"مدت باید بین {min_days} تا {max_days} باشد")
+        return
+    data = await state.get_data()
+    gb = int(data.get("custom_gb") or _custom_bounds(ui)[0])
+    await state.set_state(None)
+    await state.update_data(custom_days=days)
+    await finish_text_step(
+        message,
+        state,
+        text=format_message(
+            "✨ پلن دلخواه — مدت",
+            f"حجم: <b>{gb}</b> گیگابایت\nمدت انتخاب‌شده: <b>{days}</b> روز",
+        ),
+        inline=kb.custom_days_keyboard(days, ui),
+    )
+
+@router.callback_query(F.data == "shop:custom:confirm")
+async def custom_confirm(callback: CallbackQuery, session: AsyncSession, db_user: BotUser, state: FSMContext,
+    reseller_owner_id: int | None = None,
+):
+    """«ادامه خرید» after the days step opens the payment screen; the details are shown there."""
+    await custom_buy(callback, session, db_user, state, reseller_owner_id=reseller_owner_id)
+
+async def _notify_new_order(bot, session, order, db_user, plan_name: str | None):
+    try:
+        from app.services.notifications import notify_new_order
+
+        await notify_new_order(
+            bot,
+            session,
+            order=order,
+            user_tg_id=db_user.telegram_id,
+            user_name=db_user.full_name or db_user.username,
+            plan_name=plan_name,
+        )
+    except Exception:
+        logger.exception("notify_new_order failed order=%s", getattr(order, "id", None))
+
+@router.callback_query(F.data == "shop:custom:buy")
+async def custom_buy(callback: CallbackQuery, session: AsyncSession, db_user: BotUser, state: FSMContext,
+    reseller_owner_id: int | None = None,
+):
+    ui = await get_all_settings(session)
+    if await _answer_shop_maintenance(callback, session, ui):
+        return
+    if await prompt_purchase_contact_if_needed(callback, session, db_user, state, ui):
+        return
+    from app.bot.handlers.terms import prompt_terms_if_needed
+
+    if await prompt_terms_if_needed(
+        callback,
+        session,
+        db_user,
+        state,
+        ui,
+        "buy_user",
+        reseller_owner_id=reseller_owner_id,
+    ):
+        return
+    if not await _custom_available_for_users(session, ui):
+        await callback.answer("پلن دلخواه در دسترس نیست", show_alert=True)
+        return
+    data = await state.get_data()
+    min_gb, _, min_days, _, price_gb, price_day = _custom_bounds(ui)
+    gb = float(data.get("custom_gb") or min_gb)
+    days = int(data.get("custom_days") or min_days)
+    expected = calc_custom_plan_price(
+        gb=gb, days=days, price_per_gb=price_gb, price_per_day=price_day
+    )
+    expected = quote_price(PriceTarget(expected, kind="custom"), await active_discounts(session, shop_id=current_shop_reseller_id())).price
+    if expected > 0 and not kb.any_checkout_method_enabled(ui):
+        await callback.answer(feedback.NO_PAYMENT_METHOD, show_alert=True)
+        return
+    try:
+        order = await create_custom_order(
+            session,
+            user_id=db_user.id,
+            data_limit_gb=gb,
+            duration_days=days,
+            reseller_id=db_user.reseller_id,
+        )
+    except ValueError as e:
+        await callback.answer(user_safe_error(e), show_alert=True)
+        return
+    await state.clear()
+    await callback.answer()
+    await _record_shop_funnel(session, db_user, "pay_start", ui=ui, order_id=order.id)
+
+    if order.amount <= 0:
+        delivered, failure = await _deliver_free_order(callback.bot, session, db_user, order)
+        if delivered is None:
+            if callback.message:
+                await safe_edit_text(callback.message, failure, reply_markup=kb.back_home(ui))
+            return
+        order = delivered
+        if callback.message:
+            await safe_edit_text(callback.message, 
+                format_message("✅ فعال شد", f"سفارش #{order.id} تحویل شد."),
+                reply_markup=kb.back_home(ui),
+            )
+        try:
+            await send_delivery_to_user(callback.bot, db_user.telegram_id, session, None, order)
+        except Exception:
+            logger.debug("custom_buy: ignored failure", exc_info=True)
+        return
+
+    text = await checkout_summary(session, order, currency=get_settings().currency)
+    if callback.message:
+        await _show_order_pay(callback.message, session, db_user, order.id, state, text)
+    await _notify_new_order(callback.bot, session, order, db_user, "پلن دلخواه")
+
+@router.callback_query(F.data == "shop:wholesale:noop")
+async def wholesale_noop(callback: CallbackQuery):
+    await callback.answer()
+
+@router.callback_query(F.data == "shop:wholesale")
+async def wholesale_start(callback: CallbackQuery, session: AsyncSession, state: FSMContext):
+    ui = await get_all_settings(session)
+    if await _answer_shop_maintenance(callback, session, ui):
+        return
+    if not on(ui.get("wholesale_enabled")):
+        await callback.answer("فروش عمده فعال نیست", show_alert=True)
+        return
+    plans = await list_active_plans(session, include_trial=False)
+    if not plans:
+        await callback.answer("پلنی برای فروش عمده نیست", show_alert=True)
+        return
+    from app.services.plan_categories import shop_category_map
+
+    categories = await shop_category_map(session)
+    from app.bot import menu_nav as nav
+
+    # Keep shop nav stack; only reset wholesale qty FSM fields
+    await state.set_state(None)
+    await state.update_data(wholesale_plan_id=None, wholesale_qty=None)
+    await nav.set_shop_step(state, "wholesale")
+    await callback.answer()
+    text = format_message(
+        "📦 فروش عمده",
+        wholesale_description(ui) + "\n\nابتدا نوع سرویس (پلن) را انتخاب کنید:",
+    )
+    if callback.message:
+        await safe_edit_text(
+            callback.message,
+            text,
+            reply_markup=kb.wholesale_plans_keyboard(plans, ui, categories=categories),
+        )
+
+@router.callback_query(F.data.startswith("shop:wholesale:plan:"))
+async def wholesale_pick_plan(callback: CallbackQuery, session: AsyncSession, state: FSMContext):
+    ui = await get_all_settings(session)
+    if not on(ui.get("wholesale_enabled")):
+        await callback.answer("فروش عمده فعال نیست", show_alert=True)
+        return
+    plan_id = int(callback.data.split(":")[-1])
+    plan = await get_catalog_plan(session, plan_id)
+    if not plan or not plan.is_active or plan.is_trial:
+        await callback.answer("پلن پیدا نشد", show_alert=True)
+        return
+    mn, mx = wholesale_bounds(ui)
+    await state.update_data(wholesale_plan_id=plan.id, wholesale_qty=mn)
+    await callback.answer()
+    text = format_message(
+        "📦 فروش عمده — تعداد",
+        f"پلن: <b>{plan.name}</b>\n"
+        f"قیمت واحد: <b>{format_toman(sale_price(plan), get_settings().currency)}</b>\n\n"
+        f"{wholesale_description(ui)}\n\n"
+        f"تعداد درخواستی را انتخاب کنید ({mn} تا {mx}):\n"
+        f"فعلی: <b>{mn}</b> عدد",
+    )
+    if callback.message:
+        await safe_edit_text(
+            callback.message,
+            text,
+            reply_markup=kb.wholesale_qty_keyboard(mn, ui, plan_id=plan.id),
+        )
+
+@router.callback_query(F.data == "shop:wholesale:qty")
+async def wholesale_qty_back(callback: CallbackQuery, session: AsyncSession, state: FSMContext):
+    ui = await get_all_settings(session)
+    data = await state.get_data()
+    plan_id = int(data.get("wholesale_plan_id") or 0)
+    plan = await get_catalog_plan(session, plan_id) if plan_id else None
+    if not plan:
+        await wholesale_start(callback, session, state)
+        return
+    mn, mx = wholesale_bounds(ui)
+    qty = int(data.get("wholesale_qty") or mn)
+    qty = max(mn, min(mx, qty))
+    await state.update_data(wholesale_qty=qty)
+    await callback.answer()
+    text = format_message(
+        "📦 فروش عمده — تعداد",
+        f"پلن: <b>{plan.name}</b>\n"
+        f"قیمت واحد: <b>{format_toman(sale_price(plan), get_settings().currency)}</b>\n\n"
+        f"{wholesale_description(ui)}\n\n"
+        f"تعداد درخواستی را انتخاب کنید ({mn} تا {mx}):\n"
+        f"فعلی: <b>{qty}</b> عدد",
+    )
+    if callback.message:
+        await safe_edit_text(
+            callback.message,
+            text,
+            reply_markup=kb.wholesale_qty_keyboard(qty, ui, plan_id=plan.id),
+        )
+
+@router.callback_query(F.data.in_({"shop:wholesale:qty:+", "shop:wholesale:qty:-"}))
+async def wholesale_qty_step(callback: CallbackQuery, session: AsyncSession, state: FSMContext):
+    ui = await get_all_settings(session)
+    if not on(ui.get("wholesale_enabled")):
+        await callback.answer("فروش عمده فعال نیست", show_alert=True)
+        return
+    data = await state.get_data()
+    plan_id = int(data.get("wholesale_plan_id") or 0)
+    plan = await get_catalog_plan(session, plan_id) if plan_id else None
+    if not plan:
+        await callback.answer("ابتدا پلن را انتخاب کنید", show_alert=True)
+        return
+    mn, mx = wholesale_bounds(ui)
+    qty = int(data.get("wholesale_qty") or mn)
+    if callback.data.endswith("+"):
+        qty = min(mx, qty + 1)
+    else:
+        qty = max(mn, qty - 1)
+    await state.update_data(wholesale_qty=qty)
+    await callback.answer()
+    tiers = parse_wholesale_tiers(ui.get("wholesale_tiers"))
+    pct = wholesale_tier_percent(qty, tiers)
+    payable, discount = calc_wholesale_price(
+        unit_price=sale_price(plan), quantity=qty, percent=pct
+    )
+    disc_line = f"\nتخفیف فعلی: <b>{pct}٪</b> (−{format_toman(discount, get_settings().currency)})" if pct else ""
+    text = format_message(
+        "📦 فروش عمده — تعداد",
+        f"پلن: <b>{plan.name}</b>\n"
+        f"قیمت واحد: <b>{format_toman(sale_price(plan), get_settings().currency)}</b>\n\n"
+        f"{wholesale_description(ui)}\n\n"
+        f"فعلی: <b>{qty}</b> عدد{disc_line}\n"
+        f"جمع: <b>{format_toman(payable, get_settings().currency)}</b>",
+    )
+    if callback.message:
+        await safe_edit_text(
+            callback.message,
+            text,
+            reply_markup=kb.wholesale_qty_keyboard(qty, ui, plan_id=plan.id),
+        )
+
+@router.callback_query(F.data == "shop:wholesale:qty:input")
+async def wholesale_qty_ask(callback: CallbackQuery, session: AsyncSession, state: FSMContext):
+    from app.bot.nav_input import ask_text
+
+    ui = await get_all_settings(session)
+    if not on(ui.get("wholesale_enabled")):
+        await callback.answer("فروش عمده فعال نیست", show_alert=True)
+        return
+    mn, mx = wholesale_bounds(ui)
+    await callback.answer()
+    if callback.message:
+        await ask_text(
+            callback,
+            state,
+            prompt=f"تعداد را عددی بین {mn} تا {mx} بفرستید:",
+            cancel_code="w_qty",
+            fsm_state=ShopStates.wholesale_qty_input,
+            edit=True,
+        )
+
+@router.message(ShopStates.wholesale_qty_input)
+async def wholesale_qty_entered(
+    message: Message,
+    state: FSMContext,
+    session: AsyncSession,
+    db_user: BotUser,
+    is_reseller_bot: bool = False,
+    reseller_owner_id: int | None = None,
+):
+    ui = await get_all_settings(session)
+    if kb.is_cancel_text(message.text):
+        from app.bot.menu_nav import restore_main_reply
+        from app.bot.nav_input import try_legacy_cancel
+
+        if await try_legacy_cancel(
+            message,
+            state,
+            session,
+            db_user,
+            is_reseller_bot=is_reseller_bot,
+            reseller_owner_id=reseller_owner_id,
+        ):
+            return
+        await restore_main_reply(
+            message,
+            session,
+            db_user,
+            text=feedback.CANCELLED,
+            state=state,
+            is_reseller_bot=is_reseller_bot,
+            reseller_owner_id=reseller_owner_id,
+        )
+        return
+    mn, mx = wholesale_bounds(ui)
+    raw = (message.text or "").strip().replace(",", "").replace("٬", "")
+    try:
+        qty = int(raw)
+    except ValueError:
+        await message.answer(f"عدد معتبر بین {mn} تا {mx} بفرستید.")
+        return
+    if qty < mn or qty > mx:
+        await message.answer(f"تعداد باید بین {mn} تا {mx} باشد.")
+        return
+    data = await state.get_data()
+    plan_id = int(data.get("wholesale_plan_id") or 0)
+    plan = await get_catalog_plan(session, plan_id) if plan_id else None
+    if not plan:
+        await state.clear()
+        await message.answer("پلن نامعتبر است — دوباره از فروشگاه شروع کنید.")
+        return
+    await state.set_state(None)
+    await state.update_data(wholesale_qty=qty)
+    tiers = parse_wholesale_tiers(ui.get("wholesale_tiers"))
+    pct = wholesale_tier_percent(qty, tiers)
+    payable, discount = calc_wholesale_price(
+        unit_price=sale_price(plan), quantity=qty, percent=pct
+    )
+    disc_line = f"\nتخفیف: <b>{pct}٪</b> (−{format_toman(discount, get_settings().currency)})" if pct else ""
+    text = format_message(
+        "📦 فروش عمده — تعداد",
+        f"پلن: <b>{plan.name}</b>\n"
+        f"فعلی: <b>{qty}</b> عدد{disc_line}\n"
+        f"جمع: <b>{format_toman(payable, get_settings().currency)}</b>",
+    )
+    from app.bot import menu_nav as nav
+    from app.bot.nav_input import finish_text_step
+
+    custom_on = on(ui.get("custom_plan_enabled"))
+    wholesale_on = True
+    await state.update_data(_shop_custom=custom_on, _shop_wholesale=wholesale_on)
+    qty_kb = kb.wholesale_qty_keyboard(qty, ui, plan_id=plan.id)
+    if state is not None:
+        await nav.set_nav_level(state, nav.NAV_SHOP, push=False)
+    # Edit the ask_text prompt into the qty panel — main ReplyKeyboard stays put.
+    await finish_text_step(message, state, text=text, inline=qty_kb)
+    _ = (is_reseller_bot, reseller_owner_id)
+
+@router.callback_query(F.data == "shop:wholesale:confirm")
+async def wholesale_confirm(
+    callback: CallbackQuery, session: AsyncSession, db_user: BotUser, state: FSMContext,
+    reseller_owner_id: int | None = None,
+):
+    """«ادامه خرید» after the quantity step opens the payment screen; the details are shown there."""
+    await wholesale_buy(callback, session, db_user, state, reseller_owner_id=reseller_owner_id)
+
+@router.callback_query(F.data == "shop:wholesale:buy")
+async def wholesale_buy(
+    callback: CallbackQuery, session: AsyncSession, db_user: BotUser, state: FSMContext,
+    reseller_owner_id: int | None = None,
+):
+    ui = await get_all_settings(session)
+    if await _answer_shop_maintenance(callback, session, ui):
+        return
+    if await prompt_purchase_contact_if_needed(callback, session, db_user, state, ui):
+        return
+    from app.bot.handlers.terms import prompt_terms_if_needed
+
+    if await prompt_terms_if_needed(
+        callback,
+        session,
+        db_user,
+        state,
+        ui,
+        "buy_user",
+        reseller_owner_id=reseller_owner_id,
+    ):
+        return
+    if not on(ui.get("wholesale_enabled")):
+        await callback.answer("فروش عمده فعال نیست", show_alert=True)
+        return
+    data = await state.get_data()
+    plan_id = int(data.get("wholesale_plan_id") or 0)
+    mn, _mx = wholesale_bounds(ui)
+    qty = int(data.get("wholesale_qty") or mn)
+    if not plan_id:
+        await callback.answer("پلن انتخاب نشده", show_alert=True)
+        return
+    if not kb.any_checkout_method_enabled(ui):
+        await callback.answer(feedback.NO_PAYMENT_METHOD, show_alert=True)
+        return
+    try:
+        order = await create_wholesale_order(
+            session,
+            user_id=db_user.id,
+            plan_id=plan_id,
+            quantity=qty,
+            reseller_id=db_user.reseller_id,
+        )
+    except ValueError as e:
+        await callback.answer(user_safe_error(e), show_alert=True)
+        return
+    # Drop wholesale qty FSM; present_order_pay sets NAV_PAY + order id
+    await state.set_state(None)
+    await state.update_data(wholesale_plan_id=None, wholesale_qty=None)
+    await callback.answer()
+    await _record_shop_funnel(
+        session, db_user, "pay_start", ui=ui, plan_id=plan_id, order_id=order.id
+    )
+    text = await checkout_summary(session, order, currency=get_settings().currency)
+    if callback.message:
+        await _show_order_pay(callback.message, session, db_user, order.id, state, text)
+    await _notify_new_order(
+        callback.bot, session, order, db_user, f"فروش عمده ×{order.quantity}"
+    )
+
+@router.callback_query(F.data.startswith("shop:plan:"))
+async def shop_plan(
+    callback: CallbackQuery,
+    session: AsyncSession,
+    db_user: BotUser,
+    state: FSMContext,
+    reseller_owner_id: int | None = None,
+):
+    """A paid plan opens its payment screen directly (its details are shown there);
+    a free plan keeps this details screen, since its «ادامه» delivers at once."""
+    ui = await get_all_settings(session)
+    if await _answer_shop_maintenance(callback, session, ui):
+        return
+    plan_id = int(callback.data.split(":")[-1])
+    plan = await get_catalog_plan(session, plan_id)
+    if not plan:
+        await callback.answer("پلن پیدا نشد", show_alert=True)
+        return
+    await _record_shop_funnel(session, db_user, "plan_view", ui=ui, plan_id=plan.id)
+    if sale_price(plan) > 0:
+        await _begin_plan_purchase(callback, session, db_user, state, ui, plan, reseller_owner_id=reseller_owner_id)
+        return
+    limit = f"{plan.data_limit_gb:g} گیگابایت" if plan.data_limit_gb is not None else "نامحدود"
+    body = info_block(
+        [
+            html.escape(plan.description or ""),
+            kv_line("⏱", "مدت", f"<b>{format_plan_duration_days(plan.duration_days)}</b>"),
+            kv_line("📦", "حجم", f"<b>{limit}</b>"),
+            kv_line("💰", "قیمت", price_html(displayed_quote(plan), get_settings().currency)),
+        ]
+    )
+    text = format_message(f"💎 {html.escape(plan.name)}", body)
+    if callback.message:
+        await safe_edit_text(callback.message, text, reply_markup=kb.plan_actions(plan.id, ui))
+
+async def _complete_shop_buy(
+    *,
+    callback: CallbackQuery | None,
+    message: Message | None,
+    session: AsyncSession,
+    db_user: BotUser,
+    state: FSMContext,
+    ui: dict,
+    plan,
+    plan_id: int,
+    trial_phone_hash: str | None = None,
+    trial_telegram_id: int | None = None,
+) -> None:
+    try:
+        order = await create_order(
+            session,
+            user_id=db_user.id,
+            plan_id=plan_id,
+            reseller_id=db_user.reseller_id,
+            trial_phone_hash=trial_phone_hash,
+            trial_telegram_id=trial_telegram_id,
+        )
+    except ValueError as e:
+        if callback is not None:
+            await callback.answer(user_safe_error(e), show_alert=True)
+        elif message is not None:
+            await message.answer(format_message("⚠️ تست", user_safe_error(e)))
+        return
+
+    if callback is not None:
+        await callback.answer()
+    await _record_shop_funnel(
+        session, db_user, "pay_start", ui=ui, plan_id=plan_id, order_id=order.id
+    )
+
+    # Free / trial: deliver immediately
+    if order.amount <= 0:
+        bot = callback.bot if callback is not None else message.bot
+        delivered, failure = await _deliver_free_order(bot, session, db_user, order)
+        if delivered is None:
+            if callback is not None and callback.message:
+                await safe_edit_text(callback.message, failure, reply_markup=kb.back_home(ui))
+            elif message is not None:
+                await message.answer(failure, reply_markup=kb.back_home(ui))
+            return
+        order = delivered
+        ok = format_message("✅ فعال شد", f"سفارش #{order.id} تحویل شد.")
+        if callback is not None and callback.message:
+            await safe_edit_text(callback.message, ok, reply_markup=kb.back_home(ui))
+        elif message is not None:
+            await message.answer(ok, reply_markup=kb.back_home(ui))
+        try:
+            await send_delivery_to_user(bot, db_user.telegram_id, session, None, order)
+        except Exception:
+            logger.debug("_complete_shop_buy: ignored failure", exc_info=True)
+        return
+
+    text = await checkout_summary(session, order, currency=get_settings().currency)
+    msg = callback.message if callback is not None else message
+    if msg is not None:
+        await _show_order_pay(msg, session, db_user, order.id, state, text)
+    bot = callback.bot if callback is not None else message.bot
+    await _notify_new_order(bot, session, order, db_user, plan.name if plan else None)
+
+@router.callback_query(F.data.startswith("shop:buy:"))
+async def shop_buy(callback: CallbackQuery, session: AsyncSession, db_user: BotUser, state: FSMContext,
+    reseller_owner_id: int | None = None,
+):
+    ui = await get_all_settings(session)
+    if await _answer_shop_maintenance(callback, session, ui):
+        return
+    from app.bot.handlers.terms import prompt_terms_if_needed
+
+    if await prompt_terms_if_needed(
+        callback,
+        session,
+        db_user,
+        state,
+        ui,
+        "buy_user",
+        reseller_owner_id=reseller_owner_id,
+    ):
+        return
+    plan_id = int(callback.data.split(":")[-1])
+    plan = await get_catalog_plan(session, plan_id)
+    if not plan:
+        await callback.answer("پلن پیدا نشد", show_alert=True)
+        return
+    await _begin_plan_purchase(
+        callback, session, db_user, state, ui, plan, reseller_owner_id=reseller_owner_id, terms_checked=True
+    )
+
+
+async def _begin_plan_purchase(
+    callback: CallbackQuery,
+    session: AsyncSession,
+    db_user: BotUser,
+    state: FSMContext,
+    ui: dict,
+    plan,
+    *,
+    reseller_owner_id: int | None,
+    terms_checked: bool = False,
+) -> None:
+    """Every gate of «ادامه خرید» (terms, contact, payment methods, trial phone), then the order."""
+    plan_id = int(plan.id)
+    if not terms_checked:
+        from app.bot.handlers.terms import prompt_terms_if_needed
+
+        if await prompt_terms_if_needed(
+            callback, session, db_user, state, ui, "buy_user", reseller_owner_id=reseller_owner_id
+        ):
+            # Accepting the terms resumes «shop:buy:<id>», which lands here again.
+            await state.update_data(terms_resume=f"shop:buy:{plan_id}")
+            return
+    if not plan.is_trial and await prompt_purchase_contact_if_needed(callback, session, db_user, state, ui):
+        return
+    if sale_price(plan) > 0 and not kb.any_checkout_method_enabled(ui):
+        await callback.answer(feedback.NO_PAYMENT_METHOD, show_alert=True)
+        return
+
+    if plan.is_trial and on(ui.get("trial_require_contact")):
+        # A number verified for purchases is the same proof; only the Iran-only gate cannot
+        # reuse it, because the stored hash does not say which country the number is from.
+        verified_hash = (
+            None
+            if on(ui.get("trial_require_iran_phone"))
+            else await verified_contact_phone_hash(session, db_user.id)
+        )
+        if verified_hash:
+            await _complete_shop_buy(
+                callback=callback, message=None, session=session, db_user=db_user, state=state,
+                ui=ui, plan=plan, plan_id=plan_id,
+                trial_phone_hash=verified_hash, trial_telegram_id=int(db_user.telegram_id),
+            )
+            return
+        from aiogram.types import KeyboardButton, ReplyKeyboardMarkup
+
+        await callback.answer()
+        await state.set_state(ShopStates.trial_contact)
+        await state.update_data(trial_plan_id=plan_id)
+        iran_note = (
+            "\nفقط شماره موبایل ایران (+۹۸) پذیرفته می‌شود."
+            if on(ui.get("trial_require_iran_phone"))
+            else ""
+        )
+        kb_contact = ReplyKeyboardMarkup(
+            keyboard=[
+                [KeyboardButton(text="📱 ارسال شماره تماس", request_contact=True)],
+                [KeyboardButton(text="❌ انصراف")],
+            ],
+            resize_keyboard=True,
+            one_time_keyboard=True,
+        )
+        if callback.message:
+            await callback.message.answer(
+                format_message(
+                    "🎁 سرویس تست",
+                    "برای دریافت تست، شماره تماس خودتان را از دکمه زیر ارسال کنید."
+                    + iran_note
+                    + "\n\nشماره خام ذخیره نمی‌شود.",
+                ),
+                reply_markup=kb_contact,
+            )
+        return
+
+    await _complete_shop_buy(
+        callback=callback,
+        message=None,
+        session=session,
+        db_user=db_user,
+        state=state,
+        ui=ui,
+        plan=plan,
+        plan_id=plan_id,
+    )
+
+@router.message(ShopStates.trial_contact, F.contact)
+async def shop_trial_contact(
+    message: Message,
+    session: AsyncSession,
+    db_user: BotUser,
+    state: FSMContext,
+):
+    ui = await get_all_settings(session)
+    contact = message.contact
+    if not contact or not message.from_user:
+        await message.answer("لطفاً از دکمه «ارسال شماره تماس» استفاده کنید.")
+        return
+    if contact.user_id is None or int(contact.user_id) != int(message.from_user.id):
+        await message.answer(
+            format_message(
+                "⛔ شماره نامعتبر",
+                "فقط شمارهٔ همین حساب تلگرام پذیرفته می‌شود.",
+            )
+        )
+        return
+    data = await state.get_data()
+    plan_id = int(data.get("trial_plan_id") or 0)
+    plan = await get_catalog_plan(session, plan_id) if plan_id else None
+    if not plan or not plan.is_trial:
+        await state.clear()
+        await message.answer("پلن تست فعلاً در دسترس نیست.", reply_markup=kb.back_home(ui))
+        return
+    require_iran = on(ui.get("trial_require_iran_phone"))
+    try:
+        from app.config import get_settings as _gs
+        from app.services.trial_contact import hash_trial_phone
+
+        phone_hash = hash_trial_phone(
+            contact.phone_number or "",
+            secret=_gs().web_secret,
+            require_iran=require_iran,
+        )
+    except ValueError as e:
+        await message.answer(format_message("⚠️ شماره", user_safe_error(e)))
+        return
+    await state.clear()
+    await _complete_shop_buy(
+        callback=None,
+        message=message,
+        session=session,
+        db_user=db_user,
+        state=state,
+        ui=ui,
+        plan=plan,
+        plan_id=plan_id,
+        trial_phone_hash=phone_hash,
+        trial_telegram_id=int(message.from_user.id),
+    )
+
+@router.message(ShopStates.trial_contact)
+async def shop_trial_contact_cancel(
+    message: Message,
+    session: AsyncSession,
+    db_user: BotUser,
+    state: FSMContext,
+    is_reseller_bot: bool = False,
+    reseller_owner_id: int | None = None,
+):
+    ui = await get_all_settings(session)
+    if kb.is_cancel_text(message.text) or kb.is_home_text(message.text, ui) or (message.text or "").strip() in {
+        "❌ انصراف",
+        "انصراف",
+    }:
+        from app.bot.menu_nav import restore_main_reply
+
+        await restore_main_reply(
+            message,
+            session,
+            db_user,
+            text=feedback.CANCELLED,
+            state=state,
+            is_reseller_bot=is_reseller_bot,
+            reseller_owner_id=reseller_owner_id,
+        )
+        return
+    await message.answer("لطفاً از دکمه «ارسال شماره تماس» استفاده کنید یا انصراف بزنید.")
+
+
+class _PayBackCallback:
+    """Minimal CallbackQuery stand-in for reusing shop/service presenters."""
+
+    def __init__(self, message, data: str):
+        self.message = message
+        self.data = data
+        self.bot = getattr(message, "bot", None)
+
+    async def answer(self, *args, **kwargs):
+        return None
+
+
+async def navigate_order_pay_back(
+    message,
+    session: AsyncSession,
+    db_user: BotUser,
+    order: Order,
+    state: FSMContext,
+    *,
+    is_reseller_bot: bool = False,
+    reseller_owner_id: int | None = None,
+) -> None:
+    """Leave the pay panel and reopen the previous shop / service step.
+
+    Does not cancel the pending order (same as today's Cancel → home).
+    """
+    from app.bot.menu_nav import clear_checkout_nav
+    from app.db.models import OrderStatus
+
+    note = (order.note or "").strip()
+    status = (order.status or "").strip()
+    await clear_checkout_nav(state)
+
+    if status not in {
+        OrderStatus.PENDING.value,
+        OrderStatus.AWAITING_RECEIPT.value,
+    }:
+        await shop_list(
+            _PayBackCallback(message, "shop:list"),
+            session,
+            db_user,
+            state,
+        )
+        return
+
+    if note.startswith("renew:") or note.startswith("svc_addon:"):
+        svc_id = order.service_id
+        if svc_id is None and note.startswith("renew:"):
+            try:
+                svc_id = int(note.split(":", 1)[1].split(":")[0])
+            except (TypeError, ValueError, IndexError):
+                svc_id = None
+        if svc_id is None and note.startswith("svc_addon:"):
+            parts = note.split(":")
+            try:
+                svc_id = int(parts[1])
+            except (TypeError, ValueError, IndexError):
+                svc_id = None
+        if svc_id:
+            from app.bot.handlers.services import svc_view
+
+            await svc_view(
+                _PayBackCallback(message, f"svc:view:{int(svc_id)}"),
+                session,
+                db_user,
+                state,
+            )
+            return
+
+    if note.startswith("reseller_app:"):
+        from app.bot.handlers.reseller import resapply_home
+
+        await resapply_home(
+            _PayBackCallback(message, "resapply:home"),
+            session,
+            db_user,
+            is_reseller_bot=is_reseller_bot,
+            reseller_owner_id=reseller_owner_id,
+        )
+        return
+
+    if note == "custom":
+        await custom_start(_PayBackCallback(message, "shop:custom"), session, state)
+        return
+
+    if note.startswith("wholesale:"):
+        await shop_kind_wholesale(
+            _PayBackCallback(message, "shop:kind:wholesale"),
+            session,
+            state,
+        )
+        return
+
+    if order.plan_id:
+        # The plan details live on the payment screen now; back is the plan list.
+        await shop_kind_fixed(_PayBackCallback(message, "shop:kind:fixed"), session, db_user, state)
+        return
+
+    await shop_list(
+        _PayBackCallback(message, "shop:list"),
+        session,
+        db_user,
+        state,
+    )
+
+
+@router.callback_query(F.data.startswith("pay:back:"))
+async def pay_back(
+    callback: CallbackQuery,
+    session: AsyncSession,
+    db_user: BotUser,
+    state: FSMContext,
+    is_reseller_bot: bool = False,
+    reseller_owner_id: int | None = None,
+):
+    try:
+        order_id = int((callback.data or "").split(":")[-1])
+    except (TypeError, ValueError):
+        await callback.answer(feedback.INVALID, show_alert=True)
+        return
+    order = await session.get(Order, order_id)
+    if not is_customer_order_in_current_shop(order, db_user.id):
+        await callback.answer("این سفارش دیگر در دسترس نیست", show_alert=True)
+        return
+    await callback.answer()
+    if callback.message:
+        await navigate_order_pay_back(
+            callback.message,
+            session,
+            db_user,
+            order,
+            state,
+            is_reseller_bot=is_reseller_bot,
+            reseller_owner_id=reseller_owner_id,
+        )
+
+
+@router.callback_query(F.data.startswith("pay:discount:"))
+async def ask_discount(
+    callback: CallbackQuery,
+    state: FSMContext,
+    session: AsyncSession,
+    db_user: BotUser,
+):
+    from app.bot.nav_input import ask_text
+
+    ui = await get_all_settings(session)
+    if not on(ui.get("pay_discount_enabled")):
+        await callback.answer("کد تخفیف غیرفعال است", show_alert=True)
+        return
+    await callback.answer()
+    order_id = int(callback.data.split(":")[-1])
+    await state.update_data(order_id=order_id)
+
+    from app.services.loyalty import list_available_discounts
+
+    ents = await list_available_discounts(session, db_user.id, shop_id=current_shop_reseller_id())
+    rows: list[list[InlineKeyboardButton]] = []
+    for e in ents[:5]:
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text=f"🏷 {e.percent}٪ — {e.code}",
+                    callback_data=f"pay:loydisc:{order_id}:{e.id}",
+                )
+            ]
+        )
+    hint = "کد تخفیف را ارسال کنید یا از دکمه زیر استفاده کنید:"
+    if not ents:
+        hint = "کد تخفیف را ارسال کنید یا انصراف بزنید:"
+    if rows:
+        hint = "تخفیف‌های باشگاه شما — یا کد را تایپ کنید:\n\n" + hint
+    extra = InlineKeyboardMarkup(inline_keyboard=rows) if rows else None
+    await ask_text(
+        callback,
+        state,
+        prompt=hint,
+        cancel_code="pay_disc",
+        fsm_state=ShopStates.discount,
+        extra_inline=extra,
+        edit=True,
+    )
+
+@router.callback_query(F.data.startswith("pay:loydisc:"))
+async def apply_loyalty_discount_btn(
+    callback: CallbackQuery,
+    state: FSMContext,
+    session: AsyncSession,
+    db_user: BotUser,
+):
+    parts = (callback.data or "").split(":")
+    try:
+        order_id = int(parts[2])
+        ent_id = int(parts[3])
+    except (IndexError, TypeError, ValueError):
+        await callback.answer(feedback.INVALID, show_alert=True)
+        return
+    from app.db.models import LoyaltyDiscountEntitlement
+    from app.bot.menu_nav import present_order_pay
+
+    ent = await session.get(LoyaltyDiscountEntitlement, ent_id)
+    order = await session.get(Order, order_id)
+    if not is_customer_order_in_current_shop(order, db_user.id):
+        await callback.answer("این سفارش دیگر در دسترس نیست", show_alert=True)
+        return
+    if not ent or int(ent.user_id) != int(db_user.id):
+        await callback.answer("این کد تخفیف معتبر نیست", show_alert=True)
+        return
+    await state.clear()
+    try:
+        order = await apply_discount_to_order(session, order, ent.code)
+    except ValueError as e:
+        await callback.answer(user_safe_error(e, limit=180), show_alert=True)
+        return
+    await callback.answer("تخفیف اعمال شد ✅")
+    if callback.message:
+        summary = await checkout_summary(
+            session, order, currency=get_settings().currency, notice=DISCOUNT_APPLIED
+        )
+        await present_order_pay(
+            callback.message,
+            session,
+            db_user,
+            order.id,
+            state=state,
+            summary=summary,
+            is_reseller_bot=False,
+            reseller_owner_id=None,
+        )
+
+@router.message(ShopStates.discount)
+async def apply_discount_msg(
+    message: Message,
+    state: FSMContext,
+    session: AsyncSession,
+    db_user: BotUser,
+    is_reseller_bot: bool = False,
+    reseller_owner_id: int | None = None,
+):
+    from app.bot.menu_nav import present_order_pay, restore_main_reply
+    from app.bot.nav_input import try_legacy_cancel
+
+    if kb.is_cancel_text(message.text):
+        if await try_legacy_cancel(
+            message,
+            state,
+            session,
+            db_user,
+            is_reseller_bot=is_reseller_bot,
+            reseller_owner_id=reseller_owner_id,
+        ):
+            return
+        await restore_main_reply(
+            message,
+            session,
+            db_user,
+            text=feedback.CANCELLED,
+            state=state,
+            is_reseller_bot=is_reseller_bot,
+            reseller_owner_id=reseller_owner_id,
+        )
+        return
+    code_raw = (message.text or "").strip()
+    if not code_raw:
+        await message.answer("کد تخفیف را به‌صورت متن بفرستید.")
+        return
+    data = await state.get_data()
+    order = await session.get(Order, data.get("order_id"))
+    await state.clear()
+    if not is_customer_order_in_current_shop(order, db_user.id):
+        await restore_main_reply(
+            message,
+            session,
+            db_user,
+            text="سفارش معتبر نیست.",
+            state=state,
+            is_reseller_bot=is_reseller_bot,
+            reseller_owner_id=reseller_owner_id,
+        )
+        return
+
+    try:
+        order = await apply_discount_to_order(session, order, code_raw)
+    except ValueError as e:
+        summary = await checkout_summary(
+            session, order, currency=get_settings().currency, notice=f"⚠️ {html.escape(user_safe_error(e))}"
+        )
+        await present_order_pay(
+            message,
+            session,
+            db_user,
+            order.id,
+            state=state,
+            summary=summary,
+            is_reseller_bot=is_reseller_bot,
+            reseller_owner_id=reseller_owner_id,
+        )
+        return
+    summary = await checkout_summary(session, order, currency=get_settings().currency, notice=DISCOUNT_APPLIED)
+    await present_order_pay(
+        message,
+        session,
+        db_user,
+        order.id,
+        state=state,
+        summary=summary,
+        is_reseller_bot=is_reseller_bot,
+        reseller_owner_id=reseller_owner_id,
+    )
+
+@router.callback_query(F.data.startswith("pay:wallet:"))
+async def pay_wallet_cb(
+    callback: CallbackQuery,
+    session: AsyncSession,
+    db_user: BotUser,
+    state: FSMContext | None = None,
+    is_reseller_bot: bool = False,
+    reseller_owner_id: int | None = None,
+):
+    ui = await get_all_settings(session)
+    if not on(ui.get("pay_wallet_enabled")):
+        await callback.answer("این روش پرداخت غیرفعال است", show_alert=True)
+        return
+    order_id = int(callback.data.split(":")[-1])
+    order = await session.get(Order, order_id)
+    if not is_customer_order_in_current_shop(order, db_user.id):
+        await callback.answer("این سفارش دیگر در دسترس نیست", show_alert=True)
+        return
+    try:
+        order = await pay_with_wallet(session, order, db_user)
+    except ValueError as e:
+        await callback.answer(user_safe_error(e), show_alert=True)
+        return
+    except Exception as e:
+        await callback.answer(f"خطا در تحویل: {user_safe_error(e)}", show_alert=True)
+        return
+
+    await callback.answer()
+    from app.bot.menu_nav import buyer_main_reply_keyboard, clear_checkout_nav
+
+    await clear_checkout_nav(state)
+    main_kb, _ = await buyer_main_reply_keyboard(
+        session,
+        db_user,
+        order=order,
+        is_reseller_bot=is_reseller_bot,
+        reseller_owner_id=reseller_owner_id,
+    )
+
+    if order.note and str(order.note).startswith("reseller_app:"):
+        from app.db.models import ResellerApplicationStatus
+        from app.services.resellers import format_credentials_message, get_application
+
+        creds = order.__dict__.get("_reseller_app_creds")
+        try:
+            app_id = int(str(order.note).split(":", 1)[1])
+        except Exception:
+            app_id = 0
+        app = await get_application(session, app_id) if app_id else None
+        approved = bool(
+            isinstance(creds, dict)
+            or (app and app.status == ResellerApplicationStatus.APPROVED.value)
+        )
+        if callback.message:
+            if isinstance(creds, dict):
+                body = format_credentials_message(creds)
+                await safe_edit_text(
+                    callback.message,
+                    body,
+                    reply_markup=kb.back_home(None),
+                )
+            else:
+                await safe_edit_text(
+                    callback.message,
+                    format_message(
+                        "✅ پرداخت ثبت شد",
+                        (
+                            "نمایندگی شما فعال شد."
+                            if approved
+                            else "هزینه نمایندگی پرداخت شد.\nدرخواست شما برای تأیید ادمین ارسال شد."
+                        ),
+                    ),
+                    reply_markup=kb.back_home(None),
+                )
+            keep_message(callback.message)
+            _ = main_kb
+        for aid in get_settings().admin_ids:
+            try:
+                if approved:
+                    with keep_sent():  # a notice or review item, never a temporary panel
+                        await callback.bot.send_message(
+                            aid,
+                            f"✅ نمایندگی فعال شد — سفارش #{order.id}\n"
+                            f"کاربر: {db_user.full_name or db_user.telegram_id}\n"
+                            f"(تأیید خودکار پس از پرداخت)",
+                        )
+                else:
+                    with keep_sent():  # a notice or review item, never a temporary panel
+                        await callback.bot.send_message(
+                            aid,
+                            f"🤝 درخواست نمایندگی پرداخت‌شده — سفارش #{order.id}\n"
+                            f"کاربر: {db_user.full_name or db_user.telegram_id}",
+                            reply_markup=kb.reseller_app_review(app_id) if app_id else None,
+                        )
+            except Exception:
+                logger.debug("pay_wallet_cb: ignored failure", exc_info=True)
+        return
+
+    # Clear pay buttons on the checkout bubble; delivery carries the full success card.
+    if callback.message:
+        try:
+            await safe_edit_text(
+                callback.message,
+                format_message("✅ پرداخت تأیید شد", f"سفارش #{order.id}"),
+                reply_markup=None,
+            )
+            keep_message(callback.message)
+        except Exception:
+            logger.debug("pay_wallet checkout clear failed order=%s", order.id, exc_info=True)
+    try:
+        await send_delivery_to_user(
+            callback.bot, db_user.telegram_id, session, None, order
+        )
+    except Exception:
+        logger.exception(
+            "send_delivery_to_user failed order=%s", getattr(order, "id", None)
+        )
+        _ = main_kb
+    try:
+        from app.services.notifications import notify_new_subscription
+
+        plan = await get_plan(session, order.plan_id) if order.plan_id else None
+        await notify_new_subscription(
+            callback.bot,
+            session,
+            order=order,
+            user_tg_id=db_user.telegram_id,
+            user_name=db_user.full_name or db_user.username,
+            plan_name=plan.name if plan else None,
+            needs_approval=False,
+        )
+    except Exception:
+        logger.exception(
+            "notify_new_subscription failed order=%s", getattr(order, "id", None)
+        )
+
+async def _await_order_receipt(
+    callback: CallbackQuery,
+    session: AsyncSession,
+    db_user: BotUser,
+    *,
+    title: str,
+    body: str,
+    reply_markup=None,
+    state: FSMContext | None = None,
+    send_kw: dict | None = None,
+):
+    """Show pay instructions + inline cancel on the same panel (await photo)."""
+    from app.bot.nav_input import remember_prompt, with_cancel_row
+
+    _ = (session, db_user)
+    if callback.message:
+        if send_kw is None:
+            text = format_message(title, body)
+            kw: dict = {}
+        else:
+            text = body
+            kw = dict(send_kw)
+        hint = (
+            "\n\nپس از واریز، عکس رسید را در همین گفتگو بفرستید.\n"
+            "با ارسال رسید به منوی اصلی برمی‌گردید."
+        )
+        await safe_edit_text(
+            callback.message,
+            text + hint,
+            reply_markup=with_cancel_row(reply_markup, "pay_rcpt"),
+            **kw,
+        )
+        if state is not None:
+            await remember_prompt(state, callback.message, cancel_code="pay_rcpt")
+        # The card number or address must stay while the person pays elsewhere.
+        keep_message(callback.message)
+    if state is not None:
+        from app.bot import menu_nav as nav
+
+        try:
+            await state.update_data(**{nav.NAV_LEVEL: nav.NAV_MAIN})
+        except Exception:
+            logger.debug("_await_order_receipt: ignored failure", exc_info=True)
+
+@router.callback_query(F.data.regexp(r"^pay:card:\d+(?::\w+)?$"))
+async def pay_card_cb(
+    callback: CallbackQuery,
+    session: AsyncSession,
+    db_user: BotUser,
+    state: FSMContext | None = None,
+):
+    from app.services.payment_destinations import (
+        card_by_id,
+        enabled_cards,
+        inline_picker_markup,
+        pick_card,
+        random_card_enabled,
+    )
+
+    ui = await get_all_settings(session)
+    if not on(ui.get("pay_card_enabled")):
+        await callback.answer("این روش پرداخت غیرفعال است", show_alert=True)
+        return
+    parts = (callback.data or "").split(":")
+    order_id = int(parts[2])
+    dest_id = parts[3] if len(parts) > 3 else None
+    order = await session.get(Order, order_id)
+    if not is_customer_order_in_current_shop(order, db_user.id):
+        await callback.answer("این سفارش دیگر در دسترس نیست", show_alert=True)
+        return
+    cards = enabled_cards(ui)
+    if not cards:
+        await callback.answer("کارت بانکی تنظیم نشده — به ادمین اطلاع دهید", show_alert=True)
+        return
+    if len(cards) > 1 and not dest_id and not random_card_enabled(ui):
+        await callback.answer()
+        markup = inline_picker_markup("card", cards, order_id=order_id, prefix="pay", ui=ui)
+        if callback.message and markup:
+            await safe_edit_text(
+                callback.message,
+                format_message("💳 کارت به کارت", feedback.PICK_CARD),
+                reply_markup=markup,
+            )
+        return
+    if dest_id:
+        card = card_by_id(ui, dest_id)
+    else:
+        card = pick_card(cards, f"order:{order_id}") if len(cards) > 1 else cards[0]
+    if not card:
+        await callback.answer("این کارت دیگر فعال نیست", show_alert=True)
+        return
+    if on(ui.get("pay_card_auto_enabled")):
+        secret = str(ui.get("card_auto_webhook_secret") or "").strip()
+        if not secret or len(secret) < 16:
+            await callback.answer(
+                "تأیید خودکار کارت روشن است ولی رمز وب‌هوک تنظیم نشده",
+                show_alert=True,
+            )
+            return
+    try:
+        payment = await start_card_payment(session, order, db_user.id)
+    except ValueError as e:
+        await callback.answer(user_safe_error(e), show_alert=True)
+        return
+    await callback.answer()
+    amount = format_toman(order.amount, get_settings().currency)
+    from app.services.rich_text import outbound_setting_text, rich_plain_text
+
+    append = f"\n\n(پرداخت #{payment.id})"
+    if on(ui.get("pay_card_auto_enabled")):
+        from app.services.payment_settlement import create_card_auto_awaiting
+
+        await create_card_auto_awaiting(session, payment)
+        hint = rich_plain_text(ui.get("card_auto_hint_text")).strip()
+        if hint:
+            append += f"\n\n{hint}"
+    try:
+        text, send_kw = outbound_setting_text(
+            ui.get("card_pay_text") or "",
+            title="💳 کارت به کارت",
+            domain=DOMAIN_PAYMENT,
+            append=append,
+            amount=amount,
+            card=card.get("number") or "—",
+            holder=card.get("holder") or "—",
+            shop_title=rich_plain_text(ui.get("shop_title")) or "",
+            payment_id=payment.id,
+        )
+    except Exception:
+        text = format_message(
+            "💳 کارت به کارت",
+            f"مبلغ {amount} را کارت به کارت کنید و رسید بفرستید.{append}",
+        )
+        send_kw = {}
+    await _await_order_receipt(
+        callback,
+        session,
+        db_user,
+        title="💳 کارت به کارت",
+        body=text,
+        state=state,
+        send_kw=send_kw,
+    )
+
+@router.callback_query(F.data.regexp(r"^pay:gateway:\d+(?::\w+)?$"))
+async def pay_gateway_cb(
+    callback: CallbackQuery,
+    session: AsyncSession,
+    db_user: BotUser,
+    state: FSMContext | None = None,
+):
+    from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+
+    from app.services.payment_destinations import (
+        enabled_gateways,
+        gateway_by_id,
+        inline_picker_markup,
+    )
+
+    ui = await get_all_settings(session)
+    if not on(ui.get("pay_gateway_enabled")):
+        await callback.answer("این روش پرداخت غیرفعال است", show_alert=True)
+        return
+    parts = (callback.data or "").split(":")
+    order_id = int(parts[2])
+    dest_id = parts[3] if len(parts) > 3 else None
+    order = await session.get(Order, order_id)
+    if not is_customer_order_in_current_shop(order, db_user.id):
+        await callback.answer("این سفارش دیگر در دسترس نیست", show_alert=True)
+        return
+    gateways = enabled_gateways(ui)
+    if not gateways:
+        await callback.answer("درگاه پرداخت تنظیم نشده — به ادمین اطلاع دهید", show_alert=True)
+        return
+    if len(gateways) > 1 and not dest_id:
+        await callback.answer()
+        markup = inline_picker_markup("gateway", gateways, order_id=order_id, prefix="pay", ui=ui)
+        if callback.message and markup:
+            await safe_edit_text(
+                callback.message,
+                format_message("🌐 درگاه پرداخت", feedback.PICK_GATEWAY),
+                reply_markup=markup,
+            )
+        return
+    gw = gateway_by_id(ui, dest_id) if dest_id else gateways[0]
+    if not gw:
+        await callback.answer("این درگاه دیگر فعال نیست", show_alert=True)
+        return
+    try:
+        payment = await start_method_payment(
+            session, order, db_user.id, PaymentMethod.GATEWAY.value
+        )
+    except ValueError as e:
+        await callback.answer(user_safe_error(e), show_alert=True)
+        return
+    await callback.answer()
+    amount = format_toman(order.amount, get_settings().currency)
+    name = gw.get("name") or "درگاه پرداخت"
+    link = (gw.get("link") or "").strip()
+    if link:
+        try:
+            link = render_message_template(
+                link,
+                domain=DOMAIN_PAYMENT,
+                amount=order.amount,
+                order_id=order.id,
+                payment_id=payment.id,
+                html=False,
+            )
+        except Exception:
+            logger.debug("pay_gateway_cb: ignored failure", exc_info=True)
+    from app.services.rich_text import outbound_setting_text, rich_plain_text
+
+    append = f"\n\n(پرداخت #{payment.id})"
+    try:
+        text, send_kw = outbound_setting_text(
+            ui.get("gateway_pay_text") or "",
+            title=f"🌐 {name}",
+            domain=DOMAIN_PAYMENT,
+            append=append,
+            amount=amount,
+            order_id=order.id,
+            gateway_name=name,
+            shop_title=rich_plain_text(ui.get("shop_title")) or "",
+            payment_id=payment.id,
+        )
+    except Exception:
+        text = format_message(
+            f"🌐 {name}",
+            f"مبلغ {amount} را از طریق {name} پرداخت کنید و رسید بفرستید.{append}",
+        )
+        send_kw = {}
+    rows: list[list[InlineKeyboardButton]] = []
+    if link.startswith("http://") or link.startswith("https://"):
+        rows.append([InlineKeyboardButton(text=f"🌐 ورود به {name}", url=link)])
+    await _await_order_receipt(
+        callback,
+        session,
+        db_user,
+        title=f"🌐 {name}",
+        body=text,
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=rows) if rows else None,
+        state=state,
+        send_kw=send_kw,
+    )
+
+@router.callback_query(F.data.regexp(r"^pay:crypto:\d+(?::\w+)?$"))
+async def pay_crypto_cb(
+    callback: CallbackQuery,
+    session: AsyncSession,
+    db_user: BotUser,
+    state: FSMContext | None = None,
+):
+    from app.services.payment_destinations import (
+        crypto_by_id,
+        enabled_crypto_wallets,
+        inline_picker_markup,
+    )
+
+    ui = await get_all_settings(session)
+    if not on(ui.get("pay_crypto_enabled")):
+        await callback.answer("این روش پرداخت غیرفعال است", show_alert=True)
+        return
+    parts = (callback.data or "").split(":")
+    order_id = int(parts[2])
+    dest_id = parts[3] if len(parts) > 3 else None
+    order = await session.get(Order, order_id)
+    if not is_customer_order_in_current_shop(order, db_user.id):
+        await callback.answer("این سفارش دیگر در دسترس نیست", show_alert=True)
+        return
+    wallets = enabled_crypto_wallets(ui)
+    if not wallets:
+        await callback.answer("آدرس ولت تنظیم نشده — به ادمین اطلاع دهید", show_alert=True)
+        return
+    if len(wallets) > 1 and not dest_id:
+        await callback.answer()
+        markup = inline_picker_markup("crypto", wallets, order_id=order_id, prefix="pay", ui=ui)
+        if callback.message and markup:
+            await safe_edit_text(
+                callback.message,
+                format_message("💎 رمزارز", "یکی از آدرس‌های ولت را انتخاب کنید:"),
+                reply_markup=markup,
+            )
+        return
+    wallet = crypto_by_id(ui, dest_id) if dest_id else wallets[0]
+    if not wallet:
+        await callback.answer("این آدرس دیگر فعال نیست", show_alert=True)
+        return
+    address = (wallet.get("address") or "").strip()
+    asset = wallet.get("asset") or "USDT"
+    try:
+        # The rate is read from memory (a job refreshes it), so no network call waits here.
+        quote = quote_from_settings(ui, wallet_asset=asset, toman=int(order.amount))
+        payment = await start_method_payment(
+            session, order, db_user.id, PaymentMethod.CRYPTO.value
+        )
+    except ValueError as e:
+        await callback.answer(user_safe_error(e), show_alert=True)
+        return
+    if quote is not None:
+        await attach_quote(session, payment.id, quote)
+    await callback.answer()
+    amount = format_toman(order.amount, get_settings().currency)
+    if quote is not None:
+        amount = display_amount(quote, amount)
+    network = wallet.get("network") or "—"
+    from app.services.rich_text import outbound_setting_text, rich_plain_text
+
+    append = f"\n\n(پرداخت #{payment.id})" + (validity_note(quote) if quote is not None else "")
+    try:
+        text, send_kw = outbound_setting_text(
+            ui.get("crypto_pay_text") or "",
+            title="💎 رمزارز",
+            domain=DOMAIN_PAYMENT,
+            append=append,
+            amount=amount,
+            asset=asset,
+            network=network,
+            address=address,
+            shop_title=rich_plain_text(ui.get("shop_title")) or "",
+            payment_id=payment.id,
+        )
+    except Exception:
+        text = format_message(
+            "💎 رمزارز",
+            f"مبلغ {amount}\n{asset} ({network})\n<code>{address}</code>\n\nرسید را بفرستید.{append}",
+        )
+        send_kw = {}
+    await _await_order_receipt(
+        callback,
+        session,
+        db_user,
+        title="💎 رمزارز",
+        body=text,
+        state=state,
+        send_kw=send_kw,
+    )
+
+@router.callback_query(F.data.startswith("pay:stars:"))
+async def pay_stars_cb(
+    callback: CallbackQuery,
+    session: AsyncSession,
+    db_user: BotUser,
+    state: FSMContext | None = None,
+):
+    from aiogram.types import LabeledPrice
+
+    ui = await get_all_settings(session)
+    if not on(ui.get("pay_stars_enabled")):
+        await callback.answer("این روش پرداخت غیرفعال است", show_alert=True)
+        return
+    order_id = int(callback.data.split(":")[-1])
+    order = await session.get(Order, order_id)
+    if not is_customer_order_in_current_shop(order, db_user.id):
+        await callback.answer("این سفارش دیگر در دسترس نیست", show_alert=True)
+        return
+    try:
+        payment = await start_method_payment(
+            session, order, db_user.id, PaymentMethod.STARS.value
+        )
+    except ValueError as e:
+        await callback.answer(user_safe_error(e), show_alert=True)
+        return
+    await callback.answer()
+    try:
+        rate = int(float(ui.get("stars_toman_per_star") or 500))
+    except ValueError:
+        rate = 500
+    stars = stars_amount_for_toman(order.amount, rate)
+    title = (ui.get("stars_title") or "خرید سرویس")[:32]
+    desc = (ui.get("stars_description") or f"سفارش #{order.id}")[:255]
+    try:
+        await callback.bot.send_invoice(
+            chat_id=db_user.telegram_id,
+            title=title,
+            description=desc,
+            payload=f"stars:{payment.id}:{stars}",
+            currency="XTR",
+            prices=[LabeledPrice(label=title, amount=stars)],
+            provider_token="",
+        )
+        if callback.message:
+            from app.bot.nav_input import cancel_keyboard
+
+            await safe_edit_text(
+                callback.message,
+                format_message(
+                    "⭐ استارز تلگرام",
+                    f"فاکتور {stars} استارز برای سفارش #{order.id} ارسال شد.\n"
+                    f"(معادل تقریبی {format_toman(order.amount, get_settings().currency)})\n\n"
+                    "پس از پرداخت موفق، به منوی اصلی برمی‌گردید.",
+                ),
+                reply_markup=cancel_keyboard("pay_wait"),
+            )
+        if state is not None:
+            from app.bot import menu_nav as nav
+
+            try:
+                await state.update_data(**{nav.NAV_LEVEL: nav.NAV_MAIN})
+            except Exception:
+                logger.debug("pay_stars_cb: ignored failure", exc_info=True)
+    except Exception as e:
+        if callback.message:
+            await callback.message.answer(f"خطا در ساخت فاکتور استارز: {user_safe_error(e)}")
+
+def _psp_callback_target(data: str) -> tuple[int, str | None]:
+    """``pay:psp:<order_id>`` or ``pay:psp:<order_id>:<gateway_id>`` from the gateway picker."""
+    parts = data.split(":")
+    gateway_id = parts[3] if len(parts) > 3 else None
+    return int(parts[2]), gateway_id
+
+
+async def _asked_psp_gateway(callback: CallbackQuery, ui: dict, order_id: int) -> bool:
+    """Show the gateway picker when the shop has several; True when it was shown."""
+    from app.bot.nav_input import cancel_keyboard
+
+    choices = gateway_choices(ui)
+    if not choices:
+        return False
+    await callback.answer()
+    if callback.message:
+        markup = psp_gateway_picker(
+            choices, prefix="pay", order_id=order_id, extra_rows=cancel_keyboard("pay_wait").inline_keyboard
+        )
+        await safe_edit_text(callback.message, format_message("🏦 درگاه آنلاین", PICK_GATEWAY_TEXT), reply_markup=markup)
+    return True
+
+
+@router.callback_query(F.data.regexp(r"^pay:psp:\d+(?::\w{1,32})?$"))
+async def pay_psp_cb(
+    callback: CallbackQuery,
+    session: AsyncSession,
+    db_user: BotUser,
+    state: FSMContext | None = None,
+):
+    """Additive API PSP checkout (mock / zarinpal) — no receipt photo required."""
+    from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+
+    from app.services.payment_settlement import create_psp_checkout
+
+    ui = await get_all_settings(session)
+    if not on(ui.get("pay_psp_enabled")):
+        await callback.answer("این روش پرداخت غیرفعال است", show_alert=True)
+        return
+    order_id, gateway_id = _psp_callback_target(callback.data or "")
+    order = await session.get(Order, order_id)
+    if not is_customer_order_in_current_shop(order, db_user.id):
+        await callback.answer("این سفارش دیگر در دسترس نیست", show_alert=True)
+        return
+    if gateway_id is None and await _asked_psp_gateway(callback, ui, order_id):
+        return
+    # Answer before the gateway call so Telegram does not expire the tap.
+    await callback.answer("در حال آماده‌سازی درگاه…")
+    try:
+        payment = await start_method_payment(
+            session, order, db_user.id, PaymentMethod.PSP.value
+        )
+        settlement = await create_psp_checkout(
+            session,
+            payment,
+            description=f"سفارش #{order.id}",
+            gateway_id=gateway_id,
+        )
+    except ValueError as e:
+        if callback.message:
+            await callback.message.answer(user_safe_error(e))
+        return
+    amount = format_toman(order.amount, get_settings().currency)
+    try:
+        body = render_message_template(
+            ui.get("psp_pay_text") or "",
+            domain=DOMAIN_PAYMENT,
+            amount=amount,
+            order_id=order.id,
+            payment_id=payment.id,
+            shop_title=ui.get("shop_title") or "",
+        )
+    except Exception:
+        body = (
+            f"مبلغ {amount} را از طریق درگاه آنلاین پرداخت کنید.\n"
+            "پس از پرداخت، به همین چت ربات برگردید؛ تأیید و تحویل خودکار است."
+        )
+    body += f"\n\n(پرداخت #{payment.id})"
+    from app.services.payment_settlement import (
+        public_checkout_button_url,
+        with_psp_checkout_guidance,
+    )
+
+    body = with_psp_checkout_guidance(body)
+    rows: list[list[InlineKeyboardButton]] = []
+    link = public_checkout_button_url(settlement, ui=ui)
+    if link.startswith("http://") or link.startswith("https://"):
+        rows.append([InlineKeyboardButton(text="🏦 ورود به درگاه", url=link)])
+        rows.append([psp_check_button(int(settlement.id))])
+    if callback.message:
+        from app.bot.nav_input import cancel_keyboard
+
+        wait_rows: list[list[InlineKeyboardButton]] = list(rows)
+        wait_rows.extend(cancel_keyboard("pay_wait").inline_keyboard)
+        wait_markup = InlineKeyboardMarkup(inline_keyboard=wait_rows)
+        await safe_edit_text(
+            callback.message,
+            format_message("🏦 درگاه آنلاین", body),
+            reply_markup=wait_markup,
+        )
+    if state is not None:
+        from app.bot import menu_nav as nav
+
+        try:
+            await state.update_data(**{nav.NAV_LEVEL: nav.NAV_MAIN})
+        except Exception:
+            logger.debug("pay_psp_cb: ignored failure", exc_info=True)
+
+
+@router.callback_query(F.data.regexp(r"^pay:bbc:\d+$"))
+async def pay_bbc_cb(
+    callback: CallbackQuery,
+    session: AsyncSession,
+    db_user: BotUser,
+    state: FSMContext | None = None,
+):
+    """«بزن به کارت»: the payment link and the exact Rial amount; no receipt photo."""
+    ui = await get_all_settings(session)
+    if not on(ui.get("pay_bbc_enabled")):
+        await callback.answer("این روش پرداخت غیرفعال است", show_alert=True)
+        return
+    order = await session.get(Order, int((callback.data or "").rsplit(":", 1)[-1]))
+    if not is_customer_order_in_current_shop(order, db_user.id):
+        await callback.answer("این سفارش دیگر در دسترس نیست", show_alert=True)
+        return
+    try:
+        await ensure_gateway_ready(session, current_shop_reseller_id())
+        payment = await start_method_payment(session, order, db_user.id, PaymentMethod.BBC.value)
+        checkout = await start_bbc_checkout(session, payment, description=f"سفارش #{order.id}")
+    except BbcNotReady as exc:
+        logger.warning("bezanbecard checkout refused: %s", exc)
+        await callback.answer(CUSTOMER_UNAVAILABLE, show_alert=True)
+        return
+    except ValueError as exc:
+        await callback.answer(user_safe_error(exc), show_alert=True)
+        return
+    await callback.answer()
+    if callback.message:
+        from app.bot.nav_input import cancel_keyboard
+
+        rows = [*bbc_view.checkout_rows(checkout), *cancel_keyboard("pay_wait").inline_keyboard]
+        text = bbc_view.checkout_text(
+            ui,
+            checkout,
+            amount_toman=int(order.amount),
+            currency=get_settings().currency,
+            order_id=int(order.id),
+            payment_id=int(payment.id),
+        )
+        await safe_edit_text(callback.message, text, reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
+        # The link and the exact amount must stay while the person pays elsewhere.
+        keep_message(callback.message)
+    if state is not None:
+        from app.bot import menu_nav as nav
+
+        await state.update_data(**{nav.NAV_LEVEL: nav.NAV_MAIN})
+
+
+def _register_shop_cancel_codes() -> None:
+    from app.bot.nav_input import CancelEntry, register_cancel_code
+
+    async def _reopen_wholesale_qty(message, session, db_user, state, **_kw):
+        from app.bot import keyboards as kb
+        from app.bot.nav_inline import present_inline_only
+        from app.config import get_settings
+        from app.services.formatting import format_message, format_toman
+        from app.services.orders import (
+            calc_wholesale_price,
+            get_catalog_plan,
+            list_active_plans,
+            parse_wholesale_tiers,
+            wholesale_bounds,
+            wholesale_description,
+            wholesale_tier_percent,
+        )
+        from app.services.users import get_all_settings, on
+
+        ui = await get_all_settings(session)
+        if not on(ui.get("wholesale_enabled")):
+            await message.answer("فروش عمده فعال نیست.")
+            return
+        data = await state.get_data()
+        plan_id = int(data.get("wholesale_plan_id") or 0)
+        plan = await get_catalog_plan(session, plan_id) if plan_id else None
+        if not plan:
+            plans = [p for p in await list_active_plans(session) if not getattr(p, "is_trial", False)]
+            from app.services.plan_categories import shop_category_map
+
+            categories = await shop_category_map(session)
+            await present_inline_only(
+                message,
+                text=format_message(
+                    "📦 فروش عمده",
+                    wholesale_description(ui) + "\n\nابتدا نوع سرویس (پلن) را انتخاب کنید:",
+                ),
+                inline=kb.wholesale_plans_keyboard(plans, ui, categories=categories),
+            )
+            await state.set_state(None)
+            return
+        mn, _mx = wholesale_bounds(ui)
+        qty = int(data.get("wholesale_qty") or mn)
+        qty = max(mn, min(_mx, qty))
+        await state.update_data(wholesale_qty=qty)
+        await state.set_state(None)
+        tiers = parse_wholesale_tiers(ui.get("wholesale_tiers"))
+        pct = wholesale_tier_percent(qty, tiers)
+        payable, discount = calc_wholesale_price(
+            unit_price=sale_price(plan), quantity=qty, percent=pct
+        )
+        disc_line = (
+            f"\nتخفیف فعلی: <b>{pct}٪</b> (−{format_toman(discount, get_settings().currency)})"
+            if pct
+            else ""
+        )
+        text = format_message(
+            "📦 فروش عمده — تعداد",
+            f"پلن: <b>{plan.name}</b>\n"
+            f"قیمت واحد: <b>{format_toman(sale_price(plan), get_settings().currency)}</b>\n\n"
+            f"{wholesale_description(ui)}\n\n"
+            f"فعلی: <b>{qty}</b> عدد{disc_line}\n"
+            f"جمع: <b>{format_toman(payable, get_settings().currency)}</b>",
+        )
+        await present_inline_only(
+            message,
+            text=text,
+            inline=kb.wholesale_qty_keyboard(qty, ui, plan_id=plan.id),
+        )
+
+    async def _reopen_custom_gb(message, session, db_user, state, **_kw):
+        from app.bot.nav_inline import present_inline_only
+        from app.services.users import get_all_settings
+
+        ui = await get_all_settings(session)
+        if not await _custom_gate(session, ui, state):
+            await present_inline_only(
+                message, text="پلن دلخواه در دسترس نیست.", inline=None
+            )
+            return
+        min_gb, max_gb, _, _, _, _ = _custom_bounds(ui)
+        data = await state.get_data()
+        gb = int(data.get("custom_gb") or min_gb)
+        gb = max(min_gb, min(max_gb, gb))
+        await state.set_state(None)
+        await present_inline_only(
+            message,
+            text=format_message(
+                "✨ پلن دلخواه — حجم",
+                f"حجم سرویس را انتخاب کنید ({min_gb} تا {max_gb} گیگابایت):\n"
+                f"فعلی: <b>{gb}</b> گیگابایت",
+            ),
+            inline=kb.custom_gb_keyboard(gb, ui),
+        )
+
+    async def _reopen_custom_days(message, session, db_user, state, **_kw):
+        from app.bot.nav_inline import present_inline_only
+        from app.services.users import get_all_settings
+
+        ui = await get_all_settings(session)
+        if not await _custom_gate(session, ui, state):
+            await present_inline_only(
+                message, text="پلن دلخواه در دسترس نیست.", inline=None
+            )
+            return
+        _, _, min_days, max_days, _, _ = _custom_bounds(ui)
+        data = await state.get_data()
+        gb = int(data.get("custom_gb") or _custom_bounds(ui)[0])
+        days = int(data.get("custom_days") or min_days)
+        days = max(min_days, min(max_days, days))
+        await state.set_state(None)
+        await present_inline_only(
+            message,
+            text=format_message(
+                "✨ پلن دلخواه — مدت",
+                f"حجم: <b>{gb}</b> گیگابایت\n"
+                f"مدت را انتخاب کنید ({min_days} تا {max_days} روز):\n"
+                f"فعلی: <b>{days}</b> روز",
+            ),
+            inline=kb.custom_days_keyboard(days, ui),
+        )
+
+    async def _reopen_order_pay(message, session, db_user, state, **kw):
+        from app.bot.menu_nav import PAY_ORDER_ID, present_order_pay
+
+        data = await state.get_data()
+        oid = data.get(PAY_ORDER_ID) or data.get("order_id")
+        if not oid:
+            await message.answer("این سفارش پیدا نشد.")
+            return
+        order = await session.get(Order, int(oid))
+        if not is_customer_order_in_current_shop(order, db_user.id):
+            await message.answer("این سفارش پیدا نشد.")
+            return
+        summary = await checkout_summary(session, order, currency=get_settings().currency)
+        await present_order_pay(
+            message,
+            session,
+            db_user,
+            order.id,
+            state=state,
+            summary=summary,
+            is_reseller_bot=kw.get("is_reseller_bot", False),
+            reseller_owner_id=kw.get("reseller_owner_id"),
+        )
+
+    register_cancel_code("w_qty", CancelEntry(reopen=_reopen_wholesale_qty))
+    register_cancel_code("c_gb", CancelEntry(reopen=_reopen_custom_gb))
+    register_cancel_code("c_days", CancelEntry(reopen=_reopen_custom_days))
+    register_cancel_code("pay_disc", CancelEntry(reopen=_reopen_order_pay))
+    register_cancel_code("pay_rcpt", CancelEntry(reopen=_reopen_order_pay))
+    register_cancel_code("pay_wait", CancelEntry(reopen=_reopen_order_pay))
+
+
+_register_shop_cancel_codes()

@@ -1,0 +1,1713 @@
+﻿{% extends "base.html" %}
+{% from "macros.html" import switch, switch_chip, page_title, modal_title, row_actions, table_select_head, table_select_cell, table_bulk_bar %}
+{% block title %}پلن‌ها{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div>
+    {{ page_title('plans', 'پلن‌ها', help='plans') }}
+  </div>
+  <div class="page-head-actions">
+    <button type="button" class="btn btn-ghost" data-modal-open="modal-plan-categories">برچسب دسته</button>
+    <button type="button" class="btn" id="btn-add-plan" data-modal-open="modal-plan-unified">افزودن پلن</button>
+  </div>
+</div>
+
+{% set plans_tab = 'resellers' if (is_platform_admin and request.query_params.get('tab') == 'resellers') else 'users' %}
+{% if is_platform_admin %}
+<nav class="section-tabs" role="tablist" aria-label="نوع پلن" data-plans-tabs>
+  <a href="/plans" role="tab" data-plans-tab="users" class="{% if plans_tab == 'users' %}active{% endif %}" aria-selected="{{ 'true' if plans_tab == 'users' else 'false' }}">پلن کاربر</a>
+  <a href="/plans?tab=resellers" role="tab" data-plans-tab="resellers" class="{% if plans_tab == 'resellers' %}active{% endif %}" aria-selected="{{ 'true' if plans_tab == 'resellers' else 'false' }}">پلن نماینده</a>
+</nav>
+{% endif %}
+
+{# flash_ok / flash_err rendered once in base.html #}
+{% if pg_error %}<div class="flash warn">پاسارگارد: {{ pg_error }} — پلن‌ها را می‌توانید ذخیره کنید ولی تحویل نیاز به اتصال دارد.</div>{% endif %}
+{% from "_pg_limit_cards.html" import pg_snapshot_limit_board %}
+{{ pg_snapshot_limit_board(pg_limit_cards, heading='سقف حساب پاسارگارد', caption='', box_captions=false) }}
+
+<div data-plans-panel="users" role="tabpanel"{% if plans_tab != 'users' %} hidden{% endif %}>
+{% set trial_on = values.get('trial_enabled') in ['1','true','yes','on'] %}
+{% set custom_on = values.get('custom_plan_enabled') in ['1','true','yes','on'] %}
+{% set wholesale_on = values.get('wholesale_enabled') in ['1','true','yes','on'] %}
+
+<div class="card card-flush">
+  <h2>پلن‌های کاربران</h2>
+  {{ table_bulk_bar('/plans/bulk-action', [
+    {'key': 'toggle', 'label': 'روشن/خاموش', 'confirm': 'وضعیت {n} پلن تغییر کند؟', 'confirm_title': 'تغییر وضعیت گروهی', 'confirm_label': 'اعمال'},
+    {'key': 'delete', 'label': 'حذف', 'class': 'btn-danger', 'confirm': '{n} پلن حذف شوند؟', 'confirm_title': 'حذف گروهی', 'confirm_label': 'حذف', 'danger': true},
+  ]) }}
+  <div class="table-wrap">
+  <table class="table-compact table-list-sm" data-bulk-select>
+    <thead>
+      <tr>{{ table_select_head() }}<th>نام</th><th class="col-hide-sm">برچسب</th><th>قیمت</th><th class="col-hide-sm">مدت</th><th>حجم</th><th class="col-hide-sm">منبع پاسارگارد</th><th>وضعیت</th><th class="col-actions"></th><th class="li-head" scope="col"><span class="li-count">{{ (plans | length + 3) | num }} پلن</span></th></tr>
+    </thead>
+    <tbody>
+    {% for p in plans %}
+      {% set tpl_missing = p.pg_template_id and (p.pg_template_id|int) not in (pg_live_template_ids or []) %}
+      {% set pg_empty = (not p.pg_template_id) and not p.pg_group_ids %}
+      <tr data-bulk-ops="toggle,delete">
+        {{ table_select_cell(p.id) }}
+        <td class="li-title">
+          <span class="plan-name-cell">
+            {% if tpl_missing or pg_empty %}<span class="plan-pg-warn-dot" title="منبع پاسارگارد ناقص یا تمپلیت حذف‌شده" aria-label="هشدار"></span>{% endif %}
+            <span dir="auto">{{ p.name }}</span>
+          </span>
+        </td>
+        <td class="col-hide-sm muted">{% if p.category_id and plan_category_map and plan_category_map.get(p.category_id) %}{{ plan_category_map.get(p.category_id).name }}{% else %}—{% endif %}</td>
+        <td class="mono li-value" dir="ltr">{{ p.price | money }}</td>
+        <td class="col-hide-sm">{% if p.duration_days %}{{ p.duration_days }} روز{% else %}نامحدود{% endif %}</td>
+        <td class="li-sub">
+          {#- On phones line two: the warnings, then volume · duration · category. -#}
+          {% if plan_limit_issues and plan_limit_issues.get(p.id) %}<span class="li-only badge warn">خارج از سقف</span>{% endif %}
+          {% if tpl_missing or pg_empty %}<span class="li-only badge warn">منبع ناقص</span>{% endif %}
+          <span>{% if p.data_limit_gb is not none %}{{ p.data_limit_gb | gb }}{% else %}نامحدود{% endif %}</span>
+          <span class="li-only">· {% if p.duration_days %}{{ p.duration_days }} روز{% else %}نامحدود{% endif %}{% if p.category_id and plan_category_map and plan_category_map.get(p.category_id) %} · {{ plan_category_map.get(p.category_id).name }}{% endif %}</span>
+        </td>
+        <td class="mono col-hide-sm">
+          {% if p.pg_template_id %}
+            تمپلیت #{{ p.pg_template_id }}
+            {% if tpl_missing %}<span class="badge warn" title="این تمپلیت در پاسارگارد پیدا نشد">خالی</span>{% endif %}
+          {% elif p.pg_group_ids %}گروه {{ p.pg_group_ids }}
+          {% else %}—{% endif %}
+        </td>
+        <td class="li-badge">
+          <div class="status-tags">
+            {% if p.is_active %}<span class="badge active">فعال</span>{% else %}<span class="badge warn">خاموش</span>{% endif %}
+            {% if plan_limit_issues and plan_limit_issues.get(p.id) %}
+            <span class="badge warn li-hide" title="{{ plan_limit_issues.get(p.id) }}">خارج از سقف</span>
+            {% endif %}
+          </div>
+        </td>
+        <td class="col-actions">
+          {% call row_actions() %}
+            <a class="btn btn-sm" href="/plans/{{ p.id }}/edit">ویرایش</a>
+            <form method="post" action="/plans/{{ p.id }}/clone"
+                  data-confirm="یک کپی خاموش از این پلن ساخته شود؟"
+                  data-confirm-title="کپی پلن"
+                  data-confirm-label="کپی">
+              <button class="btn btn-ghost btn-sm" type="submit">کپی</button>
+            </form>
+            <form method="post" action="/plans/{{ p.id }}/toggle">
+              <button class="btn btn-ghost btn-sm" type="submit">{% if p.is_active %}خاموش{% else %}روشن{% endif %}</button>
+            </form>
+            <form method="post" action="/plans/{{ p.id }}/delete"
+                  data-confirm="حذف پلن از فروشگاه؟"
+                  data-confirm-title="تأیید حذف پلن"
+                  data-confirm-danger="1"
+                  data-confirm-label="حذف پلن">
+              <button class="btn btn-danger btn-sm" type="submit">حذف</button>
+            </form>
+          {% endcall %}
+        </td>
+      </tr>
+    {% else %}
+      <tr><td colspan="9" class="muted">پلن ثابتی نیست — از «افزودن پلن» بسازید.</td></tr>
+    {% endfor %}
+      <tr>
+        <td class="col-select"></td>
+        <td class="li-title">پلن تست{% if trial %} — <span dir="auto">{{ trial.name }}</span>{% endif %}</td>
+        <td class="col-hide-sm muted">—</td>
+        <td class="mono li-value">رایگان</td>
+        <td class="col-hide-sm">{% if trial %}{{ trial.duration_days }} روز{% else %}—{% endif %}</td>
+        <td class="li-sub">
+          {% if trial_limit_issue %}<span class="li-only badge warn">خارج از سقف</span>{% endif %}
+          <span>{% if trial and trial.data_limit_gb is not none %}{{ trial.data_limit_gb | gb }}{% elif trial %}نامحدود{% else %}—{% endif %}</span>
+          {% if trial %}<span class="li-only">· {{ trial.duration_days }} روز</span>{% endif %}
+        </td>
+        <td class="mono col-hide-sm">
+          {% if trial and trial.pg_template_id %}تمپلیت #{{ trial.pg_template_id }}
+          {% elif trial and trial.pg_group_ids %}گروه {{ trial.pg_group_ids }}
+          {% else %}—{% endif %}
+        </td>
+        <td class="li-badge">
+          <div class="status-tags">
+            {% if trial_on %}<span class="badge active">فعال</span>{% else %}<span class="badge warn">خاموش</span>{% endif %}
+            {% if trial_limit_issue %}<span class="badge warn li-hide" title="{{ trial_limit_issue }}">خارج از سقف</span>{% endif %}
+          </div>
+        </td>
+        <td class="col-actions">
+          {% call row_actions() %}
+            <button type="button" class="btn btn-ghost btn-sm"
+                    data-modal-open="modal-plan-unified"
+                    data-plan-audience="users"
+                    data-plan-kind="trial">تنظیم</button>
+          {% endcall %}
+        </td>
+      </tr>
+      <tr>
+        <td class="col-select"></td>
+        <td class="li-title">پلن دلخواه</td>
+        <td class="col-hide-sm muted">—</td>
+        <td class="mono li-value">هر گیگ / روز</td>
+        <td class="col-hide-sm">{{ values.get('custom_plan_min_days','1') }}–{{ values.get('custom_plan_max_days','365') }} روز</td>
+        <td class="li-sub">
+          {% if custom_limit_issue %}<span class="li-only badge warn">خارج از سقف</span>{% endif %}
+          <span>{{ values.get('custom_plan_min_gb','1') }}–{{ values.get('custom_plan_max_gb','500') }} گیگ</span>
+          <span class="li-only">· {{ values.get('custom_plan_min_days','1') }}–{{ values.get('custom_plan_max_days','365') }} روز</span>
+        </td>
+        <td class="mono col-hide-sm">
+          {% if values.get('custom_plan_template_id') %}تمپلیت #{{ values.get('custom_plan_template_id') }}
+          {% elif values.get('custom_plan_group_ids') %}گروه {{ values.get('custom_plan_group_ids') }}
+          {% else %}—{% endif %}
+        </td>
+        <td class="li-badge">
+          <div class="status-tags">
+            {% if custom_on %}<span class="badge active">فعال</span>{% else %}<span class="badge warn">خاموش</span>{% endif %}
+            {% if custom_limit_issue %}<span class="badge warn li-hide" title="{{ custom_limit_issue }}">خارج از سقف</span>{% endif %}
+          </div>
+        </td>
+        <td class="col-actions">
+          {% call row_actions() %}
+            <button type="button" class="btn btn-ghost btn-sm"
+                    data-modal-open="modal-plan-unified"
+                    data-plan-audience="users"
+                    data-plan-kind="custom">تنظیم</button>
+          {% endcall %}
+        </td>
+      </tr>
+      <tr>
+        <td class="col-select"></td>
+        <td class="li-title">فروش عمده</td>
+        <td class="col-hide-sm muted">—</td>
+        <td class="mono li-value">تخفیف پلکانی</td>
+        <td class="col-hide-sm">—</td>
+        <td class="li-sub"><span>{{ values.get('wholesale_min_qty','5') }}–{{ values.get('wholesale_max_qty','20') }} عدد</span></td>
+        <td class="mono col-hide-sm">—</td>
+        <td class="li-badge">{% if wholesale_on %}<span class="badge active">فعال</span>{% else %}<span class="badge warn">خاموش</span>{% endif %}</td>
+        <td class="col-actions">
+          {% call row_actions() %}
+            <button type="button" class="btn btn-ghost btn-sm"
+                    data-modal-open="modal-plan-unified"
+                    data-plan-audience="users"
+                    data-plan-kind="wholesale">تنظیم</button>
+          {% endcall %}
+        </td>
+      </tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h3 id="user-service-addons" class="card-subhead">⏱ بسته‌های حجم / زمان</h3>
+  <p class="muted update-card-caption">فقط از کارت سرویس در ربات یا مینی‌اپ خریداری می‌شود. برای قیمت جدا، برچسب دسته را با پلن همان سرویس یکی بگذارید.</p>
+  <div class="table-wrap">
+  <table class="table-compact table-list-sm">
+    <thead>
+      <tr>
+        <th>نام</th>
+        <th class="col-hide-sm">برچسب</th>
+        <th>نوع</th>
+        <th>مقدار</th>
+        <th>قیمت</th>
+        <th>وضعیت</th>
+        <th class="col-actions"></th>
+        <th class="li-head" scope="col"><span class="li-count">{{ (service_addon_packs or []) | length | num }} بسته</span></th>
+      </tr>
+    </thead>
+    <tbody>
+    {% for a in service_addon_packs or [] %}
+      <tr>
+        <td class="li-title">
+          <span dir="auto">{{ a.name }}</span>
+          {% if a.description %}<br class="li-hide"><small class="muted li-hide">{{ a.description }}</small>{% endif %}
+        </td>
+        <td class="col-hide-sm muted">{% if a.is_general %}عمومی{% elif a.category_id and plan_category_map and plan_category_map.get(a.category_id) %}{{ plan_category_map.get(a.category_id).name }}{% else %}—{% endif %}</td>
+        <td class="li-sub">
+          <span>{% if a.kind == 'duration' %}زمان{% else %}حجم{% endif %}</span>
+          <span class="li-only">· {% if a.kind == 'duration' %}{{ a.amount | int }} روز{% else %}{{ a.amount | gb }}{% endif %} · {% if a.is_general %}عمومی{% elif a.category_id and plan_category_map and plan_category_map.get(a.category_id) %}{{ plan_category_map.get(a.category_id).name }}{% else %}بدون برچسب{% endif %}</span>
+        </td>
+        <td class="mono">{% if a.kind == 'duration' %}{{ a.amount | int }} روز{% else %}{{ a.amount | gb }}{% endif %}</td>
+        <td class="mono li-value" dir="ltr">{{ a.price | money }}</td>
+        <td class="li-badge">{% if a.is_active %}<span class="badge active">فعال</span>{% else %}<span class="badge warn">خاموش</span>{% endif %}</td>
+        <td class="col-actions">
+          {% call row_actions() %}
+            <button type="button" class="btn btn-ghost btn-sm"
+                    data-addon-edit
+                    data-modal-open="modal-service-addons"
+                    data-id="{{ a.id }}"
+                    data-name="{{ a.name }}"
+                    data-kind="{{ a.kind }}"
+                    data-amount="{{ a.amount }}"
+                    data-price="{{ a.price }}"
+                    data-sort="{{ a.sort_order }}"
+                    data-category="{{ a.category_id or '' }}"
+                    data-description="{{ a.description or '' }}">ویرایش</button>
+            <form method="post" action="/plans/addons/{{ a.id }}/toggle">
+              <button class="btn btn-ghost btn-sm" type="submit">{% if a.is_active %}خاموش{% else %}روشن{% endif %}</button>
+            </form>
+            <form method="post" action="/plans/addons/{{ a.id }}/delete"
+                  data-confirm="این بسته حذف شود؟"
+                  data-confirm-title="حذف بسته افزونه"
+                  data-confirm-danger="1"
+                  data-confirm-label="حذف">
+              <button class="btn btn-danger btn-sm" type="submit">حذف</button>
+            </form>
+          {% endcall %}
+        </td>
+      </tr>
+    {% else %}
+      <tr><td colspan="7" class="muted">هنوز بسته‌ای نیست — از «افزودن پلن» با نوع بسته حجم یا زمان بسازید.</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  </div>
+</div>
+
+</div>
+
+{% if is_platform_admin %}
+<div data-plans-panel="resellers" role="tabpanel"{% if plans_tab != 'resellers' %} hidden{% endif %}>
+{% set addon_reseller_plans = reseller_plans | selectattr('plan_kind', 'in', ['addon_volume', 'addon_users']) | list %}
+{% set subscription_reseller_plans = reseller_plans | rejectattr('plan_kind', 'in', ['addon_volume', 'addon_users']) | list %}
+{% set payg_reseller_plans = subscription_reseller_plans | selectattr('billing_mode', 'equalto', 'payg') | list %}
+{% set fixed_reseller_plans = subscription_reseller_plans | rejectattr('billing_mode', 'equalto', 'payg') | list %}
+<div class="card card-flush" id="reseller-plans">
+  <h2>پلن‌های نمایندگان</h2>
+  <p class="muted update-card-caption">اشتراک (ثابت / PAYG) برای ورود نمایندگی؛ بسته‌های حجم/کاربر فقط برای نمایندگانی که قبلاً پلن خریده‌اند.</p>
+  {% if reseller_plans_err %}
+  <div class="flash warn">{{ reseller_plans_err }}</div>
+  {% endif %}
+
+  <h3 id="reseller-plans-fixed" class="card-subhead">📦 اشتراک ثابت</h3>
+    {{ table_bulk_bar('/resellers/plans/bulk-action', [
+    {'key': 'toggle', 'label': 'روشن/خاموش', 'confirm': 'وضعیت {n} پلن نمایندگی تغییر کند؟', 'confirm_title': 'تغییر وضعیت گروهی', 'confirm_label': 'اعمال'},
+    {'key': 'delete', 'label': 'حذف', 'class': 'btn-danger', 'confirm': '{n} پلن نمایندگی حذف شوند؟', 'confirm_title': 'حذف گروهی', 'confirm_label': 'حذف', 'danger': true},
+  ]) }}
+  <div class="table-wrap">
+  <table class="table-compact table-list-sm" data-bulk-select>
+    <thead>
+      <tr>
+        {{ table_select_head() }}
+        <th>نام</th>
+        <th>قیمت ورود</th>
+        <th>وضعیت</th>
+        <th class="col-actions"></th>
+        <th class="li-head" scope="col"><span class="li-count">{{ fixed_reseller_plans | length | num }} پلن</span></th>
+      </tr>
+    </thead>
+    <tbody>
+    {% for p in fixed_reseller_plans %}
+      <tr data-bulk-ops="{% if p.is_system %}{% else %}toggle,delete{% endif %}">
+        {{ table_select_cell(p.id) }}
+        {% set is_system_plan = p.is_system or (p.plan_kind or '') == 'current_capacity' %}
+        <td class="li-title"><span dir="auto">{{ p.name }}</span>{% if is_system_plan %} <span class="badge li-hide">سیستمی</span>{% endif %}{% if p.description %}<br class="li-hide"><small class="muted li-hide">{{ p.description }}</small>{% endif %}</td>
+        <td class="mono li-value" dir="ltr">{{ p.price | money }}</td>
+        <td class="li-badge">{% if p.is_active %}<span class="badge active">فعال</span>{% else %}<span class="badge warn">خاموش</span>{% endif %}</td>
+        <td class="col-actions">
+          {% call row_actions() %}
+            <a class="btn btn-ghost btn-sm" href="/resellers/plans/{{ p.id }}/edit">ویرایش</a>
+            {% if not p.is_system %}
+            <form method="post" action="/resellers/plans/{{ p.id }}/toggle">
+              <button class="btn btn-ghost btn-sm" type="submit">{% if p.is_active %}خاموش{% else %}روشن{% endif %}</button>
+            </form>
+            <form method="post" action="/resellers/plans/{{ p.id }}/delete"
+                  data-confirm="این پلن نمایندگی حذف شود؟"
+                  data-confirm-title="تأیید حذف"
+                  data-confirm-danger="1"
+                  data-confirm-label="حذف">
+              <button class="btn btn-danger btn-sm" type="submit">حذف</button>
+            </form>
+            {% endif %}
+          {% endcall %}
+        </td>
+        <td class="li-only-cell li-sub">{% if is_system_plan %}<span class="badge neutral">سیستمی</span>{% endif %}<span dir="auto">{{ p.description or 'اشتراک ثابت' }}</span></td>
+      </tr>
+    {% else %}
+      <tr><td colspan="5" class="muted">پلن اشتراک ثابت نیست — از «افزودن پلن» با مخاطب نمایندگان بسازید.</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  </div>
+
+  <h3 id="reseller-plans-payg" class="card-subhead">⚡ اشتراک PAYG</h3>
+    {{ table_bulk_bar('/resellers/plans/bulk-action', [
+    {'key': 'toggle', 'label': 'روشن/خاموش', 'confirm': 'وضعیت {n} پلن نمایندگی تغییر کند؟', 'confirm_title': 'تغییر وضعیت گروهی', 'confirm_label': 'اعمال'},
+    {'key': 'delete', 'label': 'حذف', 'class': 'btn-danger', 'confirm': '{n} پلن نمایندگی حذف شوند؟', 'confirm_title': 'حذف گروهی', 'confirm_label': 'حذف', 'danger': true},
+  ]) }}
+  <div class="table-wrap">
+  <table class="table-compact table-list-sm" data-bulk-select>
+    <thead>
+      <tr>
+        {{ table_select_head() }}
+        <th>نام</th>
+        <th>قیمت ورود</th>
+        <th class="col-hide-sm">نرخ / گیگ</th>
+        <th class="col-hide-sm">گروه‌ها</th>
+        <th>وضعیت</th>
+        <th class="col-actions"></th>
+        <th class="li-head" scope="col"><span class="li-count">{{ payg_reseller_plans | length | num }} پلن</span></th>
+      </tr>
+    </thead>
+    <tbody>
+    {% for p in payg_reseller_plans %}
+      <tr data-bulk-ops="toggle,delete">
+        {{ table_select_cell(p.id) }}
+        <td class="li-title"><span dir="auto">{{ p.name }}</span>{% if p.description %}<br class="li-hide"><small class="muted li-hide">{{ p.description }}</small>{% endif %}</td>
+        <td class="mono li-value" dir="ltr">{{ p.price | money }}</td>
+        <td class="col-hide-sm li-sub"><span class="li-only">هر گیگ</span> <bdi dir="ltr">{% if p.price_per_gb %}{{ p.price_per_gb | money }}{% else %}—{% endif %}</bdi> <span class="li-only">· گروه <bdi dir="ltr">{{ p.pg_group_ids or '—' }}</bdi></span></td>
+        <td class="mono col-hide-sm">{{ p.pg_group_ids or '—' }}</td>
+        <td class="li-badge">{% if p.is_active %}<span class="badge active">فعال</span>{% else %}<span class="badge warn">خاموش</span>{% endif %}</td>
+        <td class="col-actions">
+          {% call row_actions() %}
+            <a class="btn btn-ghost btn-sm" href="/resellers/plans/{{ p.id }}/edit">ویرایش</a>
+            <form method="post" action="/resellers/plans/{{ p.id }}/toggle">
+              <button class="btn btn-ghost btn-sm" type="submit">{% if p.is_active %}خاموش{% else %}روشن{% endif %}</button>
+            </form>
+            <form method="post" action="/resellers/plans/{{ p.id }}/delete"
+                  data-confirm="این پلن نمایندگی حذف شود؟"
+                  data-confirm-title="تأیید حذف"
+                  data-confirm-danger="1"
+                  data-confirm-label="حذف">
+              <button class="btn btn-danger btn-sm" type="submit">حذف</button>
+            </form>
+          {% endcall %}
+        </td>
+      </tr>
+    {% else %}
+      <tr><td colspan="7" class="muted">پلن PAYG نیست — از «افزودن پلن» با نوع PAYG بسازید.</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  </div>
+
+  <h3 id="reseller-plans-addons" class="card-subhead">📦 بسته‌های حجم / کاربر</h3>
+  <p class="muted update-card-caption">فقط برای نمایندگان با اشتراک فعال. برای قیمت جدا، برچسب دسته را با پلن اشتراک نماینده یکی بگذارید.</p>
+    {{ table_bulk_bar('/resellers/plans/bulk-action', [
+    {'key': 'toggle', 'label': 'روشن/خاموش', 'confirm': 'وضعیت {n} پلن نمایندگی تغییر کند؟', 'confirm_title': 'تغییر وضعیت گروهی', 'confirm_label': 'اعمال'},
+    {'key': 'delete', 'label': 'حذف', 'class': 'btn-danger', 'confirm': '{n} پلن نمایندگی حذف شوند؟', 'confirm_title': 'حذف گروهی', 'confirm_label': 'حذف', 'danger': true},
+  ]) }}
+  <div class="table-wrap">
+  <table class="table-compact table-list-sm" data-bulk-select>
+    <thead>
+      <tr>
+        {{ table_select_head() }}
+        <th>نام</th>
+        <th class="col-hide-sm">برچسب</th>
+        <th>نوع</th>
+        <th>مقدار</th>
+        <th>قیمت</th>
+        <th>وضعیت</th>
+        <th class="col-actions"></th>
+        <th class="li-head" scope="col"><span class="li-count">{{ addon_reseller_plans | length | num }} بسته</span></th>
+      </tr>
+    </thead>
+    <tbody>
+    {% for p in addon_reseller_plans %}
+      <tr data-bulk-ops="toggle,delete">
+        {{ table_select_cell(p.id) }}
+        <td class="li-title"><span dir="auto">{{ p.name }}</span>{% if p.description %}<br class="li-hide"><small class="muted li-hide">{{ p.description }}</small>{% endif %}</td>
+        <td class="col-hide-sm muted">{% if p.category_id and reseller_plan_category_map and reseller_plan_category_map.get(p.category_id) %}{{ reseller_plan_category_map.get(p.category_id).name }}{% else %}—{% endif %}</td>
+        <td class="li-sub">
+          <span>{% if p.plan_kind == 'addon_users' %}کاربر{% else %}حجم{% endif %}</span>
+          <span class="li-only">· {% if p.plan_kind == 'addon_users' %}+{{ p.addon_users or 0 }} کاربر{% else %}+{{ p.addon_gb or 0 }} گیگ{% endif %}{% if p.category_id and reseller_plan_category_map and reseller_plan_category_map.get(p.category_id) %} · {{ reseller_plan_category_map.get(p.category_id).name }}{% endif %}</span>
+        </td>
+        <td class="mono">{% if p.plan_kind == 'addon_users' %}+{{ p.addon_users or 0 }} کاربر{% else %}+{{ p.addon_gb or 0 }} گیگ{% endif %}</td>
+        <td class="mono li-value" dir="ltr">{{ p.price | money }}</td>
+        <td class="li-badge">{% if p.is_active %}<span class="badge active">فعال</span>{% else %}<span class="badge warn">خاموش</span>{% endif %}</td>
+        <td class="col-actions">
+          {% call row_actions() %}
+            <a class="btn btn-ghost btn-sm" href="/resellers/plans/{{ p.id }}/edit">ویرایش</a>
+            <form method="post" action="/resellers/plans/{{ p.id }}/toggle">
+              <button class="btn btn-ghost btn-sm" type="submit">{% if p.is_active %}خاموش{% else %}روشن{% endif %}</button>
+            </form>
+            <form method="post" action="/resellers/plans/{{ p.id }}/delete"
+                  data-confirm="این بسته حذف شود؟"
+                  data-confirm-title="تأیید حذف"
+                  data-confirm-danger="1"
+                  data-confirm-label="حذف">
+              <button class="btn btn-danger btn-sm" type="submit">حذف</button>
+            </form>
+          {% endcall %}
+        </td>
+      </tr>
+    {% else %}
+      <tr><td colspan="8" class="muted">بسته اضافه نیست — مخاطب پلن: نمایندگان → نوع: بسته حجم/کاربر.</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  </div>
+</div>
+</div>
+{% endif %}
+
+<script src="/static/plans-tabs.js?v={{ app_version }}"{% if csp_nonce %} nonce="{{ csp_nonce }}"{% endif %} defer></script>
+
+{# —— Unified plan modal —— #}
+<div class="ui-modal" id="modal-plan-unified" hidden>
+  <div class="ui-modal-backdrop" data-modal-close></div>
+  <div class="ui-modal-panel ui-modal-panel-lg" role="dialog" aria-modal="true">
+    <div class="ui-modal-head">
+      {{ modal_title('plans', 'افزودن پلن', caption='پلن فروشگاه یا نمایندگی را اینجا بسازید', heading_id='plan-unified-title') }}
+      <button type="button" class="icon-btn" data-modal-close aria-label="بستن"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
+    </div>
+
+    <div class="form-stack" style="margin-bottom: 0" data-ui-select-watch>
+      <div class="form-row">
+        <label class="form-field">مخاطب پلن
+          <select id="plan-audience">
+            <option value="users">کاربران</option>
+            {% if is_platform_admin %}
+            <option value="resellers">نمایندگان</option>
+            {% endif %}
+          </select>
+        </label>
+        <label class="form-field">نوع پلن
+          {# Options are filled by JS from USER_KINDS / RESELLER_KINDS — must stay dynamic #}
+          <select id="plan-kind" data-plan-kind-dynamic="1">
+            <option value="fixed">ثابت</option>
+          </select>
+        </label>
+      </div>
+    </div>
+
+    {# —— User fixed —— #}
+    <div id="panel-user-fixed" class="plan-panel">
+      <form method="post" action="/plans" class="form-stack">
+        <label class="form-field">برچسب دسته (اختیاری)
+          <select name="category_id" data-plan-category-select data-category-audience="users">
+            <option value="">— بدون برچسب —</option>
+            {% for c in plan_categories or [] %}
+              {% if c.is_active and (c.audience or 'users') == 'users' %}
+              <option value="{{ c.id }}">{{ c.name }}</option>
+              {% endif %}
+            {% endfor %}
+          </select>
+          <small class="muted">برچسب نمایش در بات — بسته‌های حجم/زمان همین دسته فقط روی سرویس‌های همین برچسب دیده می‌شوند</small>
+        </label>
+        <div class="form-row">
+          <label class="form-field">نام پلن
+            <input name="name" required placeholder="مثلاً ویژه ۴۰ گیگ" />
+          </label>
+          <label class="form-field">قیمت (تومان)
+            <input name="price" type="number" data-money min="0" required placeholder="150,000" />
+          </label>
+          <label class="form-field">مدت (روز)
+            <input name="duration_days" type="number" min="0" value="30" placeholder="خالی = نامحدود" />
+            <small class="muted">برای مدت نامحدود فیلد را <b>خالی</b> بگذارید (یا ۰){% if pg_limit_snapshot and pg_limit_snapshot.restricted and pg_limit_snapshot.per_user_expire_max %} — سقف زنده: {{ (pg_limit_snapshot.per_user_expire_max // 86400) or 1 }} روز{% endif %}</small>
+          </label>
+          <label class="form-field">حجم (گیگ)
+            <input name="data_limit_gb" type="number" step="0.1" min="0" placeholder="خالی = نامحدود" />
+            <small class="muted">برای حجم نامحدود فیلد را <b>خالی</b> بگذارید — عدد صفر نامحدود نیست{% if pg_limit_snapshot and pg_limit_snapshot.restricted and pg_limit_snapshot.per_user_data_max %} — سقف زنده: {{ pg_limit_snapshot.per_user_data_max | bytes }}{% endif %}</small>
+          </label>
+        </div>
+        <label class="form-field">توضیح کوتاه
+          <input name="description" placeholder="نمایش در بات" />
+        </label>
+        <label class="form-field">حالت ساخت در پاسارگارد
+          <select name="mode" id="plan-mode">
+            <option value="custom">سفارشی (گروه + حجم + مدت)</option>
+            <option value="template">از تمپلیت آماده پاسارگارد</option>
+          </select>
+        </label>
+        <div id="mode-custom" class="form-stack">
+          <div class="form-field">
+            <span class="form-field-label">گروه‌های پاسارگارد (حداقل یکی)</span>
+            <div class="ui-switch-grid">
+              {% for g in groups %}
+              {{ switch_chip('group_' ~ g.get('id'), g.get('name') or g.get('id'), value=g.get('id')) }}
+              {% else %}
+              <span class="muted">گروهی نیست — از منوی پاسارگارد → گروه‌ها بسازید.</span>
+              {% endfor %}
+            </div>
+          </div>
+          <div class="ui-switch-list">
+            {% if can_create_template is not defined or can_create_template %}
+            {{ switch('also_create_template', 'همزمان تمپلیت مشابه در پاسارگارد هم ساخته شود') }}
+            {% endif %}
+          </div>
+        </div>
+        <div id="mode-template" class="form-stack" style="display:none">
+          <label class="form-field">تمپلیت پاسارگارد
+            <select name="pg_template_id">
+              <option value="">— انتخاب کنید —</option>
+              {% for t in templates %}
+              <option value="{{ t.get('id') }}">#{{ t.get('id') }} — {{ t.get('name') or 'بدون نام' }}</option>
+              {% endfor %}
+            </select>
+          </label>
+        </div>
+        {% set naming_prefix = '' %}
+        {% set naming_suffix = '' %}
+        {% set naming_pattern = '' %}
+        {% set naming_prefix_name = 'pg_username_prefix' %}
+        {% set naming_suffix_name = 'pg_username_suffix' %}
+        {% set naming_pattern_name = 'pg_username_pattern' %}
+        {% set naming_preview_id = 'create-naming-sample' %}
+        {% set global_prefix = values.get('pg_username_prefix','clk') %}
+        {% set global_suffix = values.get('pg_username_suffix','') %}
+        {% set global_pattern = values.get('pg_username_pattern','{prefix}_{random}{suffix}') %}
+        {% include "_plan_naming_fields.html" %}
+        {% set plan_button_style = 'inherit' %}
+        {% include "_plan_button_style_field.html" %}
+        <div class="actions">
+          <button class="btn" type="submit">ذخیره پلن</button>
+          <button type="button" class="btn btn-ghost" data-modal-close>انصراف</button>
+        </div>
+      </form>
+    </div>
+
+    {# —— User trial —— #}
+    <div id="panel-user-trial" class="plan-panel" hidden>
+      <p class="muted update-card-caption">حجم، مدت و اتصال پاسارگارد برای تست — از فروشگاه فقط یک‌بار به کاربر نشان داده می‌شود.</p>
+      <form method="post" action="/plans/trial" class="form-stack">
+        <div class="ui-switch-list">
+          {{ switch('trial_enabled', 'نمایش پلن تست در فروشگاه', checked=trial_on) }}
+        </div>
+        <div class="form-row">
+          <label class="form-field">نام
+            <input name="name" value="{{ trial.name if trial else 'تست رایگان' }}" required />
+          </label>
+          <label class="form-field">مدت (روز)
+            <input name="duration_days" type="number" min="1" value="{{ trial.duration_days if trial else 1 }}" required />
+            {% if pg_limit_snapshot and pg_limit_snapshot.restricted and pg_limit_snapshot.per_user_expire_max %}<small class="muted">سقف زنده: {{ (pg_limit_snapshot.per_user_expire_max // 86400) or 1 }} روز</small>{% endif %}
+          </label>
+          <label class="form-field">حجم (گیگ)
+            <input name="data_limit_gb" type="number" step="0.1" min="0" value="{% if trial and trial.data_limit_gb is not none %}{{ trial.data_limit_gb }}{% endif %}" placeholder="خالی = نامحدود" />
+            <small class="muted">برای حجم نامحدود فیلد را <b>خالی</b> بگذارید — عدد صفر نامحدود نیست{% if pg_limit_snapshot and pg_limit_snapshot.restricted and pg_limit_snapshot.per_user_data_max %} — سقف زنده: {{ pg_limit_snapshot.per_user_data_max | bytes }}{% endif %}</small>
+          </label>
+        </div>
+        <label class="form-field">حالت ساخت در پاسارگارد
+          <select name="mode" id="trial-mode">
+            <option value="custom" {% if not trial or not trial.pg_template_id %}selected{% endif %}>سفارشی (گروه + حجم + مدت)</option>
+            <option value="template" {% if trial and trial.pg_template_id %}selected{% endif %}>از تمپلیت آماده</option>
+          </select>
+        </label>
+        <div id="trial-mode-custom" class="form-stack">
+          <div class="form-field">
+            <span class="form-field-label">گروه‌های پاسارگارد</span>
+            <div class="ui-switch-grid">
+              {% for g in groups %}
+              {% set gid = g.get('id')|string %}
+              {{ switch_chip('group_' ~ g.get('id'), g.get('name') or g.get('id'), checked=(gid in trial_group_ids), value=g.get('id')) }}
+              {% else %}
+              <span class="muted">گروهی نیست.</span>
+              {% endfor %}
+            </div>
+          </div>
+        </div>
+        <div id="trial-mode-template" class="form-stack" style="display:none">
+          <label class="form-field">تمپلیت پاسارگارد
+            <select name="pg_template_id">
+              <option value="">— انتخاب کنید —</option>
+              {% for t in templates %}
+              <option value="{{ t.get('id') }}" {% if trial and trial.pg_template_id == t.get('id') %}selected{% endif %}>#{{ t.get('id') }} — {{ t.get('name') or 'بدون نام' }}</option>
+              {% endfor %}
+            </select>
+          </label>
+        </div>
+        {% set naming_prefix = trial.pg_username_prefix if trial else '' %}
+        {% set naming_suffix = trial.pg_username_suffix if trial else '' %}
+        {% set naming_pattern = trial.pg_username_pattern if trial else '' %}
+        {% set naming_prefix_name = 'pg_username_prefix' %}
+        {% set naming_suffix_name = 'pg_username_suffix' %}
+        {% set naming_pattern_name = 'pg_username_pattern' %}
+        {% set naming_preview_id = 'trial-naming-sample' %}
+        {% set global_prefix = values.get('pg_username_prefix','clk') %}
+        {% set global_suffix = values.get('pg_username_suffix','') %}
+        {% set global_pattern = values.get('pg_username_pattern','{prefix}_{random}{suffix}') %}
+        {% include "_plan_naming_fields.html" %}
+        {% if trial and trial.button_style is not none %}
+        {% set plan_button_style = trial.button_style if trial.button_style else '' %}
+        {% else %}
+        {% set plan_button_style = 'inherit' %}
+        {% endif %}
+        {% include "_plan_button_style_field.html" %}
+        <div class="actions">
+          <button class="btn" type="submit">ذخیره پلن تست</button>
+          <button type="button" class="btn btn-ghost" data-modal-close>انصراف</button>
+        </div>
+      </form>
+    </div>
+
+    {# —— User custom —— #}
+    <div id="panel-user-custom" class="plan-panel" hidden>
+      <p class="muted update-card-caption">کاربر در بات حجم و روز دلخواه می‌چیند؛ قیمت از روی هر گیگ/روز حساب می‌شود.</p>
+      {% if custom_limit_issue %}<div class="flash warn">{{ custom_limit_issue }}</div>{% endif %}
+      <form method="post" action="/plans/custom" class="form-stack">
+        <div class="ui-switch-list">
+          {{ switch('custom_plan_enabled', 'فعال‌سازی پلن دلخواه در فروشگاه', checked=custom_on) }}
+        </div>
+        <div class="form-row">
+          <label class="form-field">قیمت هر گیگ (تومان)
+            <input name="custom_plan_price_per_gb" type="number" data-money min="0" value="{{ values.get('custom_plan_price_per_gb','1000') }}" />
+          </label>
+          <label class="form-field">قیمت هر روز (تومان)
+            <input name="custom_plan_price_per_day" type="number" data-money min="0" value="{{ values.get('custom_plan_price_per_day','500') }}" />
+          </label>
+          <label class="form-field">حداقل / حداکثر گیگ
+            <div class="form-row" style="margin: 0">
+              <input name="custom_plan_min_gb" type="number" min="1" value="{{ values.get('custom_plan_min_gb','1') }}" />
+              <input name="custom_plan_max_gb" type="number" min="1" value="{{ values.get('custom_plan_max_gb','500') }}" />
+            </div>
+            {% if pg_limit_snapshot and pg_limit_snapshot.restricted and pg_limit_snapshot.per_user_data_max %}<small class="muted">سقف زنده حداکثر: {{ pg_limit_snapshot.per_user_data_max | bytes }}</small>{% endif %}
+          </label>
+          <label class="form-field">حداقل / حداکثر روز
+            <div class="form-row" style="margin: 0">
+              <input name="custom_plan_min_days" type="number" min="1" value="{{ values.get('custom_plan_min_days','1') }}" />
+              <input name="custom_plan_max_days" type="number" min="1" value="{{ values.get('custom_plan_max_days','365') }}" />
+            </div>
+            {% if pg_limit_snapshot and pg_limit_snapshot.restricted and pg_limit_snapshot.per_user_expire_max %}<small class="muted">سقف زنده حداکثر: {{ (pg_limit_snapshot.per_user_expire_max // 86400) or 1 }} روز</small>{% endif %}
+          </label>
+        </div>
+        <label class="form-field">اتصال پاسارگارد
+          <select name="mode" id="custom-mode">
+            <option value="custom" {% if not values.get('custom_plan_template_id') %}selected{% endif %}>گروه اینباند</option>
+            <option value="template" {% if values.get('custom_plan_template_id') %}selected{% endif %}>تمپلیت</option>
+          </select>
+        </label>
+        <div id="custom-mode-groups" class="form-stack">
+          <div class="form-field">
+            <span class="form-field-label">گروه‌ها</span>
+            <div class="ui-switch-grid">
+              {% for g in groups %}
+              {% set gid = g.get('id')|string %}
+              {{ switch_chip('group_' ~ g.get('id'), g.get('name') or g.get('id'), checked=(gid in custom_group_ids), value=g.get('id')) }}
+              {% else %}
+              <span class="muted">گروهی نیست.</span>
+              {% endfor %}
+            </div>
+          </div>
+        </div>
+        <div id="custom-mode-template" class="form-stack" style="display:none">
+          <label class="form-field">تمپلیت
+            <select name="custom_plan_template_id">
+              <option value="">— انتخاب کنید —</option>
+              {% for t in templates %}
+              <option value="{{ t.get('id') }}" {% if values.get('custom_plan_template_id')|string == t.get('id')|string %}selected{% endif %}>#{{ t.get('id') }} — {{ t.get('name') or 'بدون نام' }}</option>
+              {% endfor %}
+            </select>
+          </label>
+        </div>
+        {% set naming_prefix = values.get('custom_plan_username_prefix','') %}
+        {% set naming_suffix = values.get('custom_plan_username_suffix','') %}
+        {% set naming_pattern = values.get('custom_plan_username_pattern','') %}
+        {% set naming_prefix_name = 'custom_plan_username_prefix' %}
+        {% set naming_suffix_name = 'custom_plan_username_suffix' %}
+        {% set naming_pattern_name = 'custom_plan_username_pattern' %}
+        {% set naming_preview_id = 'custom-naming-sample' %}
+        {% set global_prefix = values.get('pg_username_prefix','clk') %}
+        {% set global_suffix = values.get('pg_username_suffix','') %}
+        {% set global_pattern = values.get('pg_username_pattern','{prefix}_{random}{suffix}') %}
+        {% include "_plan_naming_fields.html" %}
+        {% set button_style_name = 'custom_plan_button_style' %}
+        {% set raw_custom_style = values.get('custom_plan_button_style') %}
+        {% if raw_custom_style is none or raw_custom_style == '' or raw_custom_style == 'inherit' %}
+        {% set plan_button_style = 'inherit' %}
+        {% else %}
+        {% set plan_button_style = raw_custom_style %}
+        {% endif %}
+        {% if plan_button_style not in ['inherit', 'primary', 'success', 'danger', ''] %}
+        {% set plan_button_style = 'inherit' %}
+        {% endif %}
+        {% include "_plan_button_style_field.html" %}
+        <div class="actions">
+          <button class="btn" type="submit">ذخیره پلن دلخواه</button>
+          <button type="button" class="btn btn-ghost" data-modal-close>انصراف</button>
+        </div>
+      </form>
+    </div>
+
+    {# —— User wholesale —— #}
+    <div id="panel-user-wholesale" class="plan-panel" hidden>
+      <p class="muted update-card-caption">کاربر در ربات نوع سرویس و تعداد را انتخاب می‌کند؛ تخفیف پلکانی بر اساس تعداد اعمال می‌شود.</p>
+      <form method="post" action="/plans/wholesale" class="form-stack" id="wholesale-form">
+        <div class="ui-switch-list">
+          {{ switch('wholesale_enabled', 'فعال‌سازی فروش عمده در فروشگاه', checked=wholesale_on) }}
+        </div>
+        <div class="form-row">
+          <label class="form-field">حداقل تعداد خرید
+            <input name="wholesale_min_qty" type="number" min="1" value="{{ values.get('wholesale_min_qty','5') }}" required />
+          </label>
+          <label class="form-field">حداکثر تعداد خرید
+            <input name="wholesale_max_qty" type="number" min="1" value="{{ values.get('wholesale_max_qty','20') }}" required />
+          </label>
+          <label class="form-field">متن دکمه در ربات
+            <input name="btn_wholesale" value="{{ values.get('btn_wholesale','📦 فروش عمده') }}" />
+          </label>
+        </div>
+        <div class="form-field">
+          <strong>پله‌های تخفیف</strong>
+          <small class="muted">مثلاً از ۵ عدد ۱۰٪ و از ۲۰ عدد ۲۰٪ — تعداد و درصد را تنظیم کنید.</small>
+          <div id="wholesale-tiers" class="form-stack stack-mt"></div>
+          <button type="button" class="btn btn-ghost btn-sm" id="wholesale-add-tier">+ پله تخفیف</button>
+          <input type="hidden" name="wholesale_tiers" id="wholesale_tiers_json" value="{{ values.get('wholesale_tiers','[]') }}" />
+        </div>
+        <div class="actions">
+          <button class="btn" type="submit">ذخیره فروش عمده</button>
+          <button type="button" class="btn btn-ghost" data-modal-close>انصراف</button>
+        </div>
+      </form>
+    </div>
+
+    {# —— User service addon packs (volume / duration) —— #}
+    <div id="panel-user-addon" class="plan-panel" hidden>
+      <p class="muted update-card-caption" id="user-addon-hint">از کارت همان سرویس در ربات خریداری می‌شود. بستهٔ «عمومی» برای همهٔ دسته‌ها دیده می‌شود؛ برای قیمت جدا، برچسب دسته را با پلن سرویس یکی بگذارید.</p>
+      <form method="post" action="/plans/addons" class="form-stack" id="unified-service-addon-form">
+        <input type="hidden" name="kind" id="unified-addon-kind" value="volume" />
+        <label class="form-field">دسته‌ی بسته
+          <select name="category_id" id="unified-addon-category" data-plan-category-select data-category-audience="users">
+            <option value="">عمومی (همه‌ی دسته‌ها)</option>
+            {% for c in plan_categories or [] %}
+              {% if c.is_active and (c.audience or 'users') == 'users' %}
+              <option value="{{ c.id }}">{{ c.name }}</option>
+              {% endif %}
+            {% endfor %}
+          </select>
+          <small class="muted">پیش‌فرض «عمومی» است و برای همهٔ سرویس‌ها دیده می‌شود. با انتخاب برچسب، فقط برای سرویس‌های همان برچسب نمایش داده می‌شود.</small>
+        </label>
+        <div class="form-row">
+          <label class="form-field">نام بسته
+            <input name="name" id="unified-addon-name" required maxlength="128" placeholder="مثلاً ۱۰ گیگ اضافه" />
+          </label>
+          <label class="form-field">مقدار
+            <input name="amount" id="unified-addon-amount" type="number" min="0.1" step="0.1" required placeholder="۱۰" />
+            <small class="muted" id="unified-addon-amount-hint">برای حجم می‌تواند اعشار باشد؛ برای زمان عدد صحیح روز</small>
+          </label>
+          <label class="form-field">قیمت (تومان)
+            <input name="price" id="unified-addon-price" type="number" data-money min="0" required placeholder="50,000" />
+          </label>
+          <label class="form-field">ترتیب
+            <input name="sort_order" type="number" value="0" />
+          </label>
+        </div>
+        <label class="form-field">توضیح (اختیاری)
+          <input name="description" maxlength="255" placeholder="نمایش در بات" />
+        </label>
+        <div class="actions">
+          <button class="btn" type="submit">ذخیره بسته</button>
+          <button type="button" class="btn btn-ghost" data-modal-close>انصراف</button>
+        </div>
+      </form>
+    </div>
+
+    {# —— Reseller —— #}
+    {% if is_platform_admin %}
+    <div id="panel-reseller" class="plan-panel" hidden>
+      {% if pg_limit_cards %}
+      {% from "_pg_limit_cards.html" import pg_snapshot_limit_board %}
+      {{ pg_snapshot_limit_board(pg_limit_cards, heading='سقف ظرفیت نماینده', caption='ظرفیت نمایندگی‌ها از سقف زنده ادمین اصلی بیشتر نمی‌شود') }}
+      {% endif %}
+      <form method="post" action="/resellers/plans" class="form-stack" id="reseller-plan-form">
+        <input type="hidden" name="billing_mode" id="reseller-billing-mode" value="fixed" />
+        <input type="hidden" name="plan_kind" id="reseller-plan-kind" value="subscription" />
+        <p class="muted update-card-caption" id="reseller-mode-hint">نوع پلن را از بالا انتخاب کنید — فیلدهای مخصوص همان نوع نمایش داده می‌شود.</p>
+        <label class="form-field" id="reseller-category-field">برچسب دسته (اختیاری)
+          <select name="category_id" data-plan-category-select data-category-audience="resellers">
+            <option value="">— بدون برچسب —</option>
+            {% for c in plan_categories or [] %}
+              {% if c.is_active and (c.audience or 'users') == 'resellers' %}
+              <option value="{{ c.id }}">{{ c.name }}</option>
+              {% endif %}
+            {% endfor %}
+          </select>
+          <small class="muted" id="reseller-category-hint">برچسب نمایش برای پلن‌های نمایندگی — از «برچسب دسته» با مخاطب نمایندگان بسازید</small>
+        </label>
+        <div class="form-row">
+          <label class="form-field">نام
+            <input name="name" required placeholder="نمایندگی نقره‌ای" id="reseller-plan-name" />
+          </label>
+          <label class="form-field">
+            <span id="reseller-price-label">قیمت ورود (تومان)</span>
+            <input name="price" type="number" data-money value="0" id="reseller-plan-price" />
+            <small class="muted" id="reseller-price-hint">هزینه خرید پکیج نمایندگی — ۰ = رایگان؛ فقط تأیید ادمین</small>
+          </label>
+          <label class="form-field" id="reseller-price-per-gb-field" hidden>
+            نرخ هر گیگ (تومان)
+            <input name="price_per_gb" id="reseller-price-per-gb-input" type="number" data-money min="0" value="0" />
+            <small class="muted">فقط برای PAYG — هر پلن می‌تواند نرخ جدا داشته باشد</small>
+          </label>
+          <label class="form-field">ترتیب
+            <input name="sort_order" type="number" value="0" />
+          </label>
+        </div>
+        <label class="form-field">توضیح
+          <textarea name="description" rows="2"></textarea>
+        </label>
+
+        <div class="form-row" id="reseller-duration-field">
+          <label class="form-field">مدت اشتراک (روز)
+            <input name="duration_days" type="number" min="0" value="0" />
+            <small class="muted">۰ = زمان نامحدود (بدون انقضای اشتراک)</small>
+          </label>
+        </div>
+        <div class="form-row" id="reseller-included-fields">
+          <label class="form-field">حجم پایه (گیگ)
+            <input name="included_gb" type="number" min="0" value="0" />
+            <small class="muted">۰ = سقف حجم از این پلن اعمال نمی‌شود (نامحدود/حفظ وضعیت فعلی)</small>
+          </label>
+          <label class="form-field">کاربر پایه
+            <input name="included_users" type="number" min="0" value="0" />
+            <small class="muted">۰ = سقف کاربر از این پلن اعمال نمی‌شود</small>
+          </label>
+        </div>
+        <div class="form-row" id="reseller-addon-fields" hidden>
+          <label class="form-field" id="reseller-addon-gb-field">حجم بسته (گیگ)
+            <input name="addon_gb" type="number" min="0" value="0" />
+          </label>
+          <label class="form-field" id="reseller-addon-users-field">کاربر بسته
+            <input name="addon_users" type="number" min="0" value="0" />
+          </label>
+        </div>
+        <div class="form-row" id="reseller-renew-fields">
+          <label class="form-field">قیمت تمدید (تومان)
+            <input name="renew_price" type="number" data-money min="0" value="0" />
+            <small class="muted">۰ = همان قیمت ورود پلن</small>
+          </label>
+          <label class="form-field">محاسبه تمدید
+            <select name="renew_pricing_mode" id="reseller-renew-pricing-mode">
+              <option value="fixed" selected>ثابت (فقط قیمت تمدید)</option>
+              <option value="from_capacity">بر اساس ظرفیت (پایه + اضافه‌ها)</option>
+            </select>
+            <small class="muted" id="reseller-renew-mode-hint">اگر خرید حجم/کاربر اضافه روشن باشد، همیشه بر اساس ظرفیت محاسبه می‌شود.</small>
+          </label>
+        </div>
+
+        <div id="reseller-subscription-extras">
+        <div id="reseller-groups" class="form-field">
+          <span class="form-field-label">گروه‌های پاسارگارد (الزامی)</span>
+          <p class="muted update-card-caption">حداقل یک گروه باید انتخاب شود — برای ثابت و PAYG.</p>
+          <div class="ui-switch-grid">
+            {% for g in groups %}
+            {{ switch_chip('group_' ~ g.get('id'), g.get('name') or g.get('id'), value=g.get('id')) }}
+            {% else %}
+            <span class="muted">گروهی از پاسارگارد لود نشد — اتصال PG را بررسی کنید.</span>
+            {% endfor %}
+          </div>
+        </div>
+
+        <div class="ui-switch-section" id="reseller-perms-section">
+          <span class="ui-switch-section-title">دسترسی پیش‌فرض (وب = بات)</span>
+          <p class="ui-switch-section-hint">این دسترسی‌ها هنگام تأیید درخواست نمایندگی اعمال می‌شوند.</p>
+          <div class="ui-switch-list">
+            {% for key, label in feature_perms %}
+            {{ switch('perm_' ~ key, label, checked=true) }}
+            {% endfor %}
+          </div>
+        </div>
+
+        <div class="ui-switch-list" id="reseller-provision-switches">
+          {{ switch('create_pg_admin', 'ساخت ادمین پاسارگارد هنگام تأیید', checked=true, help='با نقش پاسارگارد پلن؛ برای مالکیت کاربران لازم است') }}
+          {{ switch('share_pg_panel_url', 'ارسال لینک و یوزر/رمز پنل پاسارگارد', checked=false, help='اگر خاموش باشد، نماینده فقط از وب‌پنل ربات مدیریت می‌کند') }}
+        </div>
+
+        <div id="reseller-buy-extra-block">
+        <div class="ui-switch-list">
+          {{ switch('allow_buy_extra', 'امکان خرید حجم و کاربر اضافه', checked=false, help='فقط اشتراک ثابت — در ربات پله‌های ۱/۵/۱۰… نمایش داده می‌شود؛ برای PAYG لازم نیست', id='reseller-allow-buy-extra') }}
+        </div>
+
+        <div class="form-row" id="reseller-extra-prices" hidden>
+          <label class="form-field">قیمت هر گیگ اضافه (تومان)
+            <input name="extra_gb_price" id="reseller-extra-gb-price" type="number" data-money min="0" value="0" />
+          </label>
+          <label class="form-field">قیمت هر کاربر اضافه (تومان)
+            <input name="extra_user_price" id="reseller-extra-user-price" type="number" data-money min="0" value="0" />
+          </label>
+        </div>
+        </div>{# /reseller-buy-extra-block #}
+
+        <label class="form-field" id="reseller-role-field">نقش پاسارگارد (الزامی)
+          <select name="pg_role_id" id="reseller-pg-role">
+            <option value="" disabled selected>— انتخاب کنید —</option>
+            {% for r in pg_roles %}
+            <option value="{{ r.get('id') }}">{{ r.get('name') or r.get('id') }}</option>
+            {% endfor %}
+          </select>
+        </label>
+        </div>{# /reseller-subscription-extras #}
+
+        <div class="ui-switch-list">
+          {{ switch('is_active', 'پلن فعال', checked=true) }}
+        </div>
+        {% set plan_button_style = 'inherit' %}
+        {% include "_plan_button_style_field.html" %}
+        <div class="actions">
+          <button class="btn" type="submit">ذخیره پلن</button>
+          <button type="button" class="btn btn-ghost" data-modal-close>انصراف</button>
+        </div>
+      </form>
+    </div>
+    {% endif %}
+  </div>
+</div>
+
+{# —— Plan category labels modal —— #}
+<div class="ui-modal{% if open_categories %} open{% endif %}" id="modal-plan-categories" {% if not open_categories %}hidden{% endif %}
+     data-modal-strip-keys="categories,ok,err,_">
+  <div class="ui-modal-backdrop" data-modal-close-strip></div>
+  <div class="ui-modal-panel ui-modal-panel-lg" role="dialog" aria-modal="true" aria-labelledby="plan-categories-title">
+    <div class="ui-modal-head">
+      {{ modal_title('plans', 'برچسب دسته', caption='در ربات فروشگاه، به‌جای «ثابت» دکمه‌های دسته نشان داده می‌شوند — رنگ دکمه را اینجا تنظیم کنید', tone='brand', heading_id='plan-categories-title') }}
+      <button type="button" class="icon-btn" data-modal-close-strip aria-label="بستن"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
+    </div>
+    {% if open_categories and (flash_ok or flash_err) %}
+    <div class="settings-modal-flash" id="plan-categories-flash">
+      {% if flash_ok %}<div class="flash ok">{{ flash_ok }}</div>{% endif %}
+      {% if flash_err %}<div class="flash err">{{ flash_err }}</div>{% endif %}
+    </div>
+    {% endif %}
+    <form method="post" action="/plans/categories" class="form-stack plan-cat-form" id="plan-category-form" data-create-action="/plans/categories">
+      <div class="settings-grid">
+        <label class="form-field">نام برچسب
+          <input name="name" id="plan-category-name" required maxlength="128" placeholder="مثلاً ویژه / اقتصادی" />
+        </label>
+        <label class="form-field">مخاطب
+          <select name="audience" id="plan-category-audience" required>
+            <option value="users">کاربران</option>
+            {% if is_platform_admin %}
+            <option value="resellers">نمایندگان</option>
+            {% endif %}
+          </select>
+          <small class="muted">در «افزودن پلن» فقط برای همین مخاطب دیده می‌شود</small>
+        </label>
+        <label class="form-field">ترتیب
+          <input name="sort_order" id="plan-category-sort" type="number" value="0" />
+        </label>
+        <label class="form-field">توضیح (اختیاری)
+          <input name="description" id="plan-category-desc" maxlength="255" placeholder="نمایش داخلی" />
+        </label>
+        {% set plan_button_style = 'inherit' %}
+        {% set button_style_name = 'button_style' %}
+        {% set plan_style_options = category_style_options if category_style_options is defined else plan_style_options %}
+        {% set plan_color_hint = 'رنگ دکمه دسته در منوی خرید ربات — «ارث» یعنی همان رنگ «ثابت» در تنظیمات رنگبندی' %}
+        <div class="form-field plan-cat-color-field" id="plan-category-color-field">
+          {% include "_plan_button_style_field.html" %}
+        </div>
+      </div>
+      <div class="actions">
+        <button class="btn" type="submit" id="plan-category-submit">افزودن برچسب</button>
+        <button type="button" class="btn btn-ghost" id="plan-category-cancel-edit" hidden>انصراف از ویرایش</button>
+        <button type="button" class="btn btn-ghost" data-modal-close-strip>بستن</button>
+      </div>
+    </form>
+    <div class="plan-cat-list">
+      <h3 class="gift-codes-recent-title">برچسب‌های فعلی</h3>
+      <div class="table-wrap">
+        <table class="table-compact">
+          <thead>
+            <tr>
+              <th>نام</th>
+              <th>مخاطب</th>
+              <th class="col-hide-sm">رنگ دکمه</th>
+              <th class="col-hide-sm">پلن‌ها</th>
+              <th class="col-hide-sm">ترتیب</th>
+              <th>وضعیت</th>
+              <th class="col-actions"></th>
+            </tr>
+          </thead>
+          <tbody>
+          {% for c in plan_categories or [] %}
+            {% set linked = (category_linked_plans or {}).get(c.id) or [] %}
+            {% set linked_packs = service_addon_packs | default([]) | selectattr('category_id', 'equalto', c.id) | list %}
+            {% if c.button_style is none %}
+              {% set cat_style_label = 'ارث' %}
+            {% elif c.button_style == '' %}
+              {% set cat_style_label = 'سفید' %}
+            {% elif c.button_style == 'primary' %}
+              {% set cat_style_label = 'آبی' %}
+            {% elif c.button_style == 'success' %}
+              {% set cat_style_label = 'سبز' %}
+            {% elif c.button_style == 'danger' %}
+              {% set cat_style_label = 'قرمز' %}
+            {% else %}
+              {% set cat_style_label = c.button_style %}
+            {% endif %}
+            <tr>
+              <td>
+                {{ c.name }}
+                {% if c.description %}<br><small class="muted">{{ c.description }}</small>{% endif %}
+              </td>
+              <td>{% if (c.audience or 'users') == 'resellers' %}نمایندگان{% else %}کاربران{% endif %}</td>
+              <td class="col-hide-sm muted">{{ cat_style_label }}</td>
+              <td class="col-hide-sm">
+                {% if linked %}
+                  <span class="muted">{{ linked | join('، ') }}</span>
+                {% elif not linked_packs %}
+                  <span class="muted">—</span>
+                {% endif %}
+                {% if linked_packs %}
+                  <div class="muted">بسته‌ها: {{ linked_packs | map(attribute='name') | join('، ') }}</div>
+                {% endif %}
+              </td>
+              <td class="col-hide-sm mono">{{ c.sort_order }}</td>
+              <td>{% if c.is_active %}<span class="badge active">فعال</span>{% else %}<span class="badge warn">خاموش</span>{% endif %}</td>
+              <td class="col-actions">
+                {% call row_actions() %}
+                  <button type="button" class="btn btn-ghost btn-sm"
+                          data-category-edit
+                          data-id="{{ c.id }}"
+                          data-name="{{ c.name }}"
+                          data-sort="{{ c.sort_order }}"
+                          data-audience="{{ c.audience or 'users' }}"
+                          data-description="{{ c.description or '' }}"
+                          data-button-style="{% if c.button_style is none %}inherit{% else %}{{ c.button_style }}{% endif %}">ویرایش</button>
+                  <form method="post" action="/plans/categories/{{ c.id }}/toggle">
+                    <button class="btn btn-ghost btn-sm" type="submit">{% if c.is_active %}خاموش{% else %}روشن{% endif %}</button>
+                  </form>
+                  {% if linked_packs %}
+                  <button class="btn btn-danger btn-sm" type="button" disabled
+                          title="ابتدا بسته‌های این برچسب را به «عمومی» منتقل یا حذف کنید">حذف</button>
+                  {% else %}
+                  <form method="post" action="/plans/categories/{{ c.id }}/delete"
+                        data-confirm="این برچسب حذف شود؟ پلن‌هایش بدون برچسب می‌مانند."
+                        data-confirm-title="حذف برچسب دسته"
+                        data-confirm-danger="1"
+                        data-confirm-label="حذف">
+                    <button class="btn btn-danger btn-sm" type="submit">حذف</button>
+                  </form>
+                  {% endif %}
+                {% endcall %}
+              </td>
+            </tr>
+          {% else %}
+            <tr><td colspan="7" class="muted">هنوز برچسبی نیست — از فرم بالا بسازید.</td></tr>
+          {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</div>
+
+{# —— Service addon packs modal —— #}
+<div class="ui-modal{% if open_addons %} open{% endif %}" id="modal-service-addons" {% if not open_addons %}hidden{% endif %}>
+  <div class="ui-modal-backdrop" data-modal-close></div>
+  <div class="ui-modal-panel ui-modal-panel-lg" role="dialog" aria-modal="true" aria-labelledby="service-addons-title">
+    <div class="ui-modal-head">
+      {{ modal_title('plans', 'بسته حجم / زمان', caption='کاربر می‌تواند حجم یا زمان بخرد و به سرویس فعلی‌اش اضافه کند', tone='brand', heading_id='service-addons-title') }}
+      <button type="button" class="icon-btn" data-modal-close aria-label="بستن"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
+    </div>
+    <form method="post" action="/plans/addons" class="form-stack" id="service-addon-form" data-create-action="/plans/addons">
+      <div class="settings-grid">
+        <label class="form-field">نام بسته
+          <input name="name" id="service-addon-name" required maxlength="128" placeholder="مثلاً ۱۰ گیگ اضافه" />
+        </label>
+        <label class="form-field">نوع
+          <select name="kind" id="service-addon-kind" required>
+            <option value="volume">حجم (گیگ)</option>
+            <option value="duration">زمان (روز)</option>
+          </select>
+        </label>
+        <label class="form-field">دسته‌ی بسته
+          <select name="category_id" id="service-addon-category" data-plan-category-select data-category-audience="users">
+            <option value="">عمومی (همه‌ی دسته‌ها)</option>
+            {% for c in plan_categories or [] %}
+              {% if c.is_active and (c.audience or 'users') == 'users' %}
+              <option value="{{ c.id }}">{{ c.name }}</option>
+              {% endif %}
+            {% endfor %}
+          </select>
+          <small class="muted">پیش‌فرض «عمومی» است و برای همهٔ سرویس‌ها دیده می‌شود. با انتخاب برچسب، فقط سرویس‌های همان دسته این بسته را می‌بینند.</small>
+        </label>
+        <label class="form-field">مقدار
+          <input name="amount" id="service-addon-amount" type="number" min="0.1" step="0.1" required placeholder="۱۰" />
+          <small class="muted" id="service-addon-amount-hint">برای حجم می‌تواند اعشار باشد؛ برای زمان عدد صحیح روز</small>
+        </label>
+        <label class="form-field">قیمت (تومان)
+          <input name="price" id="service-addon-price" type="number" data-money min="0" required placeholder="50,000" />
+        </label>
+        <label class="form-field">ترتیب
+          <input name="sort_order" id="service-addon-sort" type="number" value="0" />
+        </label>
+        <label class="form-field">توضیح (اختیاری)
+          <input name="description" id="service-addon-desc" maxlength="255" placeholder="نمایش در بات" />
+        </label>
+      </div>
+      <div class="actions">
+        <button class="btn" type="submit" id="service-addon-submit">افزودن بسته</button>
+        <button type="button" class="btn btn-ghost" id="service-addon-cancel-edit" hidden>انصراف از ویرایش</button>
+        <button type="button" class="btn btn-ghost" data-modal-close>بستن</button>
+      </div>
+    </form>
+    <h3 class="gift-codes-recent-title">بسته‌های فعلی</h3>
+    <div class="table-wrap">
+      <table class="table-compact">
+        <thead>
+          <tr>
+            <th>نام</th>
+            <th class="col-hide-sm">برچسب</th>
+            <th>نوع</th>
+            <th>مقدار</th>
+            <th>قیمت</th>
+            <th>وضعیت</th>
+            <th class="col-actions"></th>
+          </tr>
+        </thead>
+        <tbody>
+        {% for a in service_addon_packs or [] %}
+          <tr>
+            <td>
+              {{ a.name }}
+              {% if a.description %}<br><small class="muted">{{ a.description }}</small>{% endif %}
+            </td>
+            <td class="col-hide-sm muted">{% if a.is_general %}عمومی{% elif a.category_id and plan_category_map and plan_category_map.get(a.category_id) %}{{ plan_category_map.get(a.category_id).name }}{% else %}—{% endif %}</td>
+            <td>{% if a.kind == 'duration' %}زمان{% else %}حجم{% endif %}</td>
+            <td class="mono">{% if a.kind == 'duration' %}{{ a.amount | int }} روز{% else %}{{ a.amount | gb }}{% endif %}</td>
+            <td class="mono" dir="ltr">{{ a.price | money }}</td>
+            <td>{% if a.is_active %}<span class="badge active">فعال</span>{% else %}<span class="badge warn">خاموش</span>{% endif %}</td>
+            <td class="col-actions">
+              {% call row_actions() %}
+                <button type="button" class="btn btn-ghost btn-sm"
+                        data-addon-edit
+                        data-id="{{ a.id }}"
+                        data-name="{{ a.name }}"
+                        data-kind="{{ a.kind }}"
+                        data-amount="{{ a.amount }}"
+                        data-price="{{ a.price }}"
+                        data-sort="{{ a.sort_order }}"
+                        data-category="{{ a.category_id or '' }}"
+                        data-description="{{ a.description or '' }}">ویرایش</button>
+                <form method="post" action="/plans/addons/{{ a.id }}/toggle">
+                  <button class="btn btn-ghost btn-sm" type="submit">{% if a.is_active %}خاموش{% else %}روشن{% endif %}</button>
+                </form>
+                <form method="post" action="/plans/addons/{{ a.id }}/delete"
+                      data-confirm="این بسته حذف شود؟"
+                      data-confirm-title="حذف بسته افزونه"
+                      data-confirm-danger="1"
+                      data-confirm-label="حذف">
+                  <button class="btn btn-danger btn-sm" type="submit">حذف</button>
+                </form>
+              {% endcall %}
+            </td>
+          </tr>
+        {% else %}
+          <tr><td colspan="7" class="muted">هنوز بسته‌ای نیست — از فرم بالا بسازید.</td></tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<script>
+(function(){
+  const isPlatformAdmin = {{ 'true' if is_platform_admin else 'false' }};
+  const audienceSel = document.getElementById('plan-audience');
+  const kindSel = document.getElementById('plan-kind');
+  const panels = {
+    'users:fixed': document.getElementById('panel-user-fixed'),
+    'users:trial': document.getElementById('panel-user-trial'),
+    'users:custom': document.getElementById('panel-user-custom'),
+    'users:wholesale': document.getElementById('panel-user-wholesale'),
+    'users:addon_volume': document.getElementById('panel-user-addon'),
+    'users:addon_duration': document.getElementById('panel-user-addon'),
+    'resellers': document.getElementById('panel-reseller')
+  };
+  const USER_KINDS = [
+    {value: 'fixed', label: 'ثابت'},
+    {value: 'custom', label: 'دلخواه'},
+    {value: 'trial', label: 'تست'},
+    {value: 'wholesale', label: 'فروش عمده'},
+    {value: 'addon_volume', label: 'بسته حجم'},
+    {value: 'addon_duration', label: 'بسته زمان'}
+  ];
+  const RESELLER_KINDS = [
+    {value: 'fixed', label: 'اشتراک ثابت'},
+    {value: 'payg', label: 'اشتراک PAYG'},
+    {value: 'addon_volume', label: 'بسته حجم'},
+    {value: 'addon_users', label: 'بسته کاربر'}
+  ];
+
+  function currentAudience(){
+    if (!audienceSel) return 'users';
+    const raw = audienceSel.value;
+    if (raw === 'resellers' && isPlatformAdmin) return 'resellers';
+    return 'users';
+  }
+
+  function kindsFor(audience){
+    return audience === 'resellers' ? RESELLER_KINDS : USER_KINDS;
+  }
+
+  /** Rebuild نوع پلن options for the active audience. Custom ui-select watches mutations. */
+  function setKindOptions(audience, preferKind){
+    if (!kindSel) return;
+    const opts = kindsFor(audience);
+    const allowed = opts.map((o) => o.value);
+    let next = opts[0].value;
+    if (preferKind && allowed.indexOf(preferKind) >= 0) {
+      next = preferKind;
+    } else if (kindSel.value && allowed.indexOf(kindSel.value) >= 0) {
+      next = kindSel.value;
+    }
+    // Replace options atomically so MutationObserver rebuilds the custom menu
+    const frag = document.createDocumentFragment();
+    opts.forEach((o) => {
+      const el = document.createElement('option');
+      el.value = o.value;
+      el.textContent = o.label;
+      if (o.value === next) el.selected = true;
+      frag.appendChild(el);
+    });
+    kindSel.innerHTML = '';
+    kindSel.appendChild(frag);
+    kindSel.value = next;
+  }
+
+  function setVisible(el, show){
+    if (!el) return;
+    el.hidden = !show;
+    el.style.display = show ? '' : 'none';
+  }
+
+  function syncResellerExtras(){
+    const prices = document.getElementById('reseller-extra-prices');
+    const sw = document.querySelector('#reseller-plan-form input[name="allow_buy_extra"]');
+    const renewMode = document.getElementById('reseller-renew-pricing-mode');
+    if (!prices) return;
+    const on = sw ? !!sw.checked : false;
+    prices.hidden = !on;
+    if (renewMode) {
+      const fixedOpt = renewMode.querySelector('option[value="fixed"]');
+      if (on) {
+        renewMode.value = 'from_capacity';
+        if (fixedOpt) fixedOpt.disabled = true;
+      } else if (fixedOpt) {
+        fixedOpt.disabled = false;
+      }
+    }
+  }
+
+  function syncResellerForm(){
+    const kind = kindSel ? kindSel.value : 'fixed';
+    const billing = document.getElementById('reseller-billing-mode');
+    const planKindInput = document.getElementById('reseller-plan-kind');
+    const rateField = document.getElementById('reseller-price-per-gb-field');
+    const extras = document.getElementById('reseller-subscription-extras');
+    const included = document.getElementById('reseller-included-fields');
+    const addon = document.getElementById('reseller-addon-fields');
+    const addonGb = document.getElementById('reseller-addon-gb-field');
+    const addonUsers = document.getElementById('reseller-addon-users-field');
+    const renew = document.getElementById('reseller-renew-fields');
+    const duration = document.getElementById('reseller-duration-field');
+    const roleSel = document.getElementById('reseller-pg-role');
+    const hint = document.getElementById('reseller-mode-hint');
+    const priceLabel = document.getElementById('reseller-price-label');
+    const priceHint = document.getElementById('reseller-price-hint');
+    const nameInput = document.getElementById('reseller-plan-name');
+    const catField = document.getElementById('reseller-category-field');
+
+    const isVol = kind === 'addon_volume';
+    const isUsers = kind === 'addon_users';
+    const isAddon = isVol || isUsers;
+    const isPayg = kind === 'payg';
+
+    if (planKindInput) {
+      planKindInput.value = isVol ? 'addon_volume' : (isUsers ? 'addon_users' : 'subscription');
+    }
+    if (billing) billing.value = isPayg ? 'payg' : 'fixed';
+
+    setVisible(rateField, !isAddon && isPayg);
+    setVisible(extras, !isAddon);
+    setVisible(document.getElementById('reseller-buy-extra-block'), !isAddon && !isPayg);
+    setVisible(included, !isAddon);
+    setVisible(renew, !isAddon);
+    setVisible(duration, !isAddon);
+    setVisible(addon, isAddon);
+    setVisible(addonGb, isVol);
+    setVisible(addonUsers, isUsers);
+    setVisible(catField, true);
+    const catHint = document.getElementById('reseller-category-hint');
+    if (catHint) {
+      catHint.textContent = isAddon
+        ? 'بسته فقط برای نمایندگانی دیده می‌شود که پلن اشتراک‌شان همین برچسب را دارد'
+        : 'برچسب نمایش برای پلن‌های نمایندگی — از «برچسب دسته» با مخاطب نمایندگان بسازید';
+    }
+
+    if (isPayg || isAddon) {
+      const sw = document.querySelector('#reseller-plan-form input[name="allow_buy_extra"]');
+      if (sw) sw.checked = false;
+      const eg = document.getElementById('reseller-extra-gb-price');
+      const eu = document.getElementById('reseller-extra-user-price');
+      if (eg) eg.value = '0';
+      if (eu) eu.value = '0';
+    }
+
+    if (roleSel) {
+      if (isAddon) {
+        roleSel.removeAttribute('required');
+        roleSel.value = '';
+      } else {
+        roleSel.setAttribute('required', 'required');
+      }
+    }
+
+    if (priceLabel) priceLabel.textContent = isAddon ? 'قیمت بسته (تومان)' : 'قیمت ورود (تومان)';
+    if (priceHint) {
+      priceHint.textContent = isAddon
+        ? 'فقط برای نمایندگانی که قبلاً اشتراک خریده‌اند — تاریخ انقضا عوض نمی‌شود'
+        : 'هزینه خرید پکیج نمایندگی — ۰ = رایگان؛ فقط تأیید ادمین';
+    }
+    if (nameInput) {
+      nameInput.placeholder = isVol ? 'بسته ۲۰ گیگ' : (isUsers ? 'بسته ۱۰ کاربر' : 'نمایندگی نقره‌ای');
+    }
+    if (hint) {
+      if (isVol) {
+        hint.textContent = 'بسته حجم — بدون گروه/نقش/دسترسی/نام‌گذاری سرویس؛ فقط برای نمایندگان با اشتراک فعال.';
+      } else if (isUsers) {
+        hint.textContent = 'بسته کاربر — بدون گروه/نقش/دسترسی/نام‌گذاری سرویس؛ فقط برای نمایندگان با اشتراک فعال.';
+      } else if (isPayg) {
+        hint.textContent = 'اشتراک PAYG — نرخ هر گیگ، گروه و نقش پاسارگارد الزامی است؛ خرید حجم/کاربر اضافه لازم نیست.';
+      } else {
+        hint.textContent = 'اشتراک ثابت — گروه و نقش پاسارگارد الزامی است.';
+      }
+    }
+    if (!isAddon) syncResellerExtras();
+  }
+
+  function syncResellerBilling(){
+    syncResellerForm();
+  }
+
+  document.addEventListener('change', (e) => {
+    if (e.target && e.target.name === 'allow_buy_extra') syncResellerExtras();
+  });
+
+  function hideAllPanels(){
+    Object.keys(panels).forEach((k) => {
+      const el = panels[k];
+      if (el) el.hidden = true;
+    });
+  }
+
+  function syncUserAddonForm(){
+    const kind = kindSel ? kindSel.value : 'addon_volume';
+    const isDur = kind === 'addon_duration';
+    const kindInput = document.getElementById('unified-addon-kind');
+    const nameInput = document.getElementById('unified-addon-name');
+    const hint = document.getElementById('user-addon-hint');
+    const amountHint = document.getElementById('unified-addon-amount-hint');
+    const amountEl = document.getElementById('unified-addon-amount');
+    if (kindInput) kindInput.value = isDur ? 'duration' : 'volume';
+    if (nameInput) {
+      nameInput.placeholder = isDur ? 'مثلاً ۷ روز اضافه' : 'مثلاً ۱۰ گیگ اضافه';
+    }
+    if (hint) {
+      hint.textContent = isDur
+        ? 'کاربر می‌تواند این بستهٔ زمان را بخرد و به مدت سرویس فعلی‌اش اضافه کند.'
+        : 'کاربر می‌تواند این بستهٔ حجم را بخرد و به حجم سرویس فعلی‌اش اضافه کند.';
+    }
+    if (amountHint) {
+      amountHint.textContent = isDur
+        ? 'تعداد روز (عدد صحیح)'
+        : 'برای حجم می‌تواند اعشار باشد';
+    }
+    if (amountEl) {
+      if (isDur) {
+        amountEl.step = '1';
+        amountEl.min = '1';
+      } else {
+        amountEl.step = '0.1';
+        amountEl.min = '0.1';
+      }
+    }
+  }
+
+  function syncAudienceAndKind(){
+    if (!audienceSel || !kindSel) return;
+    const audience = currentAudience();
+    if (audienceSel.value !== audience) audienceSel.value = audience;
+    setKindOptions(audience, kindSel.value);
+    const kind = kindSel.value;
+    hideAllPanels();
+    if (audience === 'resellers') {
+      if (panels.resellers) panels.resellers.hidden = false;
+      syncResellerForm();
+    } else {
+      const key = 'users:' + kind;
+      if (panels[key]) panels[key].hidden = false;
+      if (kind === 'addon_volume' || kind === 'addon_duration') syncUserAddonForm();
+    }
+  }
+
+  function applyPlanOpen(audience, kind){
+    if (!audienceSel || !kindSel) return;
+    let aud = audience || 'users';
+    if (aud === 'resellers' && !isPlatformAdmin) aud = 'users';
+    audienceSel.value = aud;
+    // Force kind options for this audience first, then apply preferred kind
+    setKindOptions(aud, kind || kindsFor(aud)[0].value);
+    syncAudienceAndKind();
+  }
+
+  if (audienceSel) {
+    audienceSel.addEventListener('change', () => {
+      const audience = currentAudience();
+      // Switching audience: reset to the first kind of that audience
+      setKindOptions(audience, kindsFor(audience)[0].value);
+      hideAllPanels();
+      if (audience === 'resellers') {
+        if (panels.resellers) panels.resellers.hidden = false;
+        syncResellerForm();
+      } else {
+        const kind = kindSel.value;
+        const key = 'users:' + kind;
+        if (panels[key]) panels[key].hidden = false;
+        if (kind === 'addon_volume' || kind === 'addon_duration') syncUserAddonForm();
+      }
+    });
+  }
+  if (kindSel) kindSel.addEventListener('change', syncAudienceAndKind);
+
+  document.addEventListener('click', (e) => {
+    const btn = e.target.closest('[data-modal-open="modal-plan-unified"]');
+    if (!btn) return;
+    const hasKind = btn.hasAttribute('data-plan-kind');
+    const hasAud = btn.hasAttribute('data-plan-audience');
+    if (hasKind || hasAud) {
+      applyPlanOpen(btn.getAttribute('data-plan-audience') || 'users', btn.getAttribute('data-plan-kind') || 'fixed');
+    } else {
+      const hash = location.hash || '';
+      const preferReseller = isPlatformAdmin && (
+        hash === '#reseller-plans' ||
+        hash === '#reseller-plans-fixed' ||
+        hash === '#reseller-plans-payg' ||
+        hash === '#reseller-plans-addons'
+      );
+      let preferKind = 'fixed';
+      if (hash === '#reseller-plans-payg') preferKind = 'payg';
+      else if (hash === '#reseller-plans-addons') preferKind = 'addon_volume';
+      applyPlanOpen(preferReseller ? 'resellers' : 'users', preferKind);
+    }
+  });
+
+  function bindMode(selectId, customId, tplId){
+    const mode = document.getElementById(selectId);
+    const custom = document.getElementById(customId);
+    const tpl = document.getElementById(tplId);
+    if (!mode || !custom || !tpl) return;
+    function sync(){
+      const isTpl = mode.value === 'template';
+      custom.style.display = isTpl ? 'none' : '';
+      tpl.style.display = isTpl ? '' : 'none';
+    }
+    mode.addEventListener('change', sync);
+    sync();
+  }
+  bindMode('plan-mode', 'mode-custom', 'mode-template');
+  bindMode('trial-mode', 'trial-mode-custom', 'trial-mode-template');
+  bindMode('custom-mode', 'custom-mode-groups', 'custom-mode-template');
+
+  function rnd(){ return Math.random().toString(36).slice(2, 10); }
+  function renderNaming(root){
+    const sample = root.querySelector('[data-naming-sample]');
+    if (!sample) return;
+    const gPrefix = root.getAttribute('data-global-prefix') || 'clk';
+    const gSuffix = root.getAttribute('data-global-suffix') || '';
+    const gPattern = root.getAttribute('data-global-pattern') || '{prefix}_{random}{suffix}';
+    const prefix = ((root.querySelector('[data-naming-prefix]') || {}).value || '').trim() || gPrefix || 'clk';
+    const suffix = ((root.querySelector('[data-naming-suffix]') || {}).value || '').trim() || gSuffix || '';
+    const pattern = ((root.querySelector('[data-naming-pattern]') || {}).value || '').trim() || gPattern || '{prefix}_{random}{suffix}';
+    const form = root.closest('form');
+    const volumeInput = form && form.querySelector('[name="data_limit_gb"]');
+    const rawVolume = volumeInput ? volumeInput.value.trim() : '30';
+    const volume = rawVolume && Number(rawVolume) > 0 ? String(Number(rawVolume)) : 'unlimited';
+    let out;
+    try {
+      out = pattern
+        .replaceAll('{prefix}', prefix)
+        .replaceAll('{suffix}', suffix)
+        .replaceAll('{random}', rnd())
+        .replaceAll('{id}', '42')
+        .replaceAll('{plan_volume}', volume)
+        .replaceAll('{plan_unit}', 'GB')
+        .replaceAll('{username}', 'ali_user');
+    } catch (e) {
+      out = prefix + '_' + rnd() + suffix;
+    }
+    sample.textContent = out;
+  }
+  document.querySelectorAll('[data-plan-naming]').forEach((root) => {
+    const form = root.closest('form') || root;
+    form.addEventListener('input', () => renderNaming(root));
+    form.addEventListener('change', () => renderNaming(root));
+    renderNaming(root);
+  });
+
+  // Wholesale discount tiers editor
+  (function(){
+    const list = document.getElementById('wholesale-tiers');
+    const hidden = document.getElementById('wholesale_tiers_json');
+    const addBtn = document.getElementById('wholesale-add-tier');
+    const form = document.getElementById('wholesale-form');
+    if (!list || !hidden) return;
+    let tiers = [];
+    try { tiers = JSON.parse(hidden.value || '[]') || []; } catch (e) { tiers = []; }
+    if (!Array.isArray(tiers) || !tiers.length) {
+      tiers = [{min:5, percent:10},{min:20, percent:20}];
+    }
+    function syncHidden(){
+      const rows = Array.from(list.querySelectorAll('[data-tier]')).map((row) => {
+        const min = parseInt((row.querySelector('[data-tier-min]') || {}).value || '0', 10);
+        const percent = parseInt((row.querySelector('[data-tier-pct]') || {}).value || '0', 10);
+        return {min: min, percent: percent};
+      }).filter((t) => t.min > 0 && t.percent >= 0 && t.percent <= 100);
+      rows.sort((a,b) => a.min - b.min);
+      hidden.value = JSON.stringify(rows);
+    }
+    function addRow(tier){
+      const row = document.createElement('div');
+      row.className = 'form-row';
+      row.setAttribute('data-tier', '1');
+      row.innerHTML =
+        '<label class="form-field">از تعداد' +
+        '<input type="number" min="1" data-tier-min value="'+(tier.min||1)+'" /></label>' +
+        '<label class="form-field">درصد تخفیف' +
+        '<input type="number" min="0" max="100" data-tier-pct value="'+(tier.percent||0)+'" /></label>' +
+        '<div class="form-field" style="align-self:end">' +
+        '<button type="button" class="btn btn-ghost btn-sm" data-tier-remove>حذف</button></div>';
+      row.querySelector('[data-tier-remove]').addEventListener('click', () => {
+        row.remove();
+        syncHidden();
+      });
+      row.addEventListener('input', syncHidden);
+      list.appendChild(row);
+    }
+    list.innerHTML = '';
+    tiers.forEach(addRow);
+    syncHidden();
+    if (addBtn) addBtn.addEventListener('click', () => { addRow({min:1, percent:5}); syncHidden(); });
+    if (form) form.addEventListener('submit', syncHidden);
+  })();
+
+  // Initial: user kinds
+  setKindOptions('users', 'fixed');
+  syncAudienceAndKind();
+
+  // —— Category label form: create / edit ——
+  (function(){
+    const form = document.getElementById('plan-category-form');
+    if (!form) return;
+    const createAction = form.getAttribute('data-create-action') || '/plans/categories';
+    const nameEl = document.getElementById('plan-category-name');
+    const sortEl = document.getElementById('plan-category-sort');
+    const descEl = document.getElementById('plan-category-desc');
+    const audEl = document.getElementById('plan-category-audience');
+    const styleEl = form.querySelector('select[name="button_style"]');
+    const submitEl = document.getElementById('plan-category-submit');
+    const cancelEl = document.getElementById('plan-category-cancel-edit');
+    function resetCreate(){
+      form.action = createAction;
+      if (nameEl) nameEl.value = '';
+      if (sortEl) sortEl.value = '0';
+      if (descEl) descEl.value = '';
+      if (audEl) audEl.value = 'users';
+      if (styleEl) {
+        styleEl.value = 'inherit';
+        styleEl.dispatchEvent(new Event('change', { bubbles: true }));
+      }
+      if (submitEl) submitEl.textContent = 'افزودن برچسب';
+      if (cancelEl) cancelEl.hidden = true;
+    }
+    document.querySelectorAll('[data-category-edit]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const id = btn.getAttribute('data-id');
+        form.action = '/plans/categories/' + id + '/edit';
+        if (nameEl) nameEl.value = btn.getAttribute('data-name') || '';
+        if (sortEl) sortEl.value = btn.getAttribute('data-sort') || '0';
+        if (descEl) descEl.value = btn.getAttribute('data-description') || '';
+        if (audEl) {
+          const aud = btn.getAttribute('data-audience') || 'users';
+          audEl.value = aud;
+        }
+        if (styleEl) {
+          const st = btn.getAttribute('data-button-style');
+          styleEl.value = (st === null || st === undefined) ? 'inherit' : st;
+          styleEl.dispatchEvent(new Event('change', { bubbles: true }));
+        }
+        if (submitEl) submitEl.textContent = 'ذخیره تغییرات';
+        if (cancelEl) cancelEl.hidden = false;
+        nameEl && nameEl.focus();
+      });
+    });
+    if (cancelEl) cancelEl.addEventListener('click', resetCreate);
+  })();
+
+  // —— Service addon form: create / edit + amount step by kind ——
+  (function(){
+    const form = document.getElementById('service-addon-form');
+    if (!form) return;
+    const createAction = form.getAttribute('data-create-action') || '/plans/addons';
+    const nameEl = document.getElementById('service-addon-name');
+    const kindEl = document.getElementById('service-addon-kind');
+    const amountEl = document.getElementById('service-addon-amount');
+    const priceEl = document.getElementById('service-addon-price');
+    const sortEl = document.getElementById('service-addon-sort');
+    const descEl = document.getElementById('service-addon-desc');
+    const catEl = document.getElementById('service-addon-category');
+    const submitEl = document.getElementById('service-addon-submit');
+    const cancelEl = document.getElementById('service-addon-cancel-edit');
+    const hintEl = document.getElementById('service-addon-amount-hint');
+    function syncAmountStep(){
+      if (!amountEl || !kindEl) return;
+      const isDays = kindEl.value === 'duration';
+      amountEl.step = isDays ? '1' : '0.1';
+      amountEl.min = isDays ? '1' : '0.1';
+      if (hintEl) {
+        hintEl.textContent = isDays
+          ? 'تعداد روز — فقط عدد صحیح'
+          : 'حجم به گیگ — اعشار مجاز است';
+      }
+    }
+    function setSelectValue(el, value){
+      if (!el) return;
+      el.value = value || '';
+      el.dispatchEvent(new Event('change', { bubbles: true }));
+    }
+    function resetCreate(){
+      form.action = createAction;
+      if (nameEl) nameEl.value = '';
+      if (kindEl) kindEl.value = 'volume';
+      if (amountEl) amountEl.value = '';
+      if (priceEl) priceEl.value = '';
+      if (sortEl) sortEl.value = '0';
+      if (descEl) descEl.value = '';
+      setSelectValue(catEl, '');
+      if (submitEl) submitEl.textContent = 'افزودن بسته';
+      if (cancelEl) cancelEl.hidden = true;
+      syncAmountStep();
+    }
+    if (kindEl) kindEl.addEventListener('change', syncAmountStep);
+    syncAmountStep();
+    document.querySelectorAll('[data-addon-edit]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const id = btn.getAttribute('data-id');
+        form.action = '/plans/addons/' + id + '/edit';
+        if (nameEl) nameEl.value = btn.getAttribute('data-name') || '';
+        if (kindEl) kindEl.value = btn.getAttribute('data-kind') || 'volume';
+        if (amountEl) amountEl.value = btn.getAttribute('data-amount') || '';
+        if (priceEl) {
+          priceEl.value = btn.getAttribute('data-price') || '';
+          priceEl.dispatchEvent(new Event('input', {bubbles: true}));
+        }
+        if (sortEl) sortEl.value = btn.getAttribute('data-sort') || '0';
+        if (descEl) descEl.value = btn.getAttribute('data-description') || '';
+        setSelectValue(catEl, btn.getAttribute('data-category') || '');
+        if (submitEl) submitEl.textContent = 'ذخیره تغییرات';
+        if (cancelEl) cancelEl.hidden = false;
+        syncAmountStep();
+        nameEl && nameEl.focus();
+      });
+    });
+    if (cancelEl) cancelEl.addEventListener('click', resetCreate);
+  })();
+
+  const hash = location.hash || '';
+  if (
+    hash === '#reseller-plans' ||
+    hash === '#reseller-plans-fixed' ||
+    hash === '#reseller-plans-payg' ||
+    hash === '#reseller-plans-addons'
+  ) {
+    const section = document.getElementById(hash.slice(1)) || document.getElementById('reseller-plans');
+    if (section) {
+      setTimeout(() => section.scrollIntoView({behavior: 'smooth', block: 'start'}), 50);
+    }
+    if (isPlatformAdmin) {
+      let k = 'fixed';
+      if (hash === '#reseller-plans-payg') k = 'payg';
+      else if (hash === '#reseller-plans-addons') k = 'addon_volume';
+      applyPlanOpen('resellers', k);
+    }
+  }
+})();
+</script>
+{% endblock %}

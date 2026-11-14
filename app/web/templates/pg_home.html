@@ -1,0 +1,58 @@
+{% extends "base.html" %}
+{% from "macros.html" import page_title %}
+{% block title %}نمای کلی پاسارگارد{% endblock %}
+{% block content %}
+<div class="page-head ov-page-head">
+  {{ page_title('overview', 'نمای کلی پاسارگارد', 'pg', help='pg-overview') }}
+  {% if pg_external_url %}
+  <a class="btn btn-sm btn-ghost ov-head-btn" href="{{ pg_external_url }}" target="_blank" rel="noopener">
+    <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M14 4h6v6M20 4l-9 9M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"/></svg>
+    <span>ورود به پاسارگارد</span>
+  </a>
+  {% endif %}
+</div>
+
+{% if ticket_alert %}
+<div class="flash warn home-update-banner">
+  <div class="home-update-copy">
+    <strong>{{ ticket_alert.title }}</strong>
+    <span class="muted">{{ ticket_alert.detail }}</span>
+  </div>
+  <a class="btn btn-sm" href="{{ ticket_alert.href }}">مشاهده</a>
+</div>
+{% endif %}
+
+{% if staff_remediation %}
+{# Staff CTA when credentials incomplete or username mismatched #}
+<div class="flash warn home-update-banner">
+  <div class="home-update-copy">
+    {% if not staff_remediation.username_aligned %}
+    <strong>نام کاربری وب با پاسارگارد هماهنگ نیست</strong>
+    <span class="muted">ورود وب کار می‌کند، ولی تغییر رمز تا هم‌ترازسازی توسط ادمین اصلی ممکن نیست.
+      از ادمین اصلی بخواهید در «ادمین‌ها» دسترسی ادمین فرعی را ویرایش و هم‌ترازسازی را تأیید کند.</span>
+    {% elif not staff_remediation.credentials_ready %}
+    <strong>اعتبارنامه پاسارگارد ذخیره نشده</strong>
+    <span class="muted">تا وقتی رمز ذخیره نشود، بعضی بخش‌های داده محدود می‌مانند. رمز را از «امنیت» تغییر دهید یا از ادمین اصلی بخواهید آن را در «ادمین‌ها» تنظیم کند.</span>
+    {% else %}
+    <strong>نیاز به تکمیل دسترسی پاسارگارد</strong>
+    <span class="muted">برای دسترسی کامل به منوهای داده، ذخیره رمز پاسارگارد لازم است.</span>
+    {% endif %}
+  </div>
+  {% if staff_remediation.can_self_serve %}
+  <a class="btn btn-sm" href="/security">تغییر رمز</a>
+  {% endif %}
+</div>
+{% endif %}
+
+{% if widgets_deferred %}
+{% include "_panel_widgets_defer.html" %}
+{% include "_pg_dash_body.html" %}
+{% else %}
+{% include "_pg_dash_body.html" %}
+{% endif %}
+{% endblock %}
+{% block page_scripts %}
+{% if staff.pg_is_owner %}
+<script src="/static/overview-live.js?v={{ app_version }}" defer{% if csp_nonce %} nonce="{{ csp_nonce }}"{% endif %}></script>
+{% endif %}
+{% endblock %}

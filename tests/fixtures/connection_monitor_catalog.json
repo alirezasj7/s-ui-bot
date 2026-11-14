@@ -1,0 +1,56 @@
+{
+  "hosts": [
+    {
+      "id": 41, "remark": "نام متغیر {USERNAME}", "address": ["edge-b.example", "edge-a.example"],
+      "inbound_tag": "reality-main", "port": 443, "sni": ["cover.example"],
+      "security": "inbound_default", "admin": {"username": "monitor-owner"}
+    },
+    {
+      "id": 72, "remark": "نام متغیر {USERNAME}", "address": ["cdn.example"],
+      "inbound_tag": "ws-main", "port": 8443, "sni": ["tls.example"],
+      "host": ["ws.example"], "path": "/transport?ed=2048", "security": "tls",
+      "admin": {"username": "monitor-owner"}
+    }
+  ],
+  "inbounds": [
+    {"tag": "reality-main", "protocol": "vless", "network": "tcp"},
+    {"tag": "ws-main", "protocol": "vless", "network": "ws"}
+  ],
+  "native_configs": [
+    {
+      "remarks": "نام متغیر 1", "routing": {"rules": [{"outboundTag": "direct"}]},
+      "outbounds": [
+        {
+          "protocol": "vless", "tag": "proxy",
+          "settings": {"vnext": [{"address": "edge-b.example", "port": 443, "users": [
+            {"id": "11111111-1111-4111-8111-111111111111", "encryption": "none", "flow": "xtls-rprx-vision"}
+          ]}]},
+          "streamSettings": {
+            "network": "tcp", "security": "reality", "tcpSettings": {"header": {"type": "none"}},
+            "realitySettings": {
+              "serverName": "cover.example", "fingerprint": "chrome", "show": false,
+              "publicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", "shortId": "abcd", "spiderX": "/"
+            }
+          }
+        },
+        {"protocol": "freedom", "tag": "direct", "settings": {}}
+      ]
+    },
+    {
+      "remarks": "نام متغیر 2", "outbounds": [
+        {
+          "protocol": "vless", "tag": "proxy",
+          "settings": {"vnext": [{"address": "cdn.example", "port": 8443, "users": [
+            {"id": "11111111-1111-4111-8111-111111111111", "encryption": "none"}
+          ]}]},
+          "streamSettings": {
+            "network": "ws", "security": "tls",
+            "tlsSettings": {"serverName": "tls.example", "fingerprint": "chrome", "allowInsecure": false, "alpn": ["http/1.1"]},
+            "wsSettings": {"path": "/transport?ed=2048", "host": "ws.example", "headers": {}}
+          }
+        },
+        {"protocol": "freedom", "tag": "direct", "settings": {}}
+      ]
+    }
+  ]
+}

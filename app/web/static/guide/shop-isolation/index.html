@@ -1,0 +1,334 @@
+<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="color-scheme" content="dark" />
+  <meta name="theme-color" content="#09090b" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="راهنمای PGClockBot" />
+  <title>جداسازی فروشگاه‌ها · راهنمای PGClockBot</title>
+  <meta name="description" content="هر فروشگاه ایزوله است: سرویس، تیکت، پرداخت و امتیاز هر ربات فقط در همان ربات دیده می‌شود." />
+  <link rel="stylesheet" href="../fonts.css" />
+  <link rel="stylesheet" href="../guide.css" />
+  <link rel="icon" href="../logo-64.png" type="image/png" />
+</head>
+<body>
+  <div class="guide-shell" id="guide-shell">
+    <div class="guide-atmosphere" aria-hidden="true">
+      <span class="guide-orb guide-orb-a"></span>
+      <span class="guide-orb guide-orb-b"></span>
+      <span class="guide-grid"></span>
+    </div>
+
+    <header class="guide-topbar">
+      <a class="guide-brand" href="../index.html">
+        <span class="guide-brand-mark" aria-hidden="true">PG</span>
+        <span class="guide-brand-text">
+          <span class="guide-brand-name">راهنمای PGClockBot</span>
+          <span class="guide-brand-sub">آموزش وب‌پنل و ربات</span>
+        </span>
+      </a>
+      <div class="guide-topbar-actions">
+        <a class="guide-panel-link" href="/home">بازگشت به پنل</a>
+        <button type="button" class="guide-icon-btn guide-menu-btn" id="guide-menu-toggle" aria-label="باز کردن فهرست" aria-expanded="false" aria-controls="guide-sidebar">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
+        </button>
+      </div>
+    </header>
+
+    <div class="guide-scrim" id="guide-scrim" hidden></div>
+
+    <div class="guide-layout">
+      <aside class="guide-sidebar" id="guide-sidebar" aria-label="فهرست راهنما">
+        <div class="guide-sidebar-head">
+          <span class="guide-sidebar-title">فهرست راهنما</span>
+          <button type="button" class="guide-icon-btn" id="guide-side-close" aria-label="بستن فهرست">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg>
+          </button>
+        </div>
+
+        <div class="guide-search">
+          <label class="guide-search-label" for="guide-search-input">جستجو</label>
+          <input type="search" id="guide-search-input" placeholder="مثلاً رسید، پلن، نود…" autocomplete="off" aria-label="جستجو در راهنما" />
+          <div class="guide-search-panel" id="guide-search-panel" role="listbox" aria-label="نتایج جستجو"></div>
+        </div>
+
+        <nav class="guide-nav" aria-label="بخش‌ها">
+          
+          <div class="guide-nav-group">
+            <div class="guide-nav-group-title">
+              <svg class="guide-ico" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M5 15c1.5 2 4 4 7 4"/><path d="M9 19c0-3 2-5 4-6"/><path d="M14 13c3-1 5-4 6-8-3 1-6 3-8 6"/><path d="M9 15l-3 3"/><path d="M12 9l1.5-1.5"/></svg>
+              <span>شروع</span>
+            </div>
+            
+            <a class="guide-nav-link" href="../start/index.html">
+              <span class="guide-nav-icon" aria-hidden="true"><svg class="guide-ico" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M5 15c1.5 2 4 4 7 4"/><path d="M9 19c0-3 2-5 4-6"/><path d="M14 13c3-1 5-4 6-8-3 1-6 3-8 6"/><path d="M9 15l-3 3"/><path d="M12 9l1.5-1.5"/></svg></span>
+              <span class="guide-nav-text">شروع سریع</span>
+            </a>
+            
+            <a class="guide-nav-link" href="../roles/index.html">
+              <span class="guide-nav-icon" aria-hidden="true"><svg class="guide-ico" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3 5 6v5c0 4.2 2.8 7.2 7 8.5 4.2-1.3 7-4.3 7-8.5V6l-7-3z"/></svg></span>
+              <span class="guide-nav-text">نقش‌ها و دسترسی‌ها</span>
+            </a>
+            
+          </div>
+          
+          <div class="guide-nav-group">
+            <div class="guide-nav-group-title">
+              <svg class="guide-ico" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M4 12h16M4 17h10"/><path d="M18 15v4M16 17h4"/></svg>
+              <span>وب پنل</span>
+            </div>
+            
+            <a class="guide-nav-link" href="../home/index.html">
+              <span class="guide-nav-icon" aria-hidden="true"><svg class="guide-ico" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 10.5 12 4l8 6.5V20a1 1 0 0 1-1 1h-5v-6H10v6H5a1 1 0 0 1-1-1v-9.5z"/></svg></span>
+              <span class="guide-nav-text">داشبورد وب پنل</span>
+            </a>
+            
+            <a class="guide-nav-link" href="../inbox/index.html">
+              <span class="guide-nav-icon" aria-hidden="true"><svg class="guide-ico" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4a5 5 0 0 1 5 5v2.2l1.8 3.3H5.2L7 11.2V9a5 5 0 0 1 5-5z"/><path d="M10 18a2 2 0 0 0 4 0"/></svg></span>
+              <span class="guide-nav-text">اعلان‌ها و مرکز اقدام</span>
+            </a>
+            
+            <a class="guide-nav-link" href="../settings-panel/index.html">
+              <span class="guide-nav-icon" aria-hidden="true"><svg class="guide-ico" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h9M17 5v4M19 7h1"/><path d="M4 12h3M11 10v4M13 12h7"/><path d="M4 17h11M19 15v4M21 17h-1"/></svg></span>
+              <span class="guide-nav-text">تنظیمات وب پنل</span>
+            </a>
+            
+            <a class="guide-nav-link" href="../telegram-alerts/index.html">
+              <span class="guide-nav-icon" aria-hidden="true"><svg class="guide-ico" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4a5 5 0 0 1 5 5v2.2l1.8 3.3H5.2L7 11.2V9a5 5 0 0 1 5-5z"/><path d="M10 18a2 2 0 0 0 4 0"/></svg></span>
+              <span class="guide-nav-text">هشدارهای پنل در تلگرام</span>
+            </a>
+            
+          </div>
+          
+          <div class="guide-nav-group guide-nav-group--bot">
+            <div class="guide-nav-group-title">
+              <svg class="guide-ico" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="8" width="16" height="11" rx="2.5"/><path d="M12 8V5H9"/><path d="M2 14h2M20 14h2"/><circle cx="9.5" cy="13.5" r="1.1"/><circle cx="14.5" cy="13.5" r="1.1"/><path d="M9.5 17h5"/></svg>
+              <span>پنل ربات</span>
+            </div>
+            
+            <a class="guide-nav-link" href="../bot-dashboard/index.html">
+              <span class="guide-nav-icon" aria-hidden="true"><svg class="guide-ico" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3 4.5 6.5v5.2c0 4.7 3.2 8 7.5 9.3 4.3-1.3 7.5-4.6 7.5-9.3V6.5L12 3z"/><path d="M9 12l2 2 4-4"/></svg></span>
+              <span class="guide-nav-text">نمای کلی ربات</span>
+            </a>
+            
+            <a class="guide-nav-link" href="../users/index.html">
+              <span class="guide-nav-icon" aria-hidden="true"><svg class="guide-ico" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="8" r="3.2"/><path d="M3.5 19a5.5 5.5 0 0 1 11 0"/><circle cx="17" cy="9" r="2.4"/><path d="M15.2 19c.4-2.2 2-3.8 4.3-4.2"/></svg></span>
+              <span class="guide-nav-text">کاربران ربات</span>
+            </a>
+            
+            <a class="guide-nav-link" href="../finance/index.html">
+              <span class="guide-nav-icon" aria-hidden="true"><svg class="guide-ico" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M7 7h13l-1.2 9.2a2 2 0 0 1-2 1.8H9.4a2 2 0 0 1-2-1.7L6 4H3"/><circle cx="10" cy="20" r="1.2"/><circle cx="17" cy="20" r="1.2"/></svg></span>
+              <span class="guide-nav-text">مدیریت مالی</span>
+            </a>
+            
+            <a class="guide-nav-link" href="../plans/index.html">
+              <span class="guide-nav-icon" aria-hidden="true"><svg class="guide-ico" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M4 12h16M4 17h10"/><path d="M18 15v4M16 17h4"/></svg></span>
+              <span class="guide-nav-text">پلن‌ها</span>
+            </a>
+            
+            <a class="guide-nav-link" href="../tickets/index.html">
+              <span class="guide-nav-icon" aria-hidden="true"><svg class="guide-ico" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M5 6h14a2 2 0 0 1 2 2v3a2 2 0 0 0 0 4v3a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-3a2 2 0 0 0 0-4V8a2 2 0 0 1 2-2z"/><path d="M12 9v6"/></svg></span>
+              <span class="guide-nav-text">پشتیبانی</span>
+            </a>
+            
+            <a class="guide-nav-link" href="../broadcast/index.html">
+              <span class="guide-nav-icon" aria-hidden="true"><svg class="guide-ico" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 10v4h3l5 4V6L7 10H4z"/><path d="M16.5 8.5a5 5 0 0 1 0 7M18.8 6.2a8.5 8.5 0 0 1 0 11.6"/></svg></span>
+              <span class="guide-nav-text">پیام گروهی</span>
+            </a>
+            
+            <a class="guide-nav-link" href="../loyalty/index.html">
+              <span class="guide-nav-icon" aria-hidden="true"><svg class="guide-ico" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l2.2 4.5 5 .7-3.6 3.5.9 5L12 14.8 7.5 16.7l.9-5L4.8 8.2l5-.7L12 3z"/></svg></span>
+              <span class="guide-nav-text">باشگاه مشتریان</span>
+            </a>
+            
+            <a class="guide-nav-link" href="../message-variables/index.html">
+              <span class="guide-nav-icon" aria-hidden="true"><svg class="guide-ico" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M7 7h10v10H7z"/><path d="M10 10h4M10 14h2"/><path d="M4 12h2M18 12h2"/></svg></span>
+              <span class="guide-nav-text">متغیرهای پیام</span>
+            </a>
+            
+            <a class="guide-nav-link" href="../settings-bot/index.html">
+              <span class="guide-nav-icon" aria-hidden="true"><svg class="guide-ico" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="8" width="16" height="11" rx="2.5"/><path d="M12 8V5H9"/><path d="M2 14h2M20 14h2"/><circle cx="9.5" cy="13.5" r="1.1"/><circle cx="14.5" cy="13.5" r="1.1"/><path d="M9.5 17h5"/></svg></span>
+              <span class="guide-nav-text">تنظیمات ربات و فروشگاه</span>
+            </a>
+            
+            <a class="guide-nav-link" href="../resellers/index.html">
+              <span class="guide-nav-icon" aria-hidden="true"><svg class="guide-ico" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="9" r="3"/><circle cx="16" cy="9" r="3"/><path d="M2.8 19a5.2 5.2 0 0 1 10.4 0M10.8 19a5.2 5.2 0 0 1 10.4 0"/></svg></span>
+              <span class="guide-nav-text">نمایندگان</span>
+            </a>
+            
+            <a class="guide-nav-link" href="../reseller-applications/index.html">
+              <span class="guide-nav-icon" aria-hidden="true"><svg class="guide-ico" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 8h16l-1.2 10.2A2 2 0 0 1 16.8 21H7.2a2 2 0 0 1-2-1.8L4 8z"/><path d="M8 8V6a4 4 0 0 1 8 0v2"/></svg></span>
+              <span class="guide-nav-text">درخواست‌های نمایندگی</span>
+            </a>
+            
+            <a class="guide-nav-link" href="../funnel/index.html">
+              <span class="guide-nav-icon" aria-hidden="true"><svg class="guide-ico" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h16l-5.5 7v5l-5 2v-7L4 6z"/></svg></span>
+              <span class="guide-nav-text">رفتار کاربر</span>
+            </a>
+            
+            <a class="guide-nav-link is-active" href="../shop-isolation/index.html">
+              <span class="guide-nav-icon" aria-hidden="true"><svg class="guide-ico" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3 5 6v5c0 4.2 2.8 7.2 7 8.5 4.2-1.3 7-4.3 7-8.5V6l-7-3z"/></svg></span>
+              <span class="guide-nav-text">جداسازی فروشگاه‌ها</span>
+            </a>
+            
+            <a class="guide-nav-link" href="../discounts/index.html">
+              <span class="guide-nav-icon" aria-hidden="true"><svg class="guide-ico" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M7 7h13l-1.2 9.2a2 2 0 0 1-2 1.8H9.4a2 2 0 0 1-2-1.7L6 4H3"/><circle cx="10" cy="20" r="1.2"/><circle cx="17" cy="20" r="1.2"/></svg></span>
+              <span class="guide-nav-text">تخفیف‌ها</span>
+            </a>
+            
+            <a class="guide-nav-link" href="../gift-codes/index.html">
+              <span class="guide-nav-icon" aria-hidden="true"><svg class="guide-ico" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l2.2 4.5 5 .7-3.6 3.5.9 5L12 14.8 7.5 16.7l.9-5L4.8 8.2l5-.7L12 3z"/></svg></span>
+              <span class="guide-nav-text">کد هدیه</span>
+            </a>
+            
+            <a class="guide-nav-link" href="../service-import/index.html">
+              <span class="guide-nav-icon" aria-hidden="true"><svg class="guide-ico" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 16V6M8.5 9.5 12 6l3.5 3.5"/><path d="M5 18h14"/></svg></span>
+              <span class="guide-nav-text">افزودن سرویس قبلی</span>
+            </a>
+            
+          </div>
+          
+          <div class="guide-nav-group guide-nav-group--pg">
+            <div class="guide-nav-group-title">
+              <svg class="guide-ico" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="7" height="7" rx="1.5"/><rect x="14" y="4" width="7" height="7" rx="1.5"/><rect x="8.5" y="13" width="7" height="7" rx="1.5"/></svg>
+              <span>پاسارگارد</span>
+            </div>
+            
+            <a class="guide-nav-link" href="../connection-status/index.html">
+              <span class="guide-nav-icon" aria-hidden="true"><svg class="guide-ico" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3 4.5 6.5v5.2c0 4.7 3.2 8 7.5 9.3 4.3-1.3 7.5-4.6 7.5-9.3V6.5L12 3z"/><path d="M9 12l2 2 4-4"/></svg></span>
+              <span class="guide-nav-text">وضعیت اتصال</span>
+            </a>
+            
+            <a class="guide-nav-link" href="../pg-overview/index.html">
+              <span class="guide-nav-icon" aria-hidden="true"><svg class="guide-ico" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="7" height="7" rx="1.5"/><rect x="14" y="4" width="7" height="7" rx="1.5"/><rect x="8.5" y="13" width="7" height="7" rx="1.5"/></svg></span>
+              <span class="guide-nav-text">نمای کلی پاسارگارد</span>
+            </a>
+            
+            <a class="guide-nav-link" href="../pg-users/index.html">
+              <span class="guide-nav-icon" aria-hidden="true"><svg class="guide-ico" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="3.2"/><path d="M5 19a7 7 0 0 1 14 0"/></svg></span>
+              <span class="guide-nav-text">کاربران پاسارگارد</span>
+            </a>
+            
+            <a class="guide-nav-link" href="../pg-admins/index.html">
+              <span class="guide-nav-icon" aria-hidden="true"><svg class="guide-ico" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3 5 6v5c0 4.2 2.8 7.2 7 8.5 4.2-1.3 7-4.3 7-8.5V6l-7-3z"/></svg></span>
+              <span class="guide-nav-text">ادمین پاسارگارد</span>
+            </a>
+            
+            <a class="guide-nav-link" href="../pg-nodes/index.html">
+              <span class="guide-nav-icon" aria-hidden="true"><svg class="guide-ico" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="7" height="7" rx="1.5"/><rect x="14" y="4" width="7" height="7" rx="1.5"/><rect x="8.5" y="13" width="7" height="7" rx="1.5"/></svg></span>
+              <span class="guide-nav-text">نودها</span>
+            </a>
+            
+            <a class="guide-nav-link" href="../pg-groups/index.html">
+              <span class="guide-nav-icon" aria-hidden="true"><svg class="guide-ico" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3 4.5 6.5v5.2c0 4.7 3.2 8 7.5 9.3 4.3-1.3 7.5-4.6 7.5-9.3V6.5L12 3z"/></svg></span>
+              <span class="guide-nav-text">گروه‌ها</span>
+            </a>
+            
+            <a class="guide-nav-link" href="../pg-inbounds/index.html">
+              <span class="guide-nav-icon" aria-hidden="true"><svg class="guide-ico" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12h16M12 4v16"/><circle cx="12" cy="12" r="3"/></svg></span>
+              <span class="guide-nav-text">اینباندها</span>
+            </a>
+            
+            <a class="guide-nav-link" href="../pg-hosts/index.html">
+              <span class="guide-nav-icon" aria-hidden="true"><svg class="guide-ico" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c3 3.5 3 14.5 0 18M12 3c-3 3.5-3 14.5 0 18"/></svg></span>
+              <span class="guide-nav-text">هاست‌ها</span>
+            </a>
+            
+            <a class="guide-nav-link" href="../pg-templates/index.html">
+              <span class="guide-nav-icon" aria-hidden="true"><svg class="guide-ico" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M4 12h16M4 17h10"/><path d="M18 15v4M16 17h4"/></svg></span>
+              <span class="guide-nav-text">تمپلیت‌های کاربر</span>
+            </a>
+            
+          </div>
+          
+          <div class="guide-nav-group">
+            <div class="guide-nav-group-title">
+              <svg class="guide-ico" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M5 6h14a2 2 0 0 1 2 2v3a2 2 0 0 0 0 4v3a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-3a2 2 0 0 0 0-4V8a2 2 0 0 1 2-2z"/><path d="M12 9v6"/></svg>
+              <span>کمک</span>
+            </div>
+            
+            <a class="guide-nav-link" href="../troubleshooting/index.html">
+              <span class="guide-nav-icon" aria-hidden="true"><svg class="guide-ico" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M14.5 5.5a4 4 0 0 1 4 4L12 16l-3-3 6.5-6.5z"/><path d="M9 13 5 17l2 2 4-4"/></svg></span>
+              <span class="guide-nav-text">عیب‌یابی سریع</span>
+            </a>
+            
+            <a class="guide-nav-link" href="../deploy-docs/index.html">
+              <span class="guide-nav-icon" aria-hidden="true"><svg class="guide-ico" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 16V6M8.5 9.5 12 6l3.5 3.5"/><path d="M5 18h14"/></svg></span>
+              <span class="guide-nav-text">انتشار راهنما روی دامنه خودتان</span>
+            </a>
+            
+          </div>
+          
+        </nav>
+      </aside>
+
+      <main class="guide-main">
+        <article class="guide-article">
+          <nav class="guide-breadcrumb" aria-label="مسیر">
+            <a href="../index.html">راهنما</a>
+            <span class="guide-crumb-sep" aria-hidden="true">/</span>
+            <span>جداسازی فروشگاه‌ها</span>
+          </nav>
+
+          <header class="guide-hero guide-hero--bot">
+            <div class="guide-hero-icon" aria-hidden="true"><svg class="guide-ico" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3 5 6v5c0 4.2 2.8 7.2 7 8.5 4.2-1.3 7-4.3 7-8.5V6l-7-3z"/></svg></div>
+            <p class="guide-kicker">آموزش گام‌به‌گام</p>
+            <h1 class="guide-title">جداسازی فروشگاه‌ها</h1>
+            <p class="guide-lead">هر فروشگاه ایزوله است: سرویس، تیکت، پرداخت و امتیاز هر ربات فقط در همان ربات دیده می‌شود.</p>
+            <div class="guide-meta">
+              
+              <span class="guide-chip">در پنل: <a href="/service-shop-review" data-panel-path="/service-shop-review">/service-shop-review</a></span>
+              
+              
+              <span class="guide-chip">مخاطب: مالک، ادمین، نماینده</span>
+              
+            </div>
+          </header>
+
+          <div class="guide-content">
+            <h2 id="جداسازی-فروشگاهها-یعنی-چه؟">جداسازی فروشگاه‌ها یعنی چه؟</h2>
+<p>هر فروشگاه (ربات نماینده) <strong>ایزوله و خصوصی</strong> است. سرویس، تیکت، پرداخت، امتیاز و گردونهٔ هر فروشگاه فقط در همان فروشگاه دیده می‌شود و مدیریت می‌شود.</p>
+<div class="guide-table-wrap" role="region" aria-label="جدول" tabindex="0"><table><thead><tr><th>چه کسی</th><th>چه چیزی را می‌بیند؟</th></tr></thead><tbody><tr><td>مشتری</td><td>در هر ربات فقط سرویس‌هایی که از <strong>همان ربات</strong> خریده است</td></tr><tr><td>نماینده و ادمین‌های او</td><td>فقط سرویس‌ها و مشتریان فروشگاه خودشان</td></tr><tr><td>ربات شخصی مالک</td><td>فقط مشتریان و کاربران پلتفرم، نه فروشگاه‌ها</td></tr><tr><td>وب‌پنل مالک</td><td>همه‌چیز، برای نظارت و مدیریت</td></tr></tbody></table></div>
+<div class="guide-callout guide-callout--tip"><strong class="guide-callout-label">نکته</strong><p>اگر یک نفر هم از ربات اصلی و هم از ربات نماینده خرید کرده باشد، در هر ربات فقط خریدهای همان ربات را می‌بیند.</p></div>
+<h2 id="هر-سرویس-فروشندهٔ-خودش-را-دارد">هر سرویس فروشندهٔ خودش را دارد</h2>
+<p>فروشندهٔ هر سرویس هنگام خرید ثبت می‌شود. تمدید، لغو، لینک اشتراک و تحویل فقط از همان فروشگاه انجام می‌شود. اگر کسی از فروشگاه دیگر سعی کند روی سرویس عملی انجام دهد، رد می‌شود.</p>
+<h2 id="سرویسهای-در-انتظار-تعیین-فروشگاه">سرویس‌های در انتظار تعیین فروشگاه</h2>
+<p>بعضی سرویس‌های قدیمی را نمی‌شد با اطمینان به یک فروشگاه نسبت داد (مثلاً مشتری از چند جا خرید کرده). این سرویس‌ها تا تعیین تکلیف برای <strong>هیچ‌کس</strong> نمایش داده نمی‌شوند و روی آن‌ها عملی انجام نمی‌شود.</p>
+<p>مالک آن‌ها را از وب‌پنل <code>/service-shop-review</code> یا با دستور سرور تعیین می‌کند:</p>
+<pre><code class="language-bash">pgclock shop-review list
+pgclock shop-review assign --service 123 --shop platform
+pgclock shop-review assign --service 123 --shop 45</code></pre>
+<p>به‌جای <code>platform</code> می‌توانید شناسهٔ کاربریِ صاحب فروشگاه را بدهید.</p>
+<div class="guide-callout guide-callout--warn"><strong class="guide-callout-label">هشدار</strong><p>تعیین فروشگاه قابل برگشت نیست. قبل از انتخاب، مشتری و سفارش‌های او را در همان صفحه ببینید.</p></div>
+<h2 id="امتیاز-و-گردونه-برای-هر-فروشگاه">امتیاز و گردونه برای هر فروشگاه</h2>
+<ul><li>امتیاز باشگاه برای هر فروشگاه جداست و امتیاز فروشگاه دیگر را نمی‌بینید.</li><li>جایزه فقط در فروشگاهی که ساخته شده قابل استفاده است.</li><li>شمارنده‌ها و وضعیت گردونه برای هر مشتری در هر فروشگاه جدا نگه داشته می‌شود.</li></ul>
+<h2 id="بعد-از-آپدیت-چه-میشود؟">بعد از آپدیت چه می‌شود؟</h2>
+<p>آپدیت سرویس‌ها و امتیازهای قدیمی را بر اساس سفارش‌ها به فروشگاه درست می‌برد. مواردی که فقط از روی انتساب مشتری تعیین شده‌اند در لاگ آپدیت گزارش می‌شوند؛ آن‌ها را یک بار مرور کنید.</p>
+<div class="guide-callout guide-callout--tip"><strong class="guide-callout-label">نکته</strong><p>اگر مشتری می‌گوید سرویسش در ربات دیده نمی‌شود، اول ببینید از کدام ربات خریده و سپس در <code>/service-shop-review</code> بررسی کنید که در انتظار تعیین فروشگاه نباشد.</p></div>
+          </div>
+
+          <nav class="guide-pager" aria-label="صفحه قبل و بعد">
+            
+            <a class="guide-pager-btn guide-pager-prev" href="../funnel/index.html">
+              <span class="guide-pager-dir">قبلی</span>
+              <span class="guide-pager-title">رفتار کاربر</span>
+            </a>
+            
+            
+            <a class="guide-pager-btn guide-pager-next" href="../discounts/index.html">
+              <span class="guide-pager-dir">بعدی</span>
+              <span class="guide-pager-title">تخفیف‌ها</span>
+            </a>
+            
+          </nav>
+        </article>
+      </main>
+    </div>
+  </div>
+  <script src="../guide.js" defer></script>
+</body>
+</html>

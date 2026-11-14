@@ -1,0 +1,94 @@
+{# Dashboard building blocks shared by the owner and shop home: KPI strip, status tiles, account card. #}
+
+{% macro delta(pct, suffix, none_text) -%}
+{%- if pct is none -%}<span class="kpi-d flat">{{ none_text }}</span>
+{%- elif pct > 0 -%}<span class="kpi-d up">▲ {{ pct | num }}٪ {{ suffix }}</span>
+{%- elif pct < 0 -%}<span class="kpi-d down">▼ {{ (0 - pct) | num }}٪ {{ suffix }}</span>
+{%- else -%}<span class="kpi-d flat">بدون تغییر {{ suffix }}</span>{%- endif -%}
+{%- endmacro %}
+
+{# links: {payments, tickets} — a card links to its page only for staff who may open it. #}
+{% macro kpi_strip(periods, ac, trend, links) -%}
+{% set day = (periods or {}).day or {} %}
+{% set week = (periods or {}).week or {} %}
+{% set sales = trend or {} %}
+<div class="kpi-strip" aria-label="شاخص‌های امروز">
+  <div class="kpi">
+    <small>فروش امروز</small>
+    <strong><span dir="ltr">{{ (sales.today if sales.today is defined else day.revenue or 0) | money }}</span> <i>تومان</i></strong>
+    {{ delta(sales.today_change_pct, 'نسبت به دیروز', 'دیروز فروشی نبود') if sales.today_change_pct is defined else '' }}
+  </div>
+  <div class="kpi">
+    <small>کاربران جدید</small>
+    <strong>{{ (day.new_users or 0) | num }}</strong>
+    <span class="kpi-d flat">7 روز اخیر: {{ (week.new_users or 0) | num }}</span>
+  </div>
+  {{ kpi_count('رسید منتظر تأیید', (ac or {}).pending, 'تأیید یا رد پرداخت‌ها', '/finance?tab=payments' if (links or {}).payments else none) }}
+  {{ kpi_count('تیکت باز', (ac or {}).tickets, 'پشتیبانی کاربران', '/tickets' if (links or {}).tickets else none) }}
+</div>
+{%- endmacro %}
+
+{% macro kpi_count(label, count, hint, href) -%}
+{% set cls = 'kpi' ~ (' kpi-link' if href else '') ~ (' is-warn' if count else '') %}
+{% if href %}<a class="{{ cls }}" href="{{ href }}">{% else %}<div class="{{ cls }}">{% endif %}
+    <small>{{ label }}</small>
+    <strong>{{ (count or 0) | num }}</strong>
+    {% if href %}<span class="kpi-d flat">{{ hint }}</span>{% endif %}
+{% if href %}</a>{% else %}</div>{% endif %}
+{%- endmacro %}
+
+{# tiles: list of {name, detail, state (ok|warn|err|neutral), icon, href?, id?}; a tile without href is not a link. #}
+{% macro status_tiles(tiles, label='وضعیت اتصال') -%}
+<div class="status-box card">
+  <div class="status" style="--plain: {{ tiles | length }}" role="list" aria-label="{{ label }}">
+    {% for t in tiles %}
+    {% set tag = 'a' if t.href else 'div' %}
+    <{{ tag }} class="st" role="listitem" data-state="{{ t.state }}"{% if t.href %} href="{{ t.href }}"{% endif %}{% if t.id %} id="{{ t.id }}"{% endif %}>
+      <svg class="st-ico" viewBox="0 0 24 24" aria-hidden="true">
+        {%- if t.icon == 'bot' -%}<rect x="4" y="8" width="16" height="11" rx="2.5"/><path d="M12 8V5H9M2 14h2M20 14h2"/><circle cx="9.5" cy="13.5" r="1.1"/><circle cx="14.5" cy="13.5" r="1.1"/>
+        {%- elif t.icon == 'pg' -%}<rect x="3" y="4" width="7" height="7" rx="1.5"/><rect x="14" y="4" width="7" height="7" rx="1.5"/><rect x="8.5" y="13" width="7" height="7" rx="1.5"/>
+        {%- elif t.icon == 'nodes' -%}<rect x="3" y="4" width="18" height="6" rx="1.5"/><rect x="3" y="14" width="18" height="6" rx="1.5"/><path d="M7 7h.01M7 17h.01"/>
+        {%- elif t.icon == 'receipt' -%}<path d="M6 3h12v18l-3-2-3 2-3-2-3 2z"/><path d="M9 8h6M9 12h6"/>
+        {%- elif t.icon == 'ticket' -%}<path d="M4 5h16v11H8l-4 4z"/>
+        {%- elif t.icon == 'delivery' -%}<path d="M3 7l9-4 9 4-9 4z"/><path d="M3 7v10l9 4 9-4V7"/>
+        {%- elif t.icon == 'users' -%}<circle cx="12" cy="8" r="3.2"/><path d="M5 19a7 7 0 0 1 14 0"/>
+        {%- else -%}<path d="M6 9a6 6 0 0 1 12 0c0 5 2 6 2 6H4s2-1 2-6z"/><path d="M10 19a2 2 0 0 0 4 0"/>{%- endif -%}
+      </svg>
+      <b>{{ t.name }}</b>
+      <span>{{ t.detail }}</span>
+    </{{ tag }}>
+    {% endfor %}
+  </div>
+</div>
+{%- endmacro %}
+
+{# A new panel version is news, not connection health: one slim bar above the figures. #}
+{% macro update_notice(update) -%}
+{% if update and update.update_available %}
+<a class="st home-update-note" data-state="warn" href="/settings?tab=update">
+  <svg class="st-ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9a6 6 0 0 1 12 0c0 5 2 6 2 6H4s2-1 2-6z"/><path d="M10 19a2 2 0 0 0 4 0"/></svg>
+  <b>نسخهٔ جدید</b>
+  <span>نسخه <span dir="ltr">{{ update.remote_version }}</span> آمادهٔ نصب است</span>
+  <em class="home-update-go">مشاهده و نصب</em>
+</a>
+{% endif %}
+{%- endmacro %}
+
+{% macro account_card(me) -%}
+{% from "macros.html" import card_title %}
+<section class="card home-account-card" aria-label="حساب من">
+  {{ card_title('account', 'حساب من') }}
+  <p class="home-account-balance"><strong><span dir="ltr">{{ me.balance | money }}</span></strong> <i>تومان</i></p>
+  <p class="muted">کیف پول همین حساب</p>
+  <div class="home-account-facts">
+    <div><small>سرویس فعال</small><b>{{ (me.services or 0) | num }}</b></div>
+    <div><small>نزدیک‌ترین انقضا</small><b>{% if me.nearest_expiry_days is none %}—{% else %}{{ me.nearest_expiry_days | num }} روز{% endif %}</b></div>
+  </div>
+  {% if me.user_id %}
+  <div class="home-account-actions">
+    <a class="btn btn-sm" href="/users/{{ me.user_id | int }}/edit#user-wallet">شارژ</a>
+    <a class="btn btn-sm btn-ghost" href="/users/{{ me.user_id | int }}/edit#user-services">سرویس‌های من</a>
+  </div>
+  {% endif %}
+</section>
+{%- endmacro %}

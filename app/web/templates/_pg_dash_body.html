@@ -1,0 +1,172 @@
+{# PG overview widgets — single root #pg-dash for /pg/body swap.
+   The owner sees the panel's server, live traffic, users and nodes; a reseller or panel staff
+   sees only their quota and the users they own (view.counts), never panel-wide figures. #}
+{% from "macros.html" import card_title %}
+{% from "_home_widgets.html" import status_tiles %}
+<div id="pg-dash" class="pg-dash home-dash">
+{% if request is defined and request.url.path == '/pg/body' %}{% include "_pg_connection_notice.html" %}{% if flash_err %}<div class="flash err">{{ flash_err }}</div>{% endif %}{% endif %}
+{% set uc = view.counts if view else none %}
+{% set can_users = 'pg_users' in (pg_perms or []) %}
+
+{% macro user_kpis(uc, mine, can_users) -%}
+<div class="kpi-strip">
+  {% set tag = 'a' if can_users else 'div' %}
+  <{{ tag }} class="kpi{% if can_users %} kpi-link{% endif %}"{% if can_users %} href="/pg/users"{% endif %}>
+    <small>{{ 'کاربران من' if mine else 'کل کاربران' }}</small>
+    <strong>{{ uc.total | num }}</strong>
+    <span class="kpi-d flat">{{ (uc.on_hold | num) ~ ' در انتظار شروع' if uc.on_hold else 'همهٔ وضعیت‌ها' }}</span>
+  </{{ tag }}>
+  <div class="kpi">
+    <small>آنلاین</small>
+    <strong>{{ uc.online | num }}</strong>
+    <span class="kpi-d flat">همین حالا متصل</span>
+  </div>
+  <div class="kpi">
+    <small>فعال</small>
+    <strong>{{ uc.active | num }}</strong>
+    <span class="kpi-d flat">{{ (uc.disabled | num) ~ ' غیرفعال' if uc.disabled else 'بدون غیرفعال' }}</span>
+  </div>
+  <div class="kpi{% if uc.expired or uc.limited %} is-warn{% endif %}">
+    <small>منقضی یا اتمام حجم</small>
+    <strong>{{ (uc.expired + uc.limited) | num }}</strong>
+    <span class="kpi-d flat">{{ uc.expired | num }} منقضی · {{ uc.limited | num }} حجم</span>
+  </div>
+</div>
+{%- endmacro %}
+
+{% macro share_bar(view) -%}
+{% if view.segments %}
+<div class="ov-share" role="img" aria-label="سهم وضعیت کاربران">
+  {% for s in view.segments %}<i data-seg="{{ s.key }}" style="--w: {{ s.pct }}"></i>{% endfor %}
+</div>
+<ul class="ov-legend">
+  {% for s in view.segments %}
+  <li data-seg="{{ s.key }}"><i aria-hidden="true"></i>{{ s.label }} <b>{{ s.count | num }}</b> <span class="muted" dir="ltr">{{ s.pct }}%</span></li>
+  {% endfor %}
+</ul>
+{% else %}
+<p class="muted ov-empty">کاربری ثبت نشده.</p>
+{% endif %}
+{%- endmacro %}
+
+{% if not staff.pg_is_owner %}
+  {% set ov = reseller_overview or {} %}
+  {% if ov.ready %}
+  {% from "_pg_limit_cards.html" import pg_overview_limit_board %}
+  {{ pg_overview_limit_board(ov) }}
+  {% if uc %}
+  {{ user_kpis(uc, true, can_users) }}
+  <section class="card" aria-label="وضعیت کاربران من">
+    <header class="ov-head">{{ card_title('users', 'وضعیت کاربران من') }}</header>
+    {{ share_bar(view) }}
+  </section>
+  {% endif %}
+  {% elif ov.error %}
+  <div class="flash err">{{ ov.error }}</div>
+  {% endif %}
+
+{% else %}
+{% if host_gauges %}
+{% set host = host_gauges %}
+{% set title = 'سرور پاسارگارد' %}
+{% set metrics_url = '' %}
+{% include "_server_meters.html" %}
+{% endif %}
+
+{% set ov_nodes = (nodes_overview.nodes if nodes_overview else nodes) if (nodes_overview or nodes is defined) else [] %}
+{% set live = (nodes_overview.live if nodes_overview else none) or {} %}
+<section class="card ov-traffic" aria-label="ترافیک زنده" data-pg-live data-metrics-url="/pg/metrics"{% if live.rate_up is number %} data-seed-up="{{ live.rate_up|int }}"{% endif %}{% if live.rate_down is number %} data-seed-down="{{ live.rate_down|int }}"{% endif %}>
+  <header class="ov-head">
+    {{ card_title('traffic', 'ترافیک زنده') }}
+    <span class="ov-live"><i aria-hidden="true"></i>مجموع همهٔ نودها</span>
+  </header>
+  <div class="ov-rates">
+    <div class="ov-rate" data-dir="up">
+      <small>آپلود</small>
+      <strong dir="ltr"><span data-live-up-num>{{ live.rate_up_num or '—' }}</span> <i data-live-up-unit>{{ live.rate_up_unit or '' }}</i></strong>
+    </div>
+    <div class="ov-rate" data-dir="down">
+      <small>دانلود</small>
+      <strong dir="ltr"><span data-live-down-num>{{ live.rate_down_num or '—' }}</span> <i data-live-down-unit>{{ live.rate_down_unit or '' }}</i></strong>
+    </div>
+  </div>
+  <div class="ov-chart" data-live-chart>
+    <div class="ov-chart-head">
+      <ul class="ov-chart-legend">
+        <li data-dir="up"><i aria-hidden="true"></i>آپلود</li>
+        <li data-dir="down"><i aria-hidden="true"></i>دانلود</li>
+      </ul>
+      <span class="muted">بیشینه <b data-live-peak>—</b></span>
+      <span class="muted ov-chart-span">۵ دقیقهٔ اخیر</span>
+    </div>
+    <svg class="ov-spark" viewBox="0 0 300 60" preserveAspectRatio="none" role="img" aria-label="نمودار ترافیک ۵ دقیقهٔ اخیر" data-live-spark>
+      <polygon class="ov-spark-fill ov-spark-down" points="" data-spark-fill="down"/>
+      <polygon class="ov-spark-fill ov-spark-up" points="" data-spark-fill="up"/>
+      <polyline class="ov-spark-down" points="" data-spark="down"/>
+      <polyline class="ov-spark-up" points="" data-spark="up"/>
+    </svg>
+  </div>
+</section>
+
+{% if view %}
+{{ status_tiles([
+  {'name': 'پاسارگارد', 'detail': ('نسخهٔ ' ~ view.version) if view.version else ('متصل' if not flash_err else 'قطع'), 'state': 'err' if flash_err else 'ok', 'icon': 'pg'},
+  {'name': 'نودها', 'detail': (view.nodes_connected | num) ~ ' از ' ~ (view.nodes_total | num) ~ ' متصل', 'state': view.nodes_state, 'icon': 'nodes', 'href': '/pg/nodes' if 'pg_nodes' in (pg_perms or []) else none},
+  {'name': 'کاربران آنلاین', 'detail': (uc.online | num) ~ ' نفر', 'state': 'ok' if uc.online else 'neutral', 'icon': 'users'},
+], label='وضعیت پاسارگارد') }}
+{{ user_kpis(uc, false, can_users) }}
+{% endif %}
+
+<section class="card" aria-label="کاربران و اجزای پنل">
+  <header class="ov-head">{{ card_title('users', 'کاربران و اجزای پنل') }}</header>
+  {% if view %}{{ share_bar(view) }}{% endif %}
+  <dl class="ov-facts">
+    <div><dt>ادمین‌ها</dt><dd>{{ counts.admins | num }}</dd></div>
+    <div><dt>گروه‌ها</dt><dd>{{ counts.groups | num }}</dd></div>
+    <div><dt>هاست‌ها</dt><dd>{{ counts.hosts | num }}</dd></div>
+    <div><dt>نودها</dt><dd>{{ counts.nodes | num }}</dd></div>
+  </dl>
+</section>
+
+<section class="card ov-nodes" aria-label="نودها">
+  <header class="ov-head">
+    {{ card_title('nodes', 'نودها') }}
+    {% if 'pg_nodes' in (pg_perms or []) %}<a class="ov-more" href="/pg/nodes">همه</a>{% endif %}
+  </header>
+  {% if not ov_nodes %}
+  <p class="muted ov-empty">نودی نیست.</p>
+  {% else %}
+  <div class="ov-node-list" data-node-list>
+    {% for n in ov_nodes %}
+    {% set cpu_p = n.get('cpu_percent') if n.get('cpu_percent') is number else 0 %}
+    {% set mem_p = n.get('mem_percent') if n.get('mem_percent') is number else 0 %}
+    {% set tup = n.get('traffic_up') or {} %}
+    {% set tdn = n.get('traffic_down') or {} %}
+    {% set rup = n.get('rate_up_parts') or {} %}
+    {% set rdn = n.get('rate_down_parts') or {} %}
+    {% set sk = n.get('status_kind') or 'neutral' %}
+    <article class="ov-node" data-node-id="{{ n.get('id') if n.get('id') is not none else 'i' ~ loop.index0 }}">
+      <div class="ov-node-name">
+        <strong>{{ n.get('name') or '—' }}</strong>
+        {% if n.get('id') is not none %}<span class="muted mono" dir="ltr">#{{ n.get('id') }}</span>{% endif %}
+        <span class="badge {% if sk == 'ok' %}connected{% elif sk == 'warn' %}connecting{% elif sk == 'err' %}danger{% else %}neutral{% endif %}" data-node-status>{{ n.get('status') or '—' }}</span>
+      </div>
+      <div class="ov-meter" data-meter="cpu" data-tone="{{ n.get('cpu_tone') or 'neutral' }}">
+        <div class="ov-meter-top"><small>پردازنده</small><strong dir="ltr" data-meter-val>{{ n.get('cpu_text') or '—' }}</strong></div>
+        <div class="ov-track" aria-hidden="true"><i class="ov-fill" style="--p: {{ cpu_p }}"></i></div>
+      </div>
+      <div class="ov-meter" data-meter="mem" data-tone="{{ n.get('mem_tone') or 'neutral' }}">
+        <div class="ov-meter-top"><small>حافظه</small><strong dir="ltr" data-meter-val>{{ n.get('mem_text') or '—' }}</strong></div>
+        <div class="ov-track" aria-hidden="true"><i class="ov-fill" style="--p: {{ mem_p }}"></i></div>
+      </div>
+      <dl class="ov-node-traffic">
+        <div><dt>ترافیک امروز</dt><dd dir="ltr"><span data-node-f="traffic_up">{{ tup.get('num') or '—' }} {{ tup.get('unit') or '' }}</span> ↑ · <span data-node-f="traffic_down">{{ tdn.get('num') or '—' }} {{ tdn.get('unit') or '' }}</span> ↓</dd></div>
+        <div><dt>نرخ زنده</dt><dd dir="ltr"><span data-node-f="rate_up_parts">{{ rup.get('num') or '—' }} {{ rup.get('unit') or '' }}</span> ↑ · <span data-node-f="rate_down_parts">{{ rdn.get('num') or '—' }} {{ rdn.get('unit') or '' }}</span> ↓</dd></div>
+      </dl>
+    </article>
+    {% endfor %}
+  </div>
+  {% endif %}
+</section>
+{% endif %}
+</div>

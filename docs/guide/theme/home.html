@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="color-scheme" content="dark" />
+  <meta name="theme-color" content="#09090b" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="راهنمای PGClockBot" />
+  <title>راهنمای PGClockBot</title>
+  <meta name="description" content="آموزش ساده وب‌پنل و ربات PGClockBot برای همه نقش‌ها" />
+  <link rel="stylesheet" href="{{ root }}fonts.css" />
+  <link rel="stylesheet" href="{{ root }}guide.css" />
+  <link rel="icon" href="{{ root }}logo-64.png" type="image/png" />
+</head>
+<body>
+  <div class="guide-shell" id="guide-shell">
+    <div class="guide-atmosphere" aria-hidden="true">
+      <span class="guide-orb guide-orb-a"></span>
+      <span class="guide-orb guide-orb-b"></span>
+      <span class="guide-grid"></span>
+    </div>
+
+    <header class="guide-topbar">
+      <a class="guide-brand" href="{{ root }}index.html">
+        <span class="guide-brand-mark" aria-hidden="true">PG</span>
+        <span class="guide-brand-text">
+          <span class="guide-brand-name">راهنمای PGClockBot</span>
+          <span class="guide-brand-sub">آموزش وب‌پنل و ربات</span>
+        </span>
+      </a>
+      <div class="guide-topbar-actions">
+        <a class="guide-panel-link" href="/home">بازگشت به پنل</a>
+        <button type="button" class="guide-icon-btn guide-menu-btn" id="guide-menu-toggle" aria-label="باز کردن فهرست" aria-expanded="false" aria-controls="guide-sidebar">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
+        </button>
+      </div>
+    </header>
+
+    <div class="guide-scrim" id="guide-scrim" hidden></div>
+
+    <div class="guide-layout">
+      <aside class="guide-sidebar" id="guide-sidebar" aria-label="فهرست راهنما">
+        <div class="guide-sidebar-head">
+          <span class="guide-sidebar-title">فهرست راهنما</span>
+          <button type="button" class="guide-icon-btn" id="guide-side-close" aria-label="بستن فهرست">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg>
+          </button>
+        </div>
+
+        <div class="guide-search">
+          <label class="guide-search-label" for="guide-search-input">جستجو</label>
+          <input type="search" id="guide-search-input" placeholder="مثلاً رسید، پلن، نود…" autocomplete="off" aria-label="جستجو در راهنما" />
+          <div class="guide-search-panel" id="guide-search-panel" role="listbox" aria-label="نتایج جستجو"></div>
+        </div>
+
+        <nav class="guide-nav" aria-label="بخش‌ها">
+          {% for group in nav_groups %}
+          <div class="guide-nav-group{% if group.tone %} guide-nav-group--{{ group.tone }}{% endif %}">
+            <div class="guide-nav-group-title">
+              {{ group.icon_svg }}
+              <span>{{ group.title }}</span>
+            </div>
+            {% for item in group.topics %}
+            <a class="guide-nav-link" href="{{ root }}{{ item.slug }}/index.html">
+              <span class="guide-nav-icon" aria-hidden="true">{{ item.icon_svg }}</span>
+              <span class="guide-nav-text">{{ item.title }}</span>
+            </a>
+            {% endfor %}
+          </div>
+          {% endfor %}
+        </nav>
+      </aside>
+
+      <main class="guide-main">
+        <div class="guide-home">
+          <header class="guide-hero guide-home-hero">
+            <div class="guide-hero-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M5 5.5A2.5 2.5 0 0 1 7.5 3H19v16H7.5A2.5 2.5 0 0 0 5 21.5z"/><path d="M5 5.5V21.5"/></svg>
+            </div>
+            <p class="guide-home-kicker">مستندات رسمی</p>
+            <h1 class="guide-home-title">راهنمای PGClockBot</h1>
+            <p class="guide-home-lead">آموزش ساده و مرتب برای مالک، نماینده، ادمین پاسارگارد و بقیه نقش‌ها. از جستجو یا فهرست کناری موضوع را پیدا کنید.</p>
+          </header>
+
+          {% if body_html %}
+          <div class="guide-content" style="margin-bottom: 1.5rem;">
+            {{ body_html | safe }}
+          </div>
+          {% endif %}
+
+          <section aria-label="موضوعات پیشنهادی">
+            <div class="guide-section-head">
+              <h2>شروع از اینجا</h2>
+              <span class="guide-section-note">پرکاربردترین بخش‌ها</span>
+            </div>
+            <div class="guide-feature-grid">
+              {% for item in featured %}
+              <a class="guide-feature-card" href="{{ root }}{{ item.slug }}/index.html">
+                <span class="guide-feature-icon" aria-hidden="true">{{ item.icon_svg }}</span>
+                <h3>{{ item.title }}</h3>
+                <p>{{ item.summary }}</p>
+                <span class="guide-feature-cta">مطالعه ←</span>
+              </a>
+              {% endfor %}
+            </div>
+          </section>
+
+          <section aria-label="همه موضوعات">
+            <div class="guide-section-head">
+              <h2>همه موضوعات</h2>
+              <span class="guide-section-note">دسته‌بندی‌شده</span>
+            </div>
+            {% for group in nav_groups %}
+            <div class="guide-group-block">
+              <h3 class="guide-group-title">
+                {{ group.icon_svg }}
+                <span>{{ group.title }}</span>
+              </h3>
+              <div class="guide-topic-list">
+                {% for item in group.topics %}
+                <a class="guide-topic-link" href="{{ root }}{{ item.slug }}/index.html">
+                  <span class="guide-topic-icon" aria-hidden="true">{{ item.icon_svg }}</span>
+                  <span>
+                    <strong>{{ item.title }}</strong>
+                    <span>{{ item.summary }}</span>
+                  </span>
+                </a>
+                {% endfor %}
+              </div>
+            </div>
+            {% endfor %}
+          </section>
+        </div>
+      </main>
+    </div>
+  </div>
+  <script src="{{ root }}guide.js" defer></script>
+</body>
+</html>

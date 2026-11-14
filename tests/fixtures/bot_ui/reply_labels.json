@@ -1,0 +1,323 @@
+{
+  "admin.backup": {
+    "⬅️ بازگشت": "back",
+    "🆕 بکاپ + .env": "backup_create_env",
+    "🆕 ساخت بکاپ": "backup_create",
+    "🏠 منوی اصلی": "home",
+    "📤 آپلود فایل بکاپ": "backup_upload",
+    "🔄 تازه‌سازی لیست": "backup_refresh"
+  },
+  "admin.broadcast": {
+    "⬅️ بازگشت": "back",
+    "🏠 منوی اصلی": "home",
+    "👥 کاربران عادی": "bc_aud_users",
+    "📢 همه": "bc_aud_all",
+    "🛠 ادمین‌ها": "bc_aud_admins",
+    "🤝 فقط نمایندگان": "bc_aud_resellers"
+  },
+  "admin.hub": {
+    "⬅️ بازگشت": "back",
+    "🎯 بازاریابی": "adm_hub_marketing",
+    "🏠 منوی اصلی": "home",
+    "👤 افراد": "adm_hub_people",
+    "📡 تست و وضعیت اتصال": "connection_status_admin",
+    "📡 وضعیت اتصال": "connection_status_admin",
+    "📦 محصول و PG": "adm_hub_product",
+    "📦 محصول و پاسارگارد": "adm_hub_product",
+    "🗓 عملیات روزانه": "adm_hub_ops",
+    "🛠 سیستم": "adm_hub_system"
+  },
+  "admin.loyalty": {
+    "⚙️ تنظیمات باشگاه": "adm_loy_settings",
+    "⬅️ بازگشت": "back",
+    "🎁 جوایز": "adm_loy_rewards",
+    "🏅 سطوح": "adm_loy_tiers",
+    "🏠 منوی اصلی": "home",
+    "📊 نمای کلی": "adm_loy_overview",
+    "📐 قوانین امتیاز": "adm_loy_rules",
+    "📝 متن دعوت": "adm_loy_ref_text"
+  },
+  "admin.main": {
+    "⭐ باشگاه مشتریان": "adm_loyalty",
+    "🔄 شروع مجدد": "home",
+    "🔵📦 سرویس‌های من": "services",
+    "🛠 پنل ادمین": "admin",
+    "🟡👛 کیف پول": "wallet",
+    "🟢🛒 خرید سرویس": "shop",
+    "🟣🎧 پشتیبانی": "support"
+  },
+  "admin.marketing": {
+    "⬅️ بازگشت": "back",
+    "⭐ باشگاه مشتریان": "adm_loyalty",
+    "🏠 منوی اصلی": "home",
+    "📢 پیام گروهی": "adm_broadcast"
+  },
+  "admin.ops": {
+    "⬅️ بازگشت": "back",
+    "🎫 تیکت‌ها": "adm_tickets",
+    "🏠 منوی اصلی": "home",
+    "📈 گزارشات": "adm_reports",
+    "📈 گزارش‌ها": "adm_reports",
+    "📊 داشبورد": "adm_dash",
+    "🛒 سفارش‌ها": "adm_orders",
+    "🧾 رسیدها": "adm_payments"
+  },
+  "admin.people": {
+    "⬅️ بازگشت": "back",
+    "🏠 منوی اصلی": "home",
+    "👥 کاربران": "adm_users",
+    "🤝 نمایندگان": "adm_resellers"
+  },
+  "admin.pg": {
+    "➕ ساخت کاربر": "pg_create",
+    "⬅️ بازگشت": "back",
+    "🏠 منوی اصلی": "home",
+    "🏠 نمای کلی": "pg_stats",
+    "👥 کاربران": "pg_users",
+    "📁 ساخت گروه": "pg_group",
+    "📋 ساخت تمپلیت": "pg_template",
+    "🔎 جستجوی یوزر": "pg_search",
+    "🕸 نودها": "pg_nodes"
+  },
+  "admin.plans_add_resellers": {
+    "اشتراک PAYG": "adm_plans_kind_res_payg",
+    "اشتراک ثابت": "adm_plans_kind_res_fixed",
+    "بسته حجم": "adm_plans_kind_res_addon_vol",
+    "بسته کاربر": "adm_plans_kind_res_addon_users",
+    "⬅️ بازگشت": "back",
+    "🏠 منوی اصلی": "home"
+  },
+  "admin.plans_add_users": {
+    "تست": "adm_plans_kind_users_trial",
+    "ثابت": "adm_plans_kind_users_fixed",
+    "دلخواه": "adm_plans_kind_users_custom",
+    "⬅️ بازگشت": "back",
+    "🏠 منوی اصلی": "home",
+    "📦 فروش عمده": "adm_plans_kind_users_wholesale"
+  },
+  "admin.plans_audience": {
+    "⏱ بسته حجم و زمان": "adm_plans_addons",
+    "⏱ بسته حجم/زمان": "adm_plans_addons",
+    "⬅️ بازگشت": "back",
+    "🏠 منوی اصلی": "home",
+    "🏷 برچسب دسته": "adm_plans_categories",
+    "📦 پلن‌های کاربران": "adm_plans_aud_users",
+    "🤝 پلن‌های نمایندگان": "adm_plans_aud_resellers"
+  },
+  "admin.plans_kind_resellers": {
+    "⏱ بسته حجم و زمان": "adm_plans_addons",
+    "⏱ بسته حجم/زمان": "adm_plans_addons",
+    "➕ افزودن پلن": "adm_plans_add",
+    "⬅️ بازگشت": "back",
+    "🏠 منوی اصلی": "home",
+    "🏷 برچسب دسته": "adm_plans_categories"
+  },
+  "admin.plans_kind_users": {
+    "⏱ بسته حجم و زمان": "adm_plans_addons",
+    "⏱ بسته حجم/زمان": "adm_plans_addons",
+    "➕ افزودن پلن": "adm_plans_add",
+    "⬅️ بازگشت": "back",
+    "🏠 منوی اصلی": "home",
+    "🏷 برچسب دسته": "adm_plans_categories"
+  },
+  "admin.preview": {
+    "⭐ باشگاه مشتریان": "adm_loyalty",
+    "🔵📦 سرویس‌های من": "services",
+    "🛠 بازگشت به پنل ادمین": "admin",
+    "🟡👛 کیف پول": "wallet",
+    "🟢🛒 خرید سرویس": "shop",
+    "🟣🎧 پشتیبانی": "support",
+    "🤝 درخواست نمایندگی": "reseller_apply"
+  },
+  "admin.product": {
+    "⬅️ بازگشت": "back",
+    "🏠 منوی اصلی": "home",
+    "📦 پلن‌ها": "adm_plans",
+    "🖥 پاسارگارد": "adm_pg"
+  },
+  "admin.resellers": {
+    "➕ افزودن دستی": "adm_res_add",
+    "➕ افزودن نماینده": "adm_res_add",
+    "⬅️ بازگشت": "back",
+    "🏠 منوی اصلی": "home",
+    "📋 درخواست‌های در انتظار": "adm_res_apps",
+    "📋 درخواست‌های منتظر": "adm_res_apps",
+    "📋 لیست نمایندگان": "adm_res_list",
+    "🔎 جستجوی نماینده": "adm_res_search"
+  },
+  "admin.review": {
+    "⬅️ بازگشت": "back",
+    "🏠 منوی اصلی": "home",
+    "🔴❌ رد": "rev_no",
+    "🟢✅ تأیید": "rev_ok"
+  },
+  "admin.settings": {
+    "آموزش اتصال": "adm_st_guides",
+    "اعلان‌ها": "adm_st_notify",
+    "تحویل سرویس": "adm_st_access",
+    "دسترسی": "adm_st_access",
+    "ظاهر منو": "adm_st_menu",
+    "ظاهر و دکمه‌ها": "adm_st_menu",
+    "فروشگاه": "adm_st_shop",
+    "قوانین خرید": "adm_st_buy",
+    "متن دکمه‌ها": "adm_st_labels",
+    "محدودیت": "adm_st_limits",
+    "نام و متن‌ها": "adm_st_shop",
+    "ورود و عضویت": "adm_st_limits",
+    "پرداخت": "adm_st_pay",
+    "پشتیبان‌ها": "adm_st_support",
+    "⬅️ بازگشت": "back",
+    "🌐 وب‌پنل": "adm_st_panel",
+    "🏠 منوی اصلی": "home"
+  },
+  "admin.system": {
+    "⚙️ تنظیمات": "adm_settings",
+    "⬅️ بازگشت": "back",
+    "🏠 منوی اصلی": "home",
+    "👁 پیش‌نمایش منوی کاربر": "adm_preview",
+    "💾 بکاپ / ریستور": "adm_backup"
+  },
+  "admin.users": {
+    "⬅️ بازگشت": "back",
+    "🌐 مدیریت کامل در وب‌پنل": "adm_users_web",
+    "🏠 منوی اصلی": "home",
+    "📋 لیست کاربران": "adm_users_list",
+    "🔎 جستجو": "adm_users_search"
+  },
+  "reseller.hub": {
+    "👁 پیش‌نمایش منوی کاربر": "res_preview",
+    "🔄 شروع مجدد": "home",
+    "🤝 پنل نماینده": "reseller"
+  },
+  "reseller.main": {
+    "⭐ باشگاه مشتریان": "res_loyalty",
+    "🔄 شروع مجدد": "home",
+    "🔵📦 سرویس‌های من": "services",
+    "🟡👛 کیف پول": "wallet",
+    "🟢🛒 خرید سرویس": "shop",
+    "🟣🎧 پشتیبانی": "support",
+    "🤝 پنل نماینده": "reseller"
+  },
+  "reseller.plans": {
+    "⏱ بسته حجم/زمان": "res_plan_addons",
+    "➕ پلن جدید": "res_plan_add",
+    "⬅️ بازگشت": "back",
+    "🏠 منوی اصلی": "home",
+    "🏷 برچسب دسته": "res_plan_categories"
+  },
+  "reseller.settings": {
+    "آموزش اتصال": "res_st_guides",
+    "اعلان‌ها": "res_st_notify",
+    "تحویل سرویس": "res_st_access",
+    "دسترسی": "res_st_access",
+    "ربات": "res_st_bot",
+    "ظاهر منو": "res_st_menu",
+    "فروشگاه": "res_st_shop",
+    "قوانین خرید": "res_st_buy",
+    "متن دکمه‌ها": "res_st_labels",
+    "محدودیت": "res_st_limits",
+    "منو": "res_st_menu",
+    "نام و متن‌ها": "res_st_shop",
+    "ورود و عضویت": "res_st_limits",
+    "پرداخت": "res_st_pay",
+    "پشتیبان‌ها": "res_st_support",
+    "⬅️ بازگشت": "back",
+    "🌐 وب‌پنل": "res_st_panel",
+    "🏠 منوی اصلی": "home"
+  },
+  "shop_owner.main_bot": {
+    "⭐ باشگاه مشتریان": "loyalty",
+    "🔄 شروع مجدد": "home",
+    "🔵📦 سرویس‌های من": "services",
+    "🟡👛 کیف پول": "wallet",
+    "🟢🛒 خرید سرویس": "shop",
+    "🟣🎧 پشتیبانی": "support",
+    "🤝 درخواست نمایندگی": "reseller_apply",
+    "🤝 پنل نماینده": "reseller"
+  },
+  "user.loyalty": {
+    "⬅️ بازگشت": "back",
+    "⭐ امتیاز من": "loy_points",
+    "🎁 جوایز": "loy_rewards",
+    "🏠 منوی اصلی": "home",
+    "👥 دعوت دوستان": "loy_referral",
+    "📜 تاریخچه": "loy_history"
+  },
+  "user.main": {
+    "⭐ باشگاه مشتریان": "loyalty",
+    "🔄 شروع مجدد": "home",
+    "🔵📦 سرویس‌های من": "services",
+    "🟡👛 کیف پول": "wallet",
+    "🟢🛒 خرید سرویس": "shop",
+    "🟣🎧 پشتیبانی": "support",
+    "🤝 درخواست نمایندگی": "reseller_apply"
+  },
+  "user.main_new": {
+    "⭐ باشگاه مشتریان": "loyalty",
+    "🔄 شروع مجدد": "home",
+    "🟡👛 کیف پول": "wallet",
+    "🟢🛒 خرید سرویس": "shop",
+    "🟣🎧 پشتیبانی": "support",
+    "🤝 درخواست نمایندگی": "reseller_apply"
+  },
+  "user.main_with_status": {
+    "⭐ باشگاه مشتریان": "loyalty",
+    "📡 وضعیت از دید سرور": "connection_status",
+    "📡 وضعیت سرورها": "connection_status",
+    "🔄 شروع مجدد": "home",
+    "🔵📦 سرویس‌های من": "services",
+    "🟡👛 کیف پول": "wallet",
+    "🟢🛒 خرید سرویس": "shop",
+    "🟣🎧 پشتیبانی": "support",
+    "🤝 درخواست نمایندگی": "reseller_apply"
+  },
+  "user.pay": {
+    "⬅️ بازگشت": "back",
+    "🏠 منوی اصلی": "home",
+    "🏷 کد تخفیف": "pay_discount",
+    "🔵💳 کارت به کارت": "pay_card",
+    "🟢👛 پرداخت از کیف پول": "pay_wallet"
+  },
+  "user.reseller_apply": {
+    "⬅️ بازگشت": "back",
+    "🏠 منوی اصلی": "home"
+  },
+  "user.service": {
+    "♻️ رفرش وضعیت": "svc_refresh",
+    "⚙️ تنظیمات خودکار": "svc_auto",
+    "➕ حجم / زمان": "svc_addon",
+    "⬅️ بازگشت": "back",
+    "🏠 منوی اصلی": "home",
+    "📘 آموزش اتصال": "svc_guide",
+    "📝 درخواست لغو سرویس": "svc_cancel",
+    "🔄 تمدید": "svc_renew",
+    "🔗 لینک و QR": "svc_link",
+    "🗑 حذف سرویس": "svc_delete"
+  },
+  "user.shop": {
+    "⬅️ بازگشت": "back",
+    "🏠 منوی اصلی": "home"
+  },
+  "user.submenu_chrome": {
+    "انصراف": null,
+    "⬅️ بازگشت": "back",
+    "🏠 منوی اصلی": "home"
+  },
+  "user.support": {
+    "⬅️ بازگشت": "back",
+    "🏠 منوی اصلی": "home",
+    "📋 تیکت‌های من": "support_list",
+    "🟣✉️ تیکت جدید": "support_new"
+  },
+  "user.topup_pay": {
+    "⬅️ بازگشت": "back",
+    "🏠 منوی اصلی": "home",
+    "🔵💳 کارت به کارت": "topup_card"
+  },
+  "user.wallet": {
+    "⬅️ بازگشت": "back",
+    "🏠 منوی اصلی": "home",
+    "🟡📜 تراکنش‌ها": "wallet_tx",
+    "🟢➕ شارژ کیف پول": "wallet_topup"
+  }
+}

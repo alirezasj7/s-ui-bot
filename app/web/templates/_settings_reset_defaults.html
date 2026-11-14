@@ -1,0 +1,13 @@
+{# «Back to defaults» for one settings tab. Expects: tab, reset_action, reset_tabs; optional reset_confirm. #}
+{% if reset_tabs and tab in reset_tabs %}
+<form method="post" action="{{ reset_action }}" class="settings-reset-form"
+      data-confirm="{{ reset_confirm|default('همهٔ متن‌ها و رنگ‌های همین بخش به پیش‌فرض ربات برمی‌گردد و تغییرهای شما در این بخش پاک می‌شود. ادامه می‌دهید؟') }}"
+      data-confirm-title="بازگردانی به پیش‌فرض" data-confirm-danger="1" data-confirm-label="بازگردانی">
+  {% if csrf_token %}<input type="hidden" name="csrf_token" value="{{ csrf_token }}">{% endif %}
+  <input type="hidden" name="reset_defaults" value="1">
+  <button class="btn btn-ghost settings-reset-btn" type="submit">
+    <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 4v5h5"/></svg>
+    <span>بازگردانی همه به پیش‌فرض</span>
+  </button>
+</form>
+{% endif %}

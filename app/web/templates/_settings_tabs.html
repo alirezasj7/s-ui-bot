@@ -1,0 +1,12 @@
+{% from "_settings_tab_nav.html" import grouped_settings_tabs %}
+{% macro settings_tabs(active, tabs=none, groups=none) -%}
+{% if groups %}
+{{ grouped_settings_tabs(groups, active, "/settings", "تب‌های تنظیمات ربات") }}
+{% elif tabs %}
+<nav class="section-tabs settings-tabs" aria-label="تب‌های تنظیمات ربات">
+  {% for key, label in tabs %}
+  <a href="/settings?tab={{ key }}" class="{% if active==key %}active{% endif %}">{{ label }}</a>
+  {% endfor %}
+</nav>
+{% endif %}
+{%- endmacro %}

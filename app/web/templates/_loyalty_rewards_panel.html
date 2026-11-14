@@ -1,0 +1,84 @@
+{# Rewards editor — used inside loyalty settings modal #}
+{% from "macros.html" import switch %}
+<div class="loyalty-stack">
+  <div class="card settings-card">
+    <h2>افزودن جایزه</h2>
+    <p class="muted update-card-caption">جایزه جدید برای فروشگاه امتیاز ربات بسازید.</p>
+    <form method="post" action="/loyalty/rewards/create" class="form-stack">
+      <label class="form-field">نام<input name="name" required placeholder="مثلاً ۱۰ گیگ رایگان" /></label>
+      <label class="form-field">توضیح<textarea name="description" rows="2"></textarea></label>
+      <div class="form-row">
+        <label class="form-field">نوع
+          <select name="reward_type">
+            {% for k,v in reward_type_labels.items() %}
+            <option value="{{ k }}">{{ v }}</option>
+            {% endfor %}
+          </select>
+        </label>
+        <label class="form-field">مقدار<input name="reward_value" type="number" data-money-kind="reward_type" data-money-value="wallet_credit" min="1" required dir="ltr" /></label>
+        <label class="form-field">هزینه (امتیاز)<input name="points_cost" type="number" min="1" required dir="ltr" /></label>
+        <label class="form-field">ترتیب نمایش<input name="sort_order" type="number" value="100" dir="ltr" />
+          <small class="muted">عدد کمتر = بالاتر در لیست ربات</small>
+        </label>
+      </div>
+      <p class="muted">فقط برای تخفیف درصدی:</p>
+      <div class="form-row">
+        <label class="form-field">حداقل خرید (تومان)<input name="min_purchase_toman" type="number" data-money min="0" value="0" dir="ltr" /></label>
+        <label class="form-field">سقف تخفیف (تومان)<input name="max_discount_toman" type="number" data-money min="0" placeholder="اختیاری" dir="ltr" /></label>
+        <label class="form-field">انقضا (روز)<input name="expires_days" type="number" min="1" placeholder="اختیاری" dir="ltr" /></label>
+      </div>
+      <div class="actions"><button class="btn" type="submit">ایجاد جایزه</button></div>
+    </form>
+  </div>
+
+  {% set ns = namespace(has_reward=false) %}
+  {% for reward in rewards if not reward.archived %}
+  {% set ns.has_reward = true %}
+  <div class="card settings-card loyalty-editor">
+    <div class="loyalty-editor-head">
+      <div class="loyalty-editor-title">
+        <strong>{{ reward.name }}</strong>
+        <span class="muted">{{ reward_type_labels.get(reward.reward_type, reward.reward_type) }} · بازخرید: {{ reward.redemption_count | num }}</span>
+        {% if reward.enabled %}
+        <span class="badge ok">فعال</span>
+        {% else %}
+        <span class="badge neutral">غیرفعال</span>
+        {% endif %}
+      </div>
+    </div>
+    <form method="post" action="/loyalty/rewards/{{ reward.id }}/save" class="form-stack">
+      <label class="form-field">نام<input name="name" value="{{ reward.name }}" required /></label>
+      <label class="form-field">توضیح<textarea name="description" rows="2">{{ reward.description or '' }}</textarea></label>
+      <div class="form-row">
+        <label class="form-field">مقدار<input name="reward_value" type="number" {% if reward.reward_type == 'wallet_credit' %}data-money{% endif %} min="1" value="{{ reward.reward_value }}" dir="ltr" /></label>
+        <label class="form-field">هزینه<input name="points_cost" type="number" min="1" value="{{ reward.points_cost }}" dir="ltr" /></label>
+        <label class="form-field">ترتیب نمایش<input name="sort_order" type="number" value="{{ reward.sort_order }}" dir="ltr" /></label>
+        <label class="form-field">سقف کل<input name="max_redemptions_global" type="number" min="0" value="{{ reward.max_redemptions_global if reward.max_redemptions_global is not none else '' }}" placeholder="نامحدود" dir="ltr" /></label>
+        <label class="form-field">سقف هر کاربر<input name="max_redemptions_per_user" type="number" min="0" value="{{ reward.max_redemptions_per_user if reward.max_redemptions_per_user is not none else '' }}" placeholder="نامحدود" dir="ltr" /></label>
+      </div>
+      {% if reward.reward_type == 'discount_percent' %}
+      <div class="form-row">
+        <label class="form-field">حداقل خرید<input name="min_purchase_toman" type="number" data-money min="0" value="{{ reward.min_purchase_toman or 0 }}" dir="ltr" /></label>
+        <label class="form-field">سقف تخفیف<input name="max_discount_toman" type="number" data-money min="0" value="{{ reward.max_discount_toman if reward.max_discount_toman is not none else '' }}" dir="ltr" /></label>
+        <label class="form-field">انقضا (روز)<input name="expires_days" type="number" min="1" value="{{ reward.expires_days if reward.expires_days is not none else '' }}" dir="ltr" /></label>
+      </div>
+      {% endif %}
+      <div class="ui-switch-list">
+        {{ switch('enabled', 'فعال', checked=reward.enabled) }}
+      </div>
+      <div class="actions">
+        <button class="btn" type="submit">ذخیره</button>
+      </div>
+    </form>
+    <form method="post" action="/loyalty/rewards/{{ reward.id }}/archive" class="loyalty-editor-danger"
+          data-confirm="این جایزه حذف شود؟ از لیست فعال‌ها خارج می‌شود." data-confirm-title="حذف جایزه" data-confirm-danger="1" data-confirm-label="حذف">
+      <div class="actions">
+        <button class="btn btn-danger" type="submit">حذف</button>
+      </div>
+    </form>
+  </div>
+  {% endfor %}
+  {% if not ns.has_reward %}
+  <div class="card"><p class="muted">جایزه‌ای نیست.</p></div>
+  {% endif %}
+</div>

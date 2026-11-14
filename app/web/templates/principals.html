@@ -1,0 +1,363 @@
+{% extends "base.html" %}
+{% from "macros.html" import row_actions, page_title, modal_title %}
+{% block title %}نمایندگان من{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div>
+    {{ page_title('users', 'نمایندگان من', help='resellers') }}
+  </div>
+  {% if can_create %}
+  <button type="button" class="btn" data-modal-open="modal-principal-create">افزودن نماینده</button>
+  {% endif %}
+  {% if can_create_l2 %}
+  <button type="button" class="btn" data-modal-open="modal-principal-create-l2">افزودن نماینده</button>
+  {% endif %}
+</div>
+
+{% if flash_ok and not open_detail %}<div class="flash ok">{{ flash_ok }}</div>{% endif %}
+{% if flash_err and not open_detail %}<div class="flash err">{{ flash_err }}</div>{% endif %}
+
+<div class="card card-flush">
+  <h2>فهرست نمایندگان</h2>
+  <div class="table-wrap">
+  <table class="table-compact table-list-sm" data-sortable>
+    <thead>
+      <tr>
+        <th data-sort-type="num">شناسه</th>
+        <th data-sort-type="text">وضعیت</th>
+        <th data-sort-type="text">نوع</th>
+        <th class="col-hide-sm" data-sort-type="text">کاربر پاسارگارد</th>
+        <th class="col-hide-sm" data-sort-type="text">والد</th>
+        <th class="col-hide-sm" data-sort-type="text">نقش پاسارگارد</th>
+        <th class="col-hide-sm" data-sort-type="text">هویت وب</th>
+        <th class="col-hide-sm" data-sort-type="text">ربات</th>
+        <th class="col-hide-sm" data-sort-type="text">ایجاد</th>
+        <th class="col-actions"></th>
+        <th class="li-head" scope="col"><span class="li-count">حساب‌ها</span><select class="select-sm li-sort" data-list-sort aria-label="مرتب‌سازی" hidden></select></th>
+      </tr>
+    </thead>
+    <tbody>
+    {% if actor_kind == 'owner' %}
+      {% for g in groups %}
+      {% set row = g.l1 %}
+      <tr>
+        <td class="mono" dir="ltr" data-sort-value="{{ row.principal_id }}">{{ row.principal_id }}</td>
+        <td class="li-badge" data-sort-value="{{ row.status }}">
+          {% if row.status == 'active' %}
+          <span class="badge approved">فعال</span>
+          {% else %}
+          <span class="badge warn">غیرفعال</span>
+          {% endif %}
+        </td>
+        <td class="li-sub" data-sort-value="{{ row.hierarchy_label }}">
+          <span class="role-tag role-tag-principal">{{ row.hierarchy_label }}</span>
+          <span class="li-only">{% if row.pg_role_name %}· {{ row.pg_role_name }} {% endif %}· {{ row.web_identity_label }}</span>
+        </td>
+        <td class="mono col-hide-sm li-title" dir="ltr" data-sort-value="{{ row.pg_username or '' }}">{{ row.pg_username or '—' }} <span class="li-only li-id">(#{{ row.principal_id }})</span></td>
+        <td class="col-hide-sm">—</td>
+        <td class="col-hide-sm" data-sort-value="{{ row.pg_role_name or '' }}">
+          {% if row.pg_role_name %}
+          <span class="identity-pg-role">نقش پاسارگارد: {{ row.pg_role_name }}</span>
+          {% else %}
+          —
+          {% endif %}
+        </td>
+        <td class="col-hide-sm" data-sort-value="{{ row.web_identity_status }}">{{ row.web_identity_label }}</td>
+        <td class="col-hide-sm">—</td>
+        <td class="mono col-hide-sm" dir="ltr" data-sort-value="{{ row.created_at or '' }}">{{ row.created_at or '—' }}</td>
+        <td class="col-actions">
+          {% call row_actions() %}
+            <a class="btn btn-ghost btn-sm" href="/principals?detail={{ row.principal_id }}">جزئیات</a>
+          {% endcall %}
+        </td>
+      </tr>
+      {% for child in g.children %}
+      <tr class="principal-row-l2">
+        <td class="mono" dir="ltr" data-sort-value="{{ child.principal_id }}">{{ child.principal_id }}</td>
+        <td class="li-badge" data-sort-value="{{ child.status }}">
+          {% if child.status == 'active' %}
+          <span class="badge approved">فعال</span>
+          {% else %}
+          <span class="badge warn">غیرفعال</span>
+          {% endif %}
+        </td>
+        <td class="li-sub" data-sort-value="{{ child.hierarchy_label }}">
+          <span class="role-tag role-tag-principal">{{ child.hierarchy_label }}</span>
+          <span class="li-only">{% if child.pg_role_name %}· {{ child.pg_role_name }} {% endif %}· {{ child.web_identity_label }}</span>
+        </td>
+        <td class="mono col-hide-sm li-title" dir="ltr" data-sort-value="{{ child.pg_username or '' }}">{{ child.pg_username or '—' }} <span class="li-only li-id">(#{{ child.principal_id }})</span></td>
+        <td class="mono col-hide-sm" dir="ltr">{{ child.parent_username or row.pg_username or '—' }}</td>
+        <td class="col-hide-sm" data-sort-value="{{ child.pg_role_name or '' }}">
+          {% if child.pg_role_name %}
+          <span class="identity-pg-role">نقش پاسارگارد: {{ child.pg_role_name }}</span>
+          {% else %}
+          —
+          {% endif %}
+        </td>
+        <td class="col-hide-sm" data-sort-value="{{ child.web_identity_status }}">{{ child.web_identity_label }}</td>
+        <td class="col-hide-sm">{{ child.bot_binding_label }}</td>
+        <td class="mono col-hide-sm" dir="ltr" data-sort-value="{{ child.created_at or '' }}">{{ child.created_at or '—' }}</td>
+        <td class="col-actions">
+          {% call row_actions() %}
+            <a class="btn btn-ghost btn-sm" href="/principals?detail={{ child.principal_id }}">جزئیات</a>
+          {% endcall %}
+        </td>
+      </tr>
+      {% endfor %}
+      {% else %}
+      <tr><td colspan="10" class="muted">نماینده‌ای ثبت نشده است</td></tr>
+      {% endfor %}
+    {% else %}
+      {% for child in l2_rows %}
+      <tr>
+        <td class="mono" dir="ltr" data-sort-value="{{ child.principal_id }}">{{ child.principal_id }}</td>
+        <td class="li-badge" data-sort-value="{{ child.status }}">
+          {% if child.status == 'active' %}
+          <span class="badge approved">فعال</span>
+          {% else %}
+          <span class="badge warn">غیرفعال</span>
+          {% endif %}
+        </td>
+        <td class="li-sub" data-sort-value="{{ child.hierarchy_label }}">
+          <span class="role-tag role-tag-principal">{{ child.hierarchy_label }}</span>
+          <span class="li-only">{% if child.pg_role_name %}· {{ child.pg_role_name }} {% endif %}· {{ child.web_identity_label }}</span>
+        </td>
+        <td class="mono col-hide-sm li-title" dir="ltr" data-sort-value="{{ child.pg_username or '' }}">{{ child.pg_username or '—' }} <span class="li-only li-id">(#{{ child.principal_id }})</span></td>
+        <td class="mono col-hide-sm" dir="ltr">{{ child.parent_username or '—' }}</td>
+        <td class="col-hide-sm" data-sort-value="{{ child.pg_role_name or '' }}">
+          {% if child.pg_role_name %}
+          <span class="identity-pg-role">نقش پاسارگارد: {{ child.pg_role_name }}</span>
+          {% else %}
+          —
+          {% endif %}
+        </td>
+        <td class="col-hide-sm" data-sort-value="{{ child.web_identity_status }}">{{ child.web_identity_label }}</td>
+        <td class="col-hide-sm">{{ child.bot_binding_label }}</td>
+        <td class="mono col-hide-sm" dir="ltr" data-sort-value="{{ child.created_at or '' }}">{{ child.created_at or '—' }}</td>
+        <td class="col-actions">
+          {% call row_actions() %}
+            <a class="btn btn-ghost btn-sm" href="/principals?detail={{ child.principal_id }}">جزئیات</a>
+          {% endcall %}
+        </td>
+      </tr>
+      {% else %}
+      <tr><td colspan="10" class="muted">نماینده‌ای ثبت نشده است</td></tr>
+      {% endfor %}
+    {% endif %}
+    </tbody>
+  </table>
+  </div>
+</div>
+
+{% if can_create %}
+<div class="ui-modal" id="modal-principal-create" hidden>
+  <div class="ui-modal-backdrop" data-modal-close></div>
+  <div class="ui-modal-panel" role="dialog" aria-modal="true">
+    <div class="ui-modal-head">
+      {{ modal_title('resellers', 'افزودن نماینده', caption='مدیریت نمایندگی', tone='brand') }}
+      <button type="button" class="icon-btn" data-modal-close aria-label="بستن"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
+    </div>
+    <form method="post" action="/principals/create" class="form-stack" autocomplete="off">
+      <p class="muted">نام کاربری و رمز پنل همان نام کاربری و رمز پاسارگارد است. نقش پاسارگارد فقط پروفایل قابلیت است.</p>
+      <label class="form-field">نام کاربری پاسارگارد
+        <input name="pg_username" required dir="ltr" autocomplete="off" />
+      </label>
+      <label class="form-field">رمز پاسارگارد
+        <input name="pg_password" type="password" required dir="ltr" autocomplete="new-password" />
+      </label>
+      <label class="form-field">نقش پاسارگارد
+        <select name="pg_role_id" required>
+          <option value="">— انتخاب نقش زنده —</option>
+          {% for r in pg_roles %}
+          <option value="{{ r.id }}">{{ r.name }}</option>
+          {% endfor %}
+        </select>
+        <small class="muted">فهرست زنده از پاسارگارد — نام نقش، سطح سازمان نیست.</small>
+      </label>
+      <label class="form-field">یادداشت (اختیاری)
+        <input name="note" maxlength="200" />
+      </label>
+      <div class="actions">
+        <button class="btn" type="submit" {% if not pg_roles %}disabled{% endif %}>ساخت</button>
+        <button type="button" class="btn btn-ghost" data-modal-close>انصراف</button>
+      </div>
+    </form>
+  </div>
+</div>
+{% endif %}
+
+{% if can_create_l2 %}
+<div class="ui-modal" id="modal-principal-create-l2" hidden>
+  <div class="ui-modal-backdrop" data-modal-close></div>
+  <div class="ui-modal-panel" role="dialog" aria-modal="true">
+    <div class="ui-modal-head">
+      {{ modal_title('resellers', 'افزودن نماینده', caption='مدیریت نمایندگی', tone='brand') }}
+      <button type="button" class="icon-btn" data-modal-close aria-label="بستن"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
+    </div>
+    <form method="post" action="/principals/create-l2" class="form-stack" autocomplete="off">
+      <p class="muted">نام کاربری و رمز پنل همان نام کاربری و رمز پاسارگارد است. نقش از پاسارگارد شما انتخاب می‌شود.</p>
+      <label class="form-field">نام کاربری پاسارگارد
+        <input name="pg_username" required dir="ltr" autocomplete="off" />
+      </label>
+      <label class="form-field">رمز پاسارگارد
+        <input name="pg_password" type="password" required dir="ltr" autocomplete="new-password" />
+      </label>
+      <label class="form-field">نقش پاسارگارد
+        <select name="pg_role_id" required>
+          <option value="">— انتخاب نقش زنده —</option>
+          {% for r in l2_pg_roles %}
+          <option value="{{ r.id }}">{{ r.name }}</option>
+          {% endfor %}
+        </select>
+        <small class="muted">فهرست زنده از پاسارگارد شما — نام نقش، سطح سازمان نیست.</small>
+      </label>
+      <label class="form-field">یادداشت (اختیاری)
+        <input name="note" maxlength="200" />
+      </label>
+      <div class="actions">
+        <button class="btn" type="submit" {% if not l2_pg_roles %}disabled{% endif %}>ساخت</button>
+        <button type="button" class="btn btn-ghost" data-modal-close>انصراف</button>
+      </div>
+    </form>
+  </div>
+</div>
+{% endif %}
+
+<div class="ui-modal" id="modal-principal-detail" hidden>
+  <div class="ui-modal-backdrop" data-modal-close></div>
+  <div class="ui-modal-panel" role="dialog" aria-modal="true" aria-labelledby="principal-detail-title">
+    <div class="ui-modal-head">
+      {{ modal_title('resellers', 'جزئیات نماینده', caption='مدیریت نمایندگی', tone='brand', heading_id='principal-detail-title') }}
+      <button type="button" class="icon-btn" data-modal-close aria-label="بستن"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
+    </div>
+    {% if detail %}
+    {% if flash_ok %}<div class="flash ok">{{ flash_ok }}</div>{% endif %}
+    {% if flash_err %}<div class="flash err">{{ flash_err }}</div>{% endif %}
+    <div class="form-stack">
+      <p>
+        <span class="role-tag role-tag-principal">{{ detail.hierarchy_label }}</span>
+        {% if detail.status == 'active' %}
+        <span class="badge approved">فعال</span>
+        {% else %}
+        <span class="badge warn">غیرفعال</span>
+        {% endif %}
+      </p>
+      <p>شناسه: <span class="mono" dir="ltr">{{ detail.principal_id }}</span></p>
+      <p>کاربر پاسارگارد: <span class="mono" dir="ltr">{{ detail.pg_username or '—' }}</span></p>
+      {% if detail.depth == 2 %}
+      <p>والد: <span class="mono" dir="ltr">{{ detail.parent_username or '—' }}</span></p>
+      <p>ربات: {{ detail.bot_binding_label }}</p>
+      {% endif %}
+      <p>
+        {% if detail.pg_role_name %}
+        <span class="identity-pg-role">نقش پاسارگارد: {{ detail.pg_role_name }}</span>
+        {% else %}
+        نقش پاسارگارد: —
+        {% endif %}
+      </p>
+      <p>هویت وب: {{ detail.web_identity_label }}</p>
+      <p>ایجاد: <span class="mono" dir="ltr">{{ detail.created_at or '—' }}</span></p>
+      {% if resource_count is not none %}
+      <p>منابع وابسته: <span class="mono" dir="ltr">{{ resource_count }}</span></p>
+      {% endif %}
+      {% if detail_chips %}
+      <p>قابلیت‌ها:</p>
+      <span class="identity-chips">
+        {% for chip in detail_chips %}
+        <span class="identity-chip">{{ chip }}</span>
+        {% endfor %}
+      </span>
+      {% endif %}
+      <div class="actions">
+        {% if detail.can_manage %}
+          {% if detail.status == 'active' %}
+          <form method="post" action="/principals/{{ detail.principal_id }}/disable">
+            <button class="btn btn-danger" type="submit">غیرفعال کردن</button>
+          </form>
+          {% else %}
+          <form method="post" action="/principals/{{ detail.principal_id }}/enable">
+            <button class="btn" type="submit">فعال کردن</button>
+          </form>
+          {% endif %}
+        {% endif %}
+        {% if can_attach_web %}
+        <button type="button" class="btn" data-modal-open="modal-principal-web-identity">فعال‌سازی ورود وب</button>
+        {% endif %}
+        {% if can_attach_l2_telegram %}
+        <button type="button" class="btn" data-modal-open="modal-principal-telegram-bind">اتصال تلگرام</button>
+        {% endif %}
+        {% if can_detach_l2_telegram %}
+        <form method="post" action="/principals/{{ detail.principal_id }}/telegram-unbind">
+          <button class="btn btn-danger" type="submit">قطع اتصال</button>
+        </form>
+        {% endif %}
+        <a class="btn btn-ghost" href="/principals">بستن</a>
+      </div>
+    </div>
+    {% else %}
+    <p class="muted">جزئیات در دسترس نیست.</p>
+    {% endif %}
+  </div>
+</div>
+
+{% if can_attach_web %}
+<div class="ui-modal" id="modal-principal-web-identity" hidden>
+  <div class="ui-modal-backdrop" data-modal-close></div>
+  <div class="ui-modal-panel" role="dialog" aria-modal="true">
+    <div class="ui-modal-head">
+      {{ modal_title('settings', 'فعال‌سازی ورود وب', caption='تنظیمات پنل', tone='brand') }}
+      <button type="button" class="icon-btn" data-modal-close aria-label="بستن"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
+    </div>
+    <form method="post" action="/principals/{{ detail.principal_id }}/web-identity" class="form-stack" autocomplete="off">
+      <p class="muted">نام کاربری پنل همان نام کاربری پاسارگارد است و تغییر نمی‌کند.</p>
+      <label class="form-field">نام کاربری
+        <input name="username" required dir="ltr" autocomplete="off" value="{{ detail.pg_username or '' }}" readonly />
+      </label>
+      <label class="form-field">رمز عبور (همان رمز پاسارگارد)
+        <input name="password" type="password" required dir="ltr" autocomplete="new-password" />
+      </label>
+      <div class="actions">
+        <button class="btn" type="submit">فعال‌سازی</button>
+        <button type="button" class="btn btn-ghost" data-modal-close>انصراف</button>
+      </div>
+    </form>
+  </div>
+</div>
+{% endif %}
+
+{% if can_attach_l2_telegram %}
+<div class="ui-modal" id="modal-principal-telegram-bind" hidden>
+  <div class="ui-modal-backdrop" data-modal-close></div>
+  <div class="ui-modal-panel" role="dialog" aria-modal="true">
+    <div class="ui-modal-head">
+      {{ modal_title('settings', 'اتصال تلگرام', caption='تنظیمات پنل', tone='brand') }}
+      <button type="button" class="icon-btn" data-modal-close aria-label="بستن"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
+    </div>
+    <form method="post" action="/principals/{{ detail.principal_id }}/telegram-bind" class="form-stack" autocomplete="off">
+      <p class="muted">اتصال اختیاری است. فقط شناسه تلگرام پذیرفته می‌شود؛ سلسله‌مراتب توسط سرور تعیین می‌شود.</p>
+      <label class="form-field">شناسه تلگرام
+        <input name="telegram_id" required dir="ltr" inputmode="numeric" autocomplete="off" />
+      </label>
+      <div class="actions">
+        <button class="btn" type="submit">اتصال</button>
+        <button type="button" class="btn btn-ghost" data-modal-close>انصراف</button>
+      </div>
+    </form>
+  </div>
+</div>
+{% endif %}
+{% endblock %}
+
+{% block page_scripts %}
+<script>
+(function(){
+  const openDetail = {{ (open_detail or false)|tojson }};
+  if (!openDetail) return;
+  const open = function(){
+    if (window.openModal) window.openModal('modal-principal-detail');
+  };
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', open);
+  else setTimeout(open, 0);
+})();
+</script>
+{% endblock %}

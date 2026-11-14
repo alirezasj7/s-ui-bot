@@ -1,0 +1,97 @@
+{% extends "base.html" %}
+{% from "macros.html" import page_title, row_actions, table_select_head, table_select_cell, table_bulk_bar %}
+{% from "_gift_code_fields.html" import gift_code_fields %}
+{% from "_marketing_tabs.html" import marketing_tabs %}
+{% block title %}کد هدیه{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div>
+    {{ page_title('gift', 'کد هدیه', help='gift-codes') }}
+  </div>
+</div>
+
+{{ marketing_tabs(marketing_sections|default(()), 'gift_codes') }}
+
+<div class="card">
+  <h2>ساخت کد جدید</h2>
+  <form method="post" action="/plans/gift-codes" class="form-stack gift-code-form">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    {{ gift_code_fields() }}
+    <div class="actions">
+      <button class="btn" type="submit">ساخت کد</button>
+    </div>
+  </form>
+</div>
+
+<div class="card card-flush">
+  <div class="card-flush-head"><h2>کدهای اخیر</h2></div>
+  {{ table_bulk_bar('/plans/gift-codes/bulk-action', [
+    {'key': 'toggle', 'label': 'روشن/خاموش', 'confirm': 'وضعیت {n} کد هدیه تغییر کند؟', 'confirm_title': 'تغییر وضعیت گروهی', 'confirm_label': 'اعمال'},
+  ]) }}
+  <div class="table-wrap">
+    <table class="table-compact table-list-sm" data-bulk-select>
+      <thead>
+        <tr>
+          {{ table_select_head() }}
+          <th>کد</th>
+          <th>مبلغ</th>
+          <th class="col-hide-sm">مصرف</th>
+          <th>شرایط</th>
+          <th>انقضا</th>
+          <th>وضعیت</th>
+          <th class="col-actions"></th>
+          <th class="li-head" scope="col"><span class="li-count">{{ (gift_codes or []) | length | num }} کد</span></th>
+        </tr>
+      </thead>
+      <tbody>
+      {% for c in gift_codes or [] %}
+        {% set d = (gift_code_details or {}).get(c.id, {}) %}
+        <tr data-bulk-ops="toggle">
+          {{ table_select_cell(c.id) }}
+          <td class="li-title"><span class="mono" dir="ltr">{{ c.code }}</span>{% if c.note %}<div class="muted li-hide">{{ c.note }}</div>{% endif %}</td>
+          <td class="li-value">{% if c.kind == 'discount' %}<span class="mono">{{ c.percent }}٪</span>{% if c.max_discount_toman is not none %}<div class="muted li-hide">تا <span dir="ltr">{{ c.max_discount_toman | money }}</span> تومان</div>{% endif %}{% else %}<span class="mono" dir="ltr">{{ c.amount | money }}</span><div class="muted li-hide">شارژ کیف پول</div>{% endif %}</td>
+          <td class="col-hide-sm">{{ c.used_count }}{% if c.max_uses is not none %}/{{ c.max_uses }}{% endif %}</td>
+          <td class="li-sub">
+            {#- On phones line two: kind · uses · per user · purchases · expiry · note. -#}
+            <span class="li-only">{{ 'تخفیف' if c.kind == 'discount' else 'شارژ کیف پول' }} · مصرف <bdi dir="ltr">{{ c.used_count }}{% if c.max_uses is not none %}/{{ c.max_uses }}{% endif %}</bdi> ·</span>
+            <span>هر کاربر: {{ c.max_uses_per_user if c.max_uses_per_user is not none else 'نامحدود' }}</span>{% if c.kind == 'discount' %}<span class="muted"> · {{ 'فقط خرید اول' if c.first_purchase_only else d.get('purchase_label', 'همه خریدها') }}</span>{% endif %}
+            <span class="li-only">· <bdi dir="ltr">{{ d.get('expiry_label', 'بدون انقضا') }}</bdi>{% if c.note %} · <span dir="auto">{{ c.note }}</span>{% endif %}</span>
+          </td>
+          <td dir="ltr">{{ d.get('expiry_label', 'بدون انقضا') }}</td>
+          <td class="li-badge"><span class="badge {{ 'active' if d.get('state', 'فعال') == 'فعال' else 'warn' }}">{{ d.get('state', 'فعال' if c.is_active else 'خاموش') }}</span></td>
+          <td class="col-actions">
+            {% call row_actions() %}
+            <button class="btn btn-ghost btn-sm" type="button" data-gift-edit="gift-edit-{{ c.id }}" aria-expanded="false" aria-controls="gift-edit-{{ c.id }}">ویرایش</button>
+            <form method="post" action="/plans/gift-codes/{{ c.id }}/toggle">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+              <button class="btn btn-ghost btn-sm" type="submit">{% if c.is_active %}خاموش{% else %}روشن{% endif %}</button>
+            </form>
+            {% endcall %}
+          </td>
+        </tr>
+      {% else %}
+        <tr><td colspan="8" class="muted">هنوز کدی ساخته نشده.</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+{% for c in gift_codes or [] %}
+<div id="gift-edit-{{ c.id }}" class="card gift-code-editor" hidden>
+  <form method="post" action="/plans/gift-codes/{{ c.id }}/edit" class="form-stack gift-code-form">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <h2>ویرایش کد <span class="mono" dir="ltr">{{ c.code }}</span></h2>
+    {{ gift_code_fields(c, (gift_code_details or {}).get(c.id, {})) }}
+    <div class="actions">
+      <button class="btn" type="submit">ذخیره تنظیمات</button>
+      <button class="btn btn-ghost" type="button" data-gift-edit="gift-edit-{{ c.id }}">بستن</button>
+    </div>
+  </form>
+</div>
+{% endfor %}
+{% endblock %}
+
+{% block page_scripts %}
+<script src="/static/gift-codes.js?v={{ app_version }}"{% if csp_nonce %} nonce="{{ csp_nonce }}"{% endif %}></script>
+{% endblock %}

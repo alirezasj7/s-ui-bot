@@ -1,0 +1,132 @@
+#!/bin/bash
+# Privileged control helper for PGClockBot panel / global CLI.
+# Only fixed, validated operations — never expose raw systemctl args beyond allowlist.
+set -euo pipefail
+SERVICE_NAME="pgclockbot"
+cmd="${1:-}"
+
+_valid_domain() {
+  local d="$1"
+  [[ "$d" =~ ^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)+$ ]]
+}
+
+_valid_email() {
+  local e="$1"
+  [[ "$e" =~ ^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$ ]]
+}
+
+case "$cmd" in
+  start)
+    /bin/systemctl start "$SERVICE_NAME"
+    ;;
+  stop)
+    /bin/systemctl stop "$SERVICE_NAME"
+    ;;
+  restart)
+    /bin/systemctl restart "$SERVICE_NAME"
+    ;;
+  try-restart)
+    /bin/systemctl try-restart "$SERVICE_NAME"
+    ;;
+  enable)
+    /bin/systemctl enable "$SERVICE_NAME"
+    ;;
+  disable)
+    /bin/systemctl disable "$SERVICE_NAME"
+    ;;
+  is-active)
+    /bin/systemctl is-active "$SERVICE_NAME"
+    ;;
+  status)
+    /bin/systemctl status "$SERVICE_NAME" --no-pager
+    ;;
+  capabilities)
+    # Features the panel may rely on; an older helper has no such subcommand.
+    echo "san"
+    ;;
+  certbot-certonly)
+    # Usage: certbot-certonly <domain> <email> <webroot> [--force] [--also <domain>]
+    # --also adds one more name to the same certificate (the Mini App domain).
+    domain="${2:-}"
+    email="${3:-}"
+    webroot="${4:-}"
+    force=""
+    also=""
+    if [[ -z "$domain" || -z "$email" || -z "$webroot" ]]; then
+      echo "usage: pgclockbot-ctl certbot-certonly <domain> <email> <webroot> [--force] [--also <domain>]" >&2
+      exit 2
+    fi
+    shift 4
+    while [[ $# -gt 0 ]]; do
+      case "$1" in
+        --force|--force-renewal)
+          force="--force"
+          shift
+          ;;
+        --also)
+          also="${2:-}"
+          if [[ -z "$also" ]] || ! _valid_domain "$also" || [[ "$also" == "$domain" ]]; then
+            echo "invalid extra domain" >&2
+            exit 2
+          fi
+          shift 2
+          ;;
+        *)
+          echo "unknown option" >&2
+          exit 2
+          ;;
+      esac
+    done
+    if ! _valid_domain "$domain"; then
+      echo "invalid domain" >&2
+      exit 2
+    fi
+    if ! _valid_email "$email"; then
+      echo "invalid email" >&2
+      exit 2
+    fi
+    case "$webroot" in
+      */data/acme-www|*/data/acme-www/|/var/lib/pgclockbot/*|/opt/pgclockbot/*) ;;
+      *)
+        echo "webroot not allowed" >&2
+        exit 2
+        ;;
+    esac
+    if [[ ! -d "$webroot" ]]; then
+      echo "webroot missing" >&2
+      exit 1
+    fi
+    certbot_bin=""
+    if [[ -x /usr/bin/certbot ]]; then
+      certbot_bin=/usr/bin/certbot
+    elif [[ -x /bin/certbot ]]; then
+      certbot_bin=/bin/certbot
+    else
+      echo "certbot not found" >&2
+      exit 1
+    fi
+    args=(
+      certonly
+      --agree-tos
+      --non-interactive
+      --email "$email"
+      --cert-name "pgclock-${domain}"
+      -d "$domain"
+      --key-type ecdsa
+      --elliptic-curve secp256r1
+      --webroot
+      -w "$webroot"
+    )
+    if [[ -n "$also" ]]; then
+      args+=(-d "$also")
+    fi
+    if [[ "$force" == "--force" ]]; then
+      args+=(--force-renewal)
+    fi
+    exec "$certbot_bin" "${args[@]}"
+    ;;
+  *)
+    echo "usage: pgclockbot-ctl start|stop|restart|try-restart|enable|disable|is-active|status|capabilities|certbot-certonly" >&2
+    exit 2
+    ;;
+esac

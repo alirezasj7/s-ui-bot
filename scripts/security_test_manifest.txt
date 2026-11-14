@@ -1,0 +1,361 @@
+
+#
+# Selected-host route identity, scope and prevention of direct fallback.
+tests/test_connection_monitor_catalog.py
+tests/test_connection_monitor_subscription.py
+tests/test_connection_monitor_subscription_migration.py
+tests/test_connection_monitor_config.py
+tests/test_xray_probe.py
+tests/test_connection_probe.py
+tests/test_connection_status_policy.py
+tests/test_connection_monitor_panel.py
+tests/test_connection_monitor_snapshots.py
+tests/test_connection_monitor_worker.py
+tests/test_connection_monitor_queue.py
+tests/test_connection_monitor_admin.py
+tests/test_connection_status_admin_bot.py
+tests/test_connection_status_public.py
+tests/test_connection_status_public_bot.py
+tests/test_connection_status_menu_migration.py
+tests/test_connection_monitor_install.py
+tests/test_connection_status.py
+tests/test_connection_status_authz.py
+tests/test_connection_status_concurrency.py
+tests/test_connection_status_migration.py
+# Subscription contact ownership, shop isolation and cancellation notification claims.
+tests/test_purchase_contact_and_cancellation_notices.py
+# Monetary display escaping and canonical refund form values.
+tests/test_web_money_formatting.py
+# Migration channel compatibility and cache isolation.
+tests/test_update_migration_metadata.py
+# --- ACL / RBAC / authz audits ---
+# --- Core authorization / role & tenant isolation phases ---
+# Every file listed here is executed by scripts/run_security_tests.sh (and by
+# full test suite, which also contains a long tail of unrelated pre-existing
+# it is never silently skipped by future patches. One path per line; lines
+# --- Multi-tenant scale / performance hardening ---
+# --- PasarGuard admin/staff web-access & credential handling ---
+# / secret-handling change, add the new regression test file's path here so
+# Security regression test manifest.
+# --- Setup wizard / secrets-at-rest / infra hardening ---
+# starting with # are comments; blank lines are ignored.
+# --- Tenant / shop isolation & IDOR ---
+# Bot settings button colors: owner/shop permissions and per-shop writes.
+tests/test_button_color_editor.py
+# In-menu screen editor: owner/shop permissions, per-shop writes, edit-mode switch.
+tests/test_screen_editor.py
+# Editable menu titles: owner/shop scope, unsafe titles refused.
+tests/test_screen_titles.py
+tests/test_update_owner_only.py
+tests/test_marketing_nav.py
+tests/test_gift_code_page.py
+tests/test_message_variables_tab.py
+tests/test_admin_marketing_hub.py
+tests/test_marketing_tools_bot.py
+tests/test_marketing_nav_levels.py
+tests/test_addon_general_scope.py
+tests/test_service_import.py
+tests/test_service_import_flow.py
+tests/test_service_import_hardening.py
+tests/test_funnel_page.py
+tests/test_authz_regression_premerge_4_5_1.py
+tests/test_bot_friendly_errors.py
+tests/test_bot_inline_settings_owner.py
+tests/test_bot_pg_action_matrix.py
+tests/test_bot_users_reseller_id_index.py
+tests/test_cancel_tickets_isolation_3_6_6.py
+tests/test_client_ip_spoofing.py
+tests/test_csrf_body_replay_form_posts.py
+tests/test_csrf_csp_doctor_remaining.py
+tests/test_doctor_owner_identity.py
+tests/test_final_admin_reseller_security_audit.py
+tests/test_final_audit_2_0_2.py
+tests/test_final_audit_fixes.py
+tests/test_full_audit_3_8_3.py
+tests/test_giftcode_toggle_authz.py
+tests/test_hybrid_owner_pg_clamp.py
+tests/test_hybrid_owner_quota_gate.py
+tests/test_hybrid_quota_boxes.py
+tests/test_inbox_platform_scope_leak.py
+tests/test_live_pg_menus.py
+tests/test_miniapp_security_audit.py
+tests/test_miniapp_init_data_window.py
+tests/test_miniapp_service_addons.py
+tests/test_miniapp_feeds.py
+tests/test_miniapp_frontend.py
+tests/test_miniapp_topup.py
+tests/test_miniapp_support.py
+tests/test_miniapp_codes.py
+tests/test_miniapp_guides.py
+tests/test_miniapp_loyalty.py
+tests/test_loyalty_redeem_race.py
+tests/test_miniapp_review.py
+tests/test_miniapp_branding.py
+tests/test_miniapp_badges.py
+tests/test_bot_profile_photo.py
+tests/test_bot_appearance_menu_button.py
+tests/test_renewal_preview.py
+tests/test_on_hold_addon_quotas.py
+tests/test_on_hold_service_display.py
+tests/test_owner_bypass_guards.py
+tests/test_order_delivery_scope.py
+tests/test_pg_admin_exact_lookup.py
+tests/test_pg_admin_web_gate.py
+tests/test_pg_gate_outage_grace.py
+tests/test_pg_groups_inbound_tag_allowlist.py
+tests/test_pg_outage_access_revoke.py
+tests/test_pg_access_safe_probe_error.py
+tests/test_pg_quota.py
+tests/test_pg_reseller_client_cache_key.py
+tests/test_pg_staff_reseller_parity.py
+tests/test_pg_web_access_guards.py
+tests/test_phase0_phase1_hardening.py
+tests/test_phase2_web_panel_ia.py
+tests/test_phase3_phase4_bot_hygiene.py
+tests/test_phase5b_bot_l2_bind_resolve.py
+tests/test_phase5c_bot_l2_pg_parity.py
+tests/test_phase5d_l2_bot_routing.py
+tests/test_phase5e_final_hierarchy_redteam.py
+tests/test_phase_c0_authz.py
+tests/test_phase_c1_read_isolation.py
+tests/test_phase_c2_write_authz.py
+tests/test_phase_c3_limits_quotas.py
+tests/test_phase_c4_bot_web_alignment.py
+tests/test_phase_c5_credential_sync.py
+tests/test_phase_d1_credential_policy.py
+tests/test_phase_d2_grant_sync.py
+tests/test_phase_d3_legacy_remediation.py
+tests/test_phase_d4_identity_consistency.py
+tests/test_plans_catalog_hybrid_owner_scope.py
+tests/test_product5_l2_telegram_bind.py
+tests/test_production_audit_3_5_6.py
+tests/test_quota_own_client.py
+tests/test_rbac_final_security_audit_4_5_1.py
+tests/test_receipt_match_tenant_isolation.py
+tests/test_receipt_security.py
+tests/test_referral_registration.py
+tests/test_representative_unification.py
+tests/test_reseller_access.py
+tests/test_role_miniapp.py
+tests/test_rtl_acl_audit_4_5_1.py
+tests/test_secret_box_key_separation.py
+tests/test_service_naming_variables.py
+tests/test_security_audit_3_6_3.py
+tests/test_security_audit_hardening.py
+tests/test_security_hardening.py
+tests/test_security_legacy_username_parity.py
+tests/test_service_live_info.py
+tests/test_setup_bot_placeholder_rejection.py
+tests/test_setup_gate_install_url.py
+tests/test_setup_url_log_redaction.py
+tests/test_setup_wizard_secret_masking.py
+tests/test_shop_isolation_3_5_4.py
+tests/test_nav_admin_counters_0_2_47.py
+tests/test_shop_wallet_isolation.py
+tests/test_psp_verify_after_disable.py
+# BezanBeCard: tenant callback token, API re-verify, merchant_order_id bind, no blind trust.
+tests/test_bezanbecard_settlement.py
+tests/test_bbc_gateway_links.py
+tests/test_psp_return_page_states.py
+# SunPay PSP: request→verify, amount/invoice match, soft cancel, shop-scoped return.
+tests/test_sunpay_psp.py
+tests/test_psp_settlement_poll.py
+tests/test_settlement_public_ux.py
+tests/test_psp_open_checkout_payments.py
+tests/test_psp_vpn_notice.py
+tests/test_psp_settlement_review.py
+tests/test_public_https_psp_base.py
+tests/test_psp_check_button.py
+tests/test_payment_method_labels.py
+tests/test_bbc_poll_fairness.py
+tests/test_sunpay_setup_errors.py
+tests/test_service_automation.py
+tests/test_psp_stuck_settling_recovery.py
+tests/test_customer_features.py
+tests/test_scheduler_background_jobs.py
+tests/test_sqlite_db_file_permissions.py
+tests/test_template_variable_validation.py
+tests/test_nav_tenancy_context_0_2_47.py
+tests/test_service_card_parity_0_2_47.py
+tests/test_welcome_home_0_2_47.py
+tests/test_heal_legacy_svc_0_2_47.py
+tests/test_nav_input_ask_text_0_2_47.py
+tests/test_tenant_isolation.py
+tests/test_v4_0_8_security_audit_sanitize.py
+tests/test_v4_1_1_reseller_pg_role_access.py
+tests/test_demo_users.py
+tests/test_web_list_inputs.py
+tests/test_plans_single_message.py
+tests/test_main_bot_reseller_hub.py
+tests/test_admin_settings_authorization.py
+tests/test_reseller_hub_in_place.py
+# Web read deadlines, outage gates, credential isolation and mutation outcomes.
+tests/test_panel_connection_resilience.py
+tests/test_panel_asset_cache.py
+tests/test_catalog_discounts.py
+tests/test_inbox_dismissal_lifecycle.py
+tests/test_stale_menu_notice.py
+tests/test_restart_button.py
+tests/test_payg_low_balance_alerts.py
+tests/test_payg_rate_validation.py
+tests/test_payg_tick_issue_alerts.py
+tests/test_payg_billing_mode.py
+tests/test_payg_shortfall_billing.py
+tests/test_user_purge_schema_sweep.py
+tests/test_delivery_failure_queue.py
+tests/test_service_import_config.py
+tests/test_service_import_settings_tab.py
+tests/test_service_import_approval.py
+tests/test_service_import_notify.py
+tests/test_reseller_capacity_snapshot.py
+tests/test_reseller_capacity_view.py
+tests/test_random_payment_card.py
+tests/test_panel_alert_notifications.py
+tests/test_stuck_order_resolution.py
+tests/test_connection_status_web.py
+tests/test_shop_isolation_owner_routes.py
+tests/test_shop_isolation_tickets.py
+tests/test_shop_isolation_order_payment.py
+tests/test_shop_isolation_service_ops.py
+tests/test_shop_isolation_customer_services.py
+tests/test_service_shop_scope_migration.py
+tests/test_shop_attribution_keeps_platform_customers.py
+tests/test_shop_membership.py
+tests/test_service_shop_review.py
+tests/test_shop_isolation_rewards_campaigns.py
+tests/test_shop_isolation_notifications.py
+tests/test_shop_isolation_dashboards.py
+tests/test_service_shop_review_page.py
+tests/test_shop_points.py
+tests/test_shop_points_migration.py
+tests/test_shop_isolation_remaining.py
+tests/test_shop_isolation_review_fixes.py
+tests/test_wheel_state_per_shop.py
+tests/test_owner_bot_hides_shop_panel_users.py
+tests/test_shop_isolation_audit_fixes.py
+tests/test_dashboard_trend.py
+tests/test_guide_media.py
+tests/test_guide_editor.py
+tests/test_wireguard_delivery_followup.py
+tests/test_settings_back_cancel.py
+tests/test_settings_regroup.py
+tests/test_cancel_one_step.py
+tests/test_reseller_panel_groups.py
+tests/test_long_lists.py
+tests/test_service_card_more.py
+tests/test_admin_tweaks.py
+tests/test_chat_cleanup.py
+tests/test_chat_cleanup_forms.py
+tests/test_chat_message_ledger.py
+tests/test_replaceable_notices.py
+tests/test_risk_mark.py
+tests/test_overview_redesign.py
+tests/test_backup_retention_telegram.py
+tests/test_reseller_wallet_debit.py
+tests/test_py_compat.py
+tests/test_bbc_https_requirement.py
+tests/test_volume_allocation.py
+tests/test_volume_allocation_external.py
+tests/test_volume_allocation_cascade.py
+tests/test_paid_order_undelivered.py
+tests/test_manual_approve_undelivered.py
+tests/test_reseller_package.py
+tests/test_reseller_provision_limits.py
+tests/test_reseller_subscription_pages.py
+tests/test_reseller_package_bot.py
+tests/test_reseller_extra_purchase.py
+tests/test_bbc_refusal_reason.py
+tests/test_finance_daily_charts.py
+tests/test_miniapp_shop_scope.py
+tests/test_miniapp_shop_admin_persona.py
+tests/test_miniapp_shop_readonly.py
+tests/test_miniapp_shop_purchase.py
+tests/test_miniapp_shop_topup.py
+tests/test_legacy_discount_shop_scope.py
+tests/test_miniapp_shop_extras.py
+tests/test_shop_notify_isolation.py
+tests/test_user_search.py
+tests/test_psp_gateways.py
+tests/test_user_card.py
+tests/test_user_photo.py
+tests/test_custom_plan_shop_limits.py
+tests/test_custom_plan_cleanup.py
+tests/test_stale_order_cleanup_tab.py
+# Subscription link search: shop scope, no secret leak, permission.
+tests/test_subscription_link_search.py
+# Alert offers: shop purse and shop catalog only, no cross-tenant wallet use.
+tests/test_usage_alerts.py
+# Customer orders list: own orders of the current shop only.
+tests/test_customer_orders.py
+# Funnel steps from the order flow: shop scope, idempotency, failure isolation.
+tests/test_funnel_events.py
+# Cancellation approve/reject from the bot: shop scope and staff authz.
+tests/test_cancellation_review_bot.py
+# Automation review queue: shop scope, safe release, permission, bot and template.
+tests/test_automation_review.py
+# Voiding approved payments: shop scope, refund idempotency, unknown panel outcome, permission.
+tests/test_payment_voids.py
+tests/test_payment_void_bot.py
+# Durable broadcast queue: platform audience only, no double send, cancel, admin-only.
+tests/test_broadcast_queue.py
+# First-use nudge: once per service, per-shop switch, shop bot only.
+tests/test_first_use_nudge.py
+# The app must compile and import (guards a broken merge).
+tests/test_app_compiles.py
+# Staff customer search: shop scope, bounds and wildcard safety.
+tests/test_staff_user_search.py
+# Staff DMs: reseller target check and free-text prompts not hijacked by menu labels.
+tests/test_staff_message_free_text.py
+# Free trial: an unknown panel outcome keeps the claim spent (no repeated trials).
+tests/test_trial_claim_unknown_delivery.py
+# Trial notice: shop trials reach only that shop's staff; customer text escaped.
+tests/test_trial_claimed_notice.py
+# Chat tidy: only tapped panels are swept, records stay; a shop bot's report never replaces another bot's.
+tests/test_bot_chat_tidy.py
+# Ticket notices: closing one ticket removes only its notices, through that shop's bot.
+tests/test_ticket_notices.py
+# Owner reseller search: resellers only, owner and representative-management gate.
+tests/test_reseller_search.py
+# Trial account age: a young account is refused before its one trial is claimed.
+tests/test_trial_account_age.py
+# Trial phone lock: number formats collapse to one hash; a verified purchase number is reused.
+tests/test_trial_phone_lock.py
+# Trial users page: shop-scoped list, buyer tag, permission gate, escaped customer text.
+tests/test_trial_users.py
+# Trial user actions: only own trial takers, message honours opt-out, blocking stays with the Owner.
+tests/test_trial_user_actions.py
+# Auto-approval notice: receipt photo and customer/service buttons reach only the payment's own staff chat.
+tests/test_auto_approve_notice.py
+# Scheduled receipt approval: per-shop rule, safe selection, no retries, duplicates stay manual.
+tests/test_scheduled_approval.py
+# Crypto rates: SSRF-safe fetch, exact integer quotes locked on the payment, per-shop isolation, no claim without a rate.
+tests/test_crypto_rates.py
+# Panel brand: per-shop isolation, safe logo handling, who may edit, escaped header.
+tests/test_panel_brand.py
+
+# Staff search: Persian folds, partial ids and service names stay inside the shop scope.
+tests/test_user_search_folding.py
+# Shop bot: void button only for a shop holding payment_void; customer card lists only the shop's services.
+tests/test_shop_customer_card.py
+# Shop Mini App: permission default for new shops and the reason a shop cannot switch it on.
+tests/test_shop_miniapp_defaults.py
+# Cleanup tab deletion: own shop only, chosen tags only, never money in flight, from the root.
+tests/test_order_purge.py
+# Owner bulk grant of the shop Mini App permission: owner only, never widens an explicit empty list.
+tests/test_bulk_grant_miniapp.py
+# Customer staff note and risk tag: customer_notes key, own shop only.
+tests/test_customer_notes_permission.py
+# Gift codes: own gift_codes key, own shop only; migration 0077 keeps current access.
+tests/test_gift_codes_permission.py
+# Shop staff action log: written with the change, read only by the shop it belongs to.
+tests/test_staff_audit.py
+# Manual shop wallet changes by shop staff: own shop purse only, capped, once per request.
+tests/test_shop_wallet_adjust.py
+# Manual loyalty-point changes by shop staff: own shop only, capped, once per request.
+tests/test_shop_points_adjust.py
+# Per-shop customer block: that shop's bot, Mini App and campaigns only; never account-wide.
+tests/test_shop_customer_block.py
+# Campaigns to a shop's whole audience: own reachable customers only, one per shop per day.
+tests/test_campaign_broad_audiences.py
+# Shop bot customer card tools: same keys and checks as the web, own shop only, once per flow.
+tests/test_shop_bot_customer_tools.py

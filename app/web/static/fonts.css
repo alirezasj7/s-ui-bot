@@ -1,0 +1,9 @@
+/* Vazirmatn OFL — self-hosted variable font (no Google Fonts round-trip). */
+@font-face {
+  font-family: "Vazirmatn";
+  src: url("/static/fonts/Vazirmatn-Variable.woff2") format("woff2-variations"),
+       url("/static/fonts/Vazirmatn-Variable.woff2") format("woff2 supports variations");
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}

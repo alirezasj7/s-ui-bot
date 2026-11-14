@@ -1,0 +1,5270 @@
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+import time
+from pathlib import Path
+from typing import Optional
+from urllib.parse import quote
+
+from fastapi import Depends, FastAPI, Form, HTTPException, Request
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.staticfiles import StaticFiles
+from fastapi.templating import Jinja2Templates
+from itsdangerous import BadSignature, BadTimeSignature, URLSafeTimedSerializer
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+from starlette.exceptions import HTTPException as StarletteHTTPException
+
+from app.config import (
+    DATA_DIR,
+    get_settings,
+    normalize_pg_base_url,
+    normalize_pg_subscription_path,
+)
+from app.db.models import (
+    BotUser,
+    Order,
+    OrderStatus,
+    Payment,
+    PaymentStatus,
+    Plan,
+    ResellerProfile,
+    Role,
+)
+from app.db.session import SessionLocal
+from app.services.orders import (
+    approve_payment,
+    cancel_order,
+    fulfill_paid_order,
+    is_mutation_order_note,
+    manual_fulfill_unpaid_order,
+    reject_order,
+    reject_payment,
+)
+from app.api.guide_media_pages import PLATFORM_BASE as GUIDE_MEDIA_PLATFORM_BASE
+from app.api.guide_media_pages import guides_media_view, register_guide_media_pages
+from app.services.chat_cleanup_config import chat_cleanup_payload
+from app.services.reseller_bots import schedule_shop_menu_sync
+from app.services.connection_guides import prune_guide_media, serialize_submitted_guides
+from app.services.list_query import filter_by_search, normalize_search_q
+from app.services.miniapp_branding import ACCENT_PRESETS
+from app.services.user_search import clean_handle, with_search_matches as _with_search_matches
+from app.services.payer_notify import notify_payer
+from app.services.resellers import (
+    setup_is_complete,
+    DEFAULT_FEATURE_PERMS,
+)
+from app.services.setup_wizard import (
+    begin_setup,
+    current_setup_values,
+    ensure_setup_gate_token,
+    ensure_web_secret,
+    is_local_setup_client,
+    is_setup_complete,
+    mark_setup_complete,
+    normalize_webhook_base_url,
+    normalize_webhook_path,
+    prepare_sui_env_update,
+    resolve_bot_update_mode,
+    setup_finish_login_url,
+    setup_pg_access_audit,
+    wizard_panel_url_hint,
+    parse_admin_ids,
+    revoke_setup_gate,
+    rotate_setup_gate_token,
+    setup_gate_cookie_max_age,
+    setup_gate_ok,
+    update_env_keys,
+)
+from app.services.security_policy import (
+    UnsafePgUrlError,
+    assert_safe_pg_base_url,
+    PUBLIC_FORM_MAX_BODY_BYTES,
+    content_length_ok,
+    request_host_allowed,
+)
+from app.services.updates import local_version
+from app.services.message_variables import template_variable_specs
+from app.services.psp_gateways import psp_gateways_form_json
+from app.services.panel_assets import get_panel_asset_cache_key
+from app.services.shop_scope import is_platform_admin, payment_shop_id
+from app.services.panel_brand import (
+    BRAND_PRESET_CSS,
+    DEFAULT_BRAND,
+    DEFAULT_COLOR_HEX,
+    DEFAULT_COLOR_LABEL,
+    PRESETS as BRAND_PRESETS,
+    brand_for_staff,
+    load_own_values,
+)
+from app.services.settings_tab_groups import group_settings_tabs, tabs_with_message_variables
+from app.services.users import (
+    SETTING_VISIBILITY,
+    SETTINGS_DOMAIN_REDIRECTS,
+    SETTING_GROUPS,
+    SETTINGS_TABS,
+    PANEL_SETTINGS_KEYS,
+    PANEL_SETTINGS_TABS,
+    RESETTABLE_SETTINGS_TABS,
+    TAB_SETTING_GROUPS,
+    get_all_settings,
+    set_setting,
+    set_settings_bulk,
+)
+from app.services.web_auth import (
+    admin_session_version,
+    load_web_admin,
+    save_web_admin,
+    validate_password_strength,
+    verify_password_hash,
+    verify_web_admin,
+)
+from app.api.catalog_discounts import register_catalog_discounts
+from app.api.connection_status_pages import register_connection_status_pages
+from app.api.funnel_pages import register_funnel_pages
+from app.api.order_purge_pages import register_order_purge_pages
+from app.api.staff_audit_pages import register_staff_audit_pages
+from app.api.shop_wallet_pages import register_shop_wallet_pages
+from app.api.shop_points_pages import register_shop_points_pages
+from app.api.shop_customer_block_pages import register_shop_customer_block_pages
+from app.api.panel_brand_pages import register_panel_brand_pages
+from app.api.trial_users_pages import register_trial_users_pages
+from app.api.gift_code_pages import legacy_gift_modal_redirect, register_gift_code_pages
+from app.api.bot_overview_pages import register_bot_overview_pages
+from app.api.dashboard_trend_pages import register_dashboard_trend_pages
+from app.services.backup_settings import apply_backup_retention, normalize_backup_payload
+from app.services.bbc_settlement import bbc_enable_error
+from app.api.home_pages import register_home_pages
+from app.api.pg_pages import register_pg_pages
+from app.api.service_import_pages import register_service_import_pages
+from app.api.panel_connection import PanelConnectionMiddleware, finish_panel_authentication
+from app.api.login_guard import (
+    client_ip as _client_ip,
+    login_blocked as _login_blocked,
+    login_fail as _login_fail,
+    login_success as _login_success,
+)
+
+logger = logging.getLogger(__name__)
+
+WEB_DIR = Path(__file__).resolve().parent.parent / "web"
+templates = Jinja2Templates(directory=str(WEB_DIR / "templates"))
+
+from app.services.formatting import format_bytes, format_bytes_ratio, format_gb, format_money, format_number, format_expire_short, order_status_fa, ticket_status_fa
+
+templates.env.filters["bytes"] = format_bytes
+templates.env.filters["bytes_ratio"] = format_bytes_ratio
+templates.env.filters["gb"] = format_gb
+templates.env.filters["num"] = format_number
+templates.env.filters["money"] = format_money
+templates.env.filters["expire"] = format_expire_short
+templates.env.filters["order_status"] = order_status_fa
+templates.env.filters["ticket_status"] = ticket_status_fa
+templates.env.globals["app_version"] = local_version()
+templates.env.globals["psp_gateways_form_json"] = psp_gateways_form_json
+templates.env.globals["miniapp_accent_presets"] = ACCENT_PRESETS
+templates.env.globals["setting_visibility"] = SETTING_VISIBILITY
+templates.env.globals["brand_presets"] = BRAND_PRESETS
+# Request context overrides these; they keep templates that render without a signed-in person working.
+templates.env.globals["panel_brand"] = DEFAULT_BRAND
+templates.env.globals["panel_brand_css"] = BRAND_PRESET_CSS
+templates.env.globals["default_brand_color_hex"] = DEFAULT_COLOR_HEX
+templates.env.globals["default_brand_color_label"] = DEFAULT_COLOR_LABEL
+templates.env.globals["panel_script_cache_key"] = get_panel_asset_cache_key("panel.js")
+templates.env.globals["panel_widget_cache_key"] = get_panel_asset_cache_key("panel_widget_request.js")
+templates.env.globals["money_inputs_cache_key"] = get_panel_asset_cache_key("money-inputs.js")
+templates.env.globals["list_inputs_cache_key"] = get_panel_asset_cache_key("list-inputs.js")
+templates.env.globals["sales_chart_cache_key"] = get_panel_asset_cache_key("sales-chart.js")
+try:
+    from app.services.update_channel import badge_context as _badge_context_boot
+
+    _badge_boot = _badge_context_boot()
+    templates.env.globals["deployed_channel"] = _badge_boot["deployed_channel"]
+    templates.env.globals["deployed_channel_label"] = _badge_boot["deployed_channel_label"]
+except Exception:
+    templates.env.globals["deployed_channel"] = "main"
+    templates.env.globals["deployed_channel_label"] = "پایدار"
+templates.env.globals["order_status_fa"] = order_status_fa
+templates.env.globals["ticket_status_fa"] = ticket_status_fa
+templates.env.globals["format_bytes"] = format_bytes
+templates.env.globals["format_bytes_ratio"] = format_bytes_ratio
+templates.env.globals["template_variable_specs"] = template_variable_specs
+
+
+def render_panel_status(
+    request: Request,
+    *,
+    code: int | str,
+    title: str,
+    message: str,
+    ref: str | None = None,
+    primary_href: str | None = "/home",
+    primary_label: str = "بازگشت به داشبورد",
+    secondary_href: str | None = "/logout",
+    secondary_label: str = "خروج",
+    guide_heading: str | None = None,
+    guide_steps: list[dict] | None = None,
+    code_block: str | None = None,
+    guide_note: str | None = None,
+    footer: str | None = None,
+    http_status: int | None = None,
+    watermark: str | None = None,
+    kicker: str | None = None,
+    body_html: str = "",
+    show_close_button: bool = False,
+    close_button_label: str = "بستن",
+):
+    """Shared branded status page (404 / 403 / 500 / setup gate / payment returns)."""
+    from app.api.status_render import render_status_page
+
+    return render_status_page(
+        request,
+        kind=code,
+        title=title,
+        message=message,
+        http_status=http_status,
+        watermark=watermark,
+        kicker=kicker,
+        ref=ref,
+        primary_href=primary_href,
+        primary_label=primary_label,
+        secondary_href=secondary_href,
+        secondary_label=secondary_label,
+        guide_heading=guide_heading,
+        guide_steps=guide_steps,
+        code_block=code_block,
+        guide_note=guide_note,
+        body_html=body_html,
+        footer=footer,
+        show_close_button=show_close_button,
+        close_button_label=close_button_label,
+    )
+
+
+def _load_guide_topics() -> dict:
+    """Populate Jinja globals so macros see help topics without ``with context``."""
+    try:
+        from app.services.guide_catalog import panel_help_payload
+
+        panel_help_payload.cache_clear()
+        return panel_help_payload()
+    except Exception:
+        return {}
+
+
+templates.env.globals["guide_topics"] = _load_guide_topics()
+
+
+class NotAuthenticated(Exception):
+    def __init__(self, message: str | None = None, *, login_error: str | None = None):
+        self.message = message
+        self.login_error = login_error or message
+        super().__init__(message or "not authenticated")
+
+
+class NotAdmin(Exception):
+    """Raised when staff lacks a permission.
+
+    Optional ``redirect`` uses *live* ACL (not the session cookie) so role
+    downgrades cannot infinite-redirect via stale ``pg_permissions``.
+    """
+
+    def __init__(self, redirect: str | None = None):
+        self.redirect = redirect
+
+
+def render(request: Request, name: str, context: dict | None = None, status_code: int = 200):
+    ctx = dict(context or {})
+    ctx.setdefault("flash_ok", None)
+    ctx.setdefault("flash_err", None)
+    ctx.setdefault("open_edit", None)
+    ctx.setdefault("app_version", local_version())
+    if "deployed_channel" not in ctx or "deployed_channel_label" not in ctx:
+        try:
+            from app.services.update_channel import badge_context
+
+            badge = badge_context()
+            ctx.setdefault("deployed_channel", badge["deployed_channel"])
+            ctx.setdefault("deployed_channel_label", badge["deployed_channel_label"])
+        except Exception:
+            ctx.setdefault("deployed_channel", "main")
+            ctx.setdefault("deployed_channel_label", "پایدار")
+    try:
+        from app.services.csrf import ensure_csrf_token
+
+        ctx.setdefault("csrf_token", ensure_csrf_token(request))
+    except Exception:
+        ctx.setdefault("csrf_token", "")
+    nonce = getattr(request.state, "csp_nonce", None)
+    if not nonce:
+        import secrets as _secrets
+
+        nonce = _secrets.token_urlsafe(16)
+        request.state.csp_nonce = nonce
+    ctx.setdefault("csp_nonce", nonce)
+    ctx.setdefault("panel_brand", getattr(request.state, "panel_brand", None) or DEFAULT_BRAND)
+    ctx.setdefault("panel_brand_css", BRAND_PRESET_CSS)
+    if "pwa_name" not in ctx:
+        try:
+            from app.services.pwa import panel_display_name
+
+            ctx["pwa_name"] = panel_display_name()
+        except Exception:
+            ctx["pwa_name"] = "MrClockBot"
+    # Update availability is shown to the Owner only, like the update pages themselves.
+    if not is_platform_admin(ctx.get("staff")):
+        ctx["update"] = None
+    # Sidebar update badge — prefer explicit context, else request.state, else cache peek.
+    elif "update" not in ctx:
+        upd = getattr(request.state, "panel_update", None)
+        if upd is None:
+            try:
+                from app.services.updates import peek_update_cache
+
+                upd = peek_update_cache()
+            except Exception:
+                upd = None
+        if upd is not None:
+            ctx["update"] = upd
+    if "tickets_unread" not in ctx:
+        ctx["tickets_unread"] = int(getattr(request.state, "panel_tickets_unread", 0) or 0)
+    if "inbox_alert" not in ctx:
+        ctx["inbox_alert"] = bool(getattr(request.state, "panel_inbox_alert", False))
+    if "cancel_alert" not in ctx:
+        ctx["cancel_alert"] = bool(getattr(request.state, "panel_cancel_alert", False))
+    # Keep env global fresh too — macros import without ``with context``.
+    topics = _load_guide_topics()
+    templates.env.globals["guide_topics"] = topics
+    ctx.setdefault("guide_topics", topics)
+    if ctx.get("staff") and "identity" not in ctx:
+        try:
+            from app.services.identity_chrome import hierarchy_identity
+
+            ctx["identity"] = hierarchy_identity(ctx.get("staff"))
+        except Exception:
+            ctx["identity"] = {}
+    if ctx.get("staff") and "is_owner" not in ctx:
+        try:
+            from app.services.platform_identity import is_explicit_owner_staff
+
+            ctx["is_owner"] = bool(is_explicit_owner_staff(ctx.get("staff")))
+        except Exception:
+            ctx["is_owner"] = False
+    if ctx.get("staff") and "marketing_sections" not in ctx:
+        try:
+            from app.services.marketing_nav import marketing_sections
+
+            ctx["marketing_sections"] = marketing_sections(ctx.get("staff"))
+        except Exception:
+            logging.getLogger(__name__).warning("marketing nav resolution failed", exc_info=True)
+            ctx["marketing_sections"] = ()
+    response = templates.TemplateResponse(request, name, ctx, status_code=status_code)
+    try:
+        from app.services.csrf import CSRF_COOKIE, ensure_csrf_token
+
+        token = ensure_csrf_token(request)
+        if getattr(request.state, "csrf_token_set", False) or CSRF_COOKIE not in request.cookies:
+            response.set_cookie(
+                CSRF_COOKIE,
+                token,
+                httponly=False,  # panel.js reads meta/cookie for XHR; value is not a secret session
+                samesite="lax",  # match session cookie; strict dropped csrf after cross-site landings
+                secure=_cookie_secure(request),
+                max_age=60 * 60 * 12,
+                path="/",
+            )
+            request.state.csrf_token_set = False
+    except Exception:
+        logger.debug("render: ignored failure", exc_info=True)
+    return response
+
+
+from app.api.safe_next import safe_internal_next
+
+
+def _settings_next(request: Request, fallback: str) -> str:
+    return safe_internal_next(request.query_params.get("next"), fallback)
+
+
+def _redirect_msg(path: str, *, ok: str | None = None, err: str | None = None) -> RedirectResponse:
+    q = []
+    if ok:
+        q.append(f"ok={quote(ok)}")
+    if err:
+        q.append(f"err={quote(err)}")
+    # Bust caches that key only on stable ?ok= text (table must refresh with flash)
+    q.append(f"_={int(time.time())}")
+    sep = "&" if "?" in path else "?"
+    url = f"{path}{sep}{'&'.join(q)}"
+    return RedirectResponse(url, status_code=303)
+
+
+SESSION_MAX_AGE = 60 * 60 * 24 * 7
+
+
+
+
+def _cookie_secure(request: Request) -> bool:
+    try:
+        from app.services.ssl_certs import https_is_active
+
+        if not https_is_active():
+            return False
+    except Exception:
+        return False
+    try:
+        if get_settings().trust_proxy:
+            fwd = (request.headers.get("x-forwarded-proto") or "").split(",")[0].strip().lower()
+            if fwd == "https":
+                return True
+    except Exception:
+        logger.debug("_cookie_secure: ignored failure", exc_info=True)
+    return request.url.scheme == "https"
+
+
+def _panel_redirect(request: Request, path: str, *, status_code: int = 303) -> RedirectResponse:
+    """Redirect using HTTP until HTTPS is live; then use the public HTTPS base.
+
+    Must never raise — a failure here 500s login/logout landing for every role.
+    """
+    if not path.startswith("/"):
+        path = "/" + path
+    try:
+        from app.services.ssl_certs import https_is_active, public_panel_base_url
+
+        if https_is_active():
+            base = (public_panel_base_url() or "").rstrip("/")
+            if base:
+                return RedirectResponse(f"{base}{path}", status_code=status_code)
+    except Exception:
+        logging.getLogger(__name__).exception("_panel_redirect https probe failed")
+    # Never trust the request Host header for absolute redirects (open-redirect /
+    # cache-poisoning). Prefer configured PUBLIC_BASE_URL, else a relative redirect.
+    try:
+        from app.services.ssl_certs import public_panel_base_url
+
+        base = (public_panel_base_url() or "").rstrip("/")
+        if base:
+            return RedirectResponse(f"{base}{path}", status_code=status_code)
+    except Exception:
+        logging.getLogger(__name__).exception("_panel_redirect public base fallback failed")
+    return RedirectResponse(path, status_code=status_code)
+
+
+def create_api_app(lifespan=None) -> FastAPI:
+    """Build the panel FastAPI app (routing + middleware factory).
+
+    Prefer extracting cohesive helpers into ``app.api.*`` modules (e.g.
+    ``login_guard``) rather than growing this file further. Domain page
+    routers already live under ``register_*_pages``.
+    """
+    app = FastAPI(title="PGClockBot Panel", docs_url=None, redoc_url=None, lifespan=lifespan)
+    # GZipMiddleware is registered LAST (outermost) near ``return app`` so CSP
+    # nonce injection sees uncompressed HTML. Adding it here compresses first and
+    # silently breaks every bare <script> under a nonce-based CSP.
+    class _CachedStatic(StaticFiles):
+        async def get_response(self, path, scope):  # type: ignore[override]
+            response = await super().get_response(path, scope)
+            # Versioned assets (?v=) can be cached aggressively by browsers.
+            if response.status_code == 200:
+                response.headers.setdefault("Cache-Control", "public, max-age=604800, immutable")
+            return response
+
+    class _PublicUploads(StaticFiles):
+        """Public shop media only — never serve private ticket attachments."""
+
+        async def get_response(self, path, scope):  # type: ignore[override]
+            rel = (path or "").lstrip("/").replace("\\", "/")
+            if rel == "tickets" or rel.startswith("tickets/"):
+                from starlette.responses import Response
+
+                return Response(status_code=404)
+            return await super().get_response(path, scope)
+
+    app.mount("/static", _CachedStatic(directory=str(WEB_DIR / "static")), name="static")
+    guide_dir = WEB_DIR / "static" / "guide"
+    if guide_dir.is_dir():
+        app.mount(
+            "/help",
+            _CachedStatic(directory=str(guide_dir), html=True),
+            name="help_docs",
+        )
+
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    try:
+        DATA_DIR.chmod(0o700)
+    except OSError:
+        pass
+    uploads_dir = DATA_DIR / "uploads"
+    uploads_dir.mkdir(parents=True, exist_ok=True)
+    # CRITICAL: never mount DATA_DIR itself — that would expose bot.db, backups, web_admin.json
+    app.mount("/media/uploads", _PublicUploads(directory=str(uploads_dir)), name="media_uploads")
+    try:
+        from app.services.ssl_certs import WEBROOT_DIR, ensure_dirs as ensure_ssl_dirs
+
+        ensure_ssl_dirs()
+        acme_dir = WEBROOT_DIR / ".well-known" / "acme-challenge"
+        app.mount(
+            "/.well-known/acme-challenge",
+            StaticFiles(directory=str(acme_dir)),
+            name="acme_challenge",
+        )
+    except Exception:
+        logger.debug("create_api_app: ignored failure", exc_info=True)
+
+    def get_signer() -> URLSafeTimedSerializer:
+        # Never fall back to a hardcoded or process-only secret.
+        secret = ensure_web_secret()
+        if not secret:
+            from app.services.setup_wizard import WebSecretPersistenceError
+
+            raise WebSecretPersistenceError(
+                "WEB_SECRET is missing and could not be persisted. "
+                "Set WEB_SECRET in the environment or make .env writable."
+            )
+        return URLSafeTimedSerializer(secret, salt="pgclock-session")
+
+    async def get_db():
+        async with SessionLocal() as session:
+            try:
+                yield session
+            except Exception:
+                from app.services.db_safe import rollback_quiet
+
+                await rollback_quiet(session)
+                raise
+
+    def get_session_user(request: Request) -> Optional[dict]:
+        cookie = request.cookies.get("session")
+        if not cookie:
+            return None
+        try:
+            data = get_signer().loads(cookie, max_age=SESSION_MAX_AGE)
+        except (BadSignature, BadTimeSignature):
+            return None
+        except Exception:
+            logging.getLogger(__name__).exception("get_session_user signer/load failed")
+            return None
+        if not isinstance(data, dict):
+            return None
+        # Admin sessions bind to web_admin.json token — password/username change revokes them
+        if data.get("role") == "admin":
+            try:
+                expected = admin_session_version()
+            except Exception:
+                logging.getLogger(__name__).exception("admin_session_version failed")
+                return None
+            if not expected or data.get("sv") != expected:
+                return None
+        return data
+
+    async def require_staff(
+        request: Request,
+        session: AsyncSession = Depends(get_db),
+    ) -> dict:
+        user = get_session_user(request)
+        if not user or user.get("role") not in {
+            "admin",
+            "reseller",
+            "pg_staff",
+            "principal",
+        }:
+            raise NotAuthenticated()
+        if user.get("role") == "reseller":
+            from sqlalchemy import select
+
+            from app.db.models import ResellerProfile
+            from app.services.resellers import setup_is_complete
+
+            bot_user_id = user.get("bot_user_id")
+            if not bot_user_id:
+                raise NotAuthenticated()
+            result = await session.execute(
+                select(ResellerProfile).where(ResellerProfile.user_id == int(bot_user_id))
+            )
+            profile = result.scalar_one_or_none()
+            if not profile or not profile.is_active or not setup_is_complete(profile):
+                from app.services.pg_staff_access import PG_ACCESS_DENIED_MSG
+
+                raise NotAuthenticated(login_error=PG_ACCESS_DENIED_MSG)
+            # Password change invalidates older cookies
+            pwd = (profile.web_password_hash or "")[:24]
+            if pwd and user.get("pv") != pwd:
+                raise NotAuthenticated()
+            # Live PasarGuard gate when linked to a PG admin
+            if profile.pg_admin_username:
+                from app.services.pg_staff_access import enforce_pg_admin_web_gate
+
+                allowed, deny_msg = await enforce_pg_admin_web_gate(
+                    session, profile.pg_admin_username, revoke_if_missing=True
+                )
+                if not allowed:
+                    raise NotAuthenticated(login_error=deny_msg)
+            # Always re-read ACL from DB — never trust stale cookie permissions.
+            # Must match Bot has_bot_perm / authz.resolve_shop_permissions_from_profile
+            # (empty string = intentional deny; None = DEFAULT).
+            from app.services.authz import resolve_shop_permissions_from_profile
+
+            user = dict(user)
+            resolved = resolve_shop_permissions_from_profile(profile)
+            user["permissions"] = list(resolved or [])
+            user["bot_user_id"] = int(bot_user_id)
+            if profile.pg_admin_username:
+                user["pg_admin_username"] = profile.pg_admin_username
+            # Live GET /api/admin nested role — same source as quota boxes.
+            from app.services.pg_access import enrich_staff_pg_from_role, resolve_acl_from_client
+
+            pg_client = None
+            if profile.pg_admin_username:
+                try:
+                    from app.services.pasarguard import get_pg_for_reseller
+
+                    pg_client = await get_pg_for_reseller(session, int(profile.user_id))
+                except Exception:
+                    pg_client = None
+            user.pop("pg_permissions", None)
+            if pg_client is not None:
+                features, role, _admin = await resolve_acl_from_client(
+                    pg_client, username=profile.pg_admin_username
+                )
+                user = enrich_staff_pg_from_role(user, features, role)
+                if isinstance(role, dict) and role.get("id") is not None:
+                    try:
+                        user["pg_role_id"] = int(role["id"])
+                    except (TypeError, ValueError):
+                        pass
+            elif profile.pg_role_id:
+                user["pg_role_id"] = int(profile.pg_role_id)
+            # Principal from the server-loaded ResellerProfile only.
+            # Cookie org_principal_id / parent / depth / scope are not selectors.
+            from app.services.org_principals import (
+                attach_org_principal_fields,
+                bind_reseller_profile_principal,
+            )
+            from app.services.org_scope import visible_principal_ids
+
+            user.pop("org_principal_id", None)
+            user.pop("org_parent_id", None)
+            user.pop("org_depth", None)
+            user.pop("org_visible_principal_ids", None)
+            user.pop("web_owner", None)
+            user["reseller_profile_id"] = int(profile.id)
+            principal = await bind_reseller_profile_principal(session, profile)
+            if principal is None:
+                raise NotAuthenticated()
+            visible = await visible_principal_ids(session, principal)
+            user = attach_org_principal_fields(
+                user, principal, visible_principal_ids=visible
+            )
+        elif user.get("role") == "pg_staff":
+            from app.services.pg_access import enrich_staff_pg_from_role, resolve_acl_from_client
+            from app.services.pg_staff_access import (
+                PG_ACCESS_DENIED_MSG,
+                access_by_web_username,
+                enforce_pg_admin_web_gate,
+                staff_has_pg_auth_secret,
+            )
+
+            web_u = (user.get("username") or "").strip().lower()
+            row = await access_by_web_username(session, web_u)
+            if not row or not row.is_active:
+                raise NotAuthenticated(login_error=PG_ACCESS_DENIED_MSG)
+            pwd = (row.web_password_hash or "")[:24]
+            if pwd and user.get("pv") != pwd:
+                raise NotAuthenticated()
+            allowed, deny_msg = await enforce_pg_admin_web_gate(
+                session, row.pg_username, revoke_if_missing=True
+            )
+            if not allowed:
+                # Gate may have revoked the row — deny without a second DB round-trip
+                raise NotAuthenticated(login_error=deny_msg)
+            user = dict(user)
+            user["permissions"] = []
+            user["pg_admin_username"] = row.pg_username
+            user["pg_staff_id"] = int(row.id)
+            # Phase C5: advertise stored PG auth (API key or password)
+            user["pg_credentials_ready"] = staff_has_pg_auth_secret(row)
+            if row.pg_role_id:
+                user["pg_role_id"] = int(row.pg_role_id)
+            pg_client = None
+            try:
+                from app.services.pasarguard import get_pg_for_staff
+
+                pg_client = await get_pg_for_staff(session, staff_id=int(row.id))
+            except Exception:
+                pg_client = None
+            user.pop("pg_permissions", None)
+            features, role = [], None
+            if pg_client is not None:
+                features, role, _admin = await resolve_acl_from_client(
+                    pg_client, username=row.pg_username
+                )
+            user = enrich_staff_pg_from_role(user, features, role)
+            if isinstance(role, dict) and role.get("id") is not None:
+                try:
+                    user["pg_role_id"] = int(role["id"])
+                except (TypeError, ValueError):
+                    pass
+            if not (user.get("pg_permissions") or []):
+                # No mapped features → deny panel use
+                raise NotAuthenticated(login_error=PG_ACCESS_DENIED_MSG)
+            # Phase 1G: pg_staff without an existing OrgPrincipal → DENY (no role fallback).
+            from app.services.org_principals import (
+                attach_org_principal_fields,
+                resolve_org_principal_for_staff,
+            )
+            from app.services.org_scope import visible_principal_ids
+
+            principal = await resolve_org_principal_for_staff(session, user)
+            if principal is None:
+                raise NotAuthenticated(login_error=PG_ACCESS_DENIED_MSG)
+            visible = await visible_principal_ids(session, principal)
+            user = attach_org_principal_fields(
+                user, principal, visible_principal_ids=visible
+            )
+        elif user.get("role") == "principal":
+            # Phase 2B: Level-1 OrgPrincipal Web identity — resolve server-side only.
+            from app.services.principal_web_identity import (
+                PrincipalWebIdentityError,
+                resolve_principal_web_session,
+            )
+
+            try:
+                user = await resolve_principal_web_session(session, user)
+            except PrincipalWebIdentityError as exc:
+                raise NotAuthenticated(login_error=exc.message) from exc
+        elif user.get("role") == "admin":
+            # Hybrid Owner: shop stays full; PG menus/actions follow env PG role.
+            # C2/1G: bind Web Owner session to explicit Org Owner principal (not role alone).
+            from app.services.org_principals import (
+                attach_org_principal_fields,
+                resolve_org_principal_for_staff,
+            )
+            from app.services.org_scope import visible_principal_ids
+            from app.services.pg_access import enrich_platform_admin_staff
+
+            user = await enrich_platform_admin_staff(dict(user))
+            # Valid admin cookie is always web_admin.json-bound (sv check above).
+            user["web_owner"] = True
+            principal = await resolve_org_principal_for_staff(session, user)
+            if principal is None:
+                raise NotAuthenticated()
+            visible = await visible_principal_ids(session, principal)
+            user = attach_org_principal_fields(
+                user, principal, visible_principal_ids=visible
+            )
+        # Skip unread COUNT on mutations / JSON polls that never render the sidebar.
+        try:
+            from app.services.panel_tickets import should_skip_unread_count, sidebar_unread_count
+
+            if should_skip_unread_count(request.url.path, request.method):
+                request.state.panel_tickets_unread = 0
+                request.state.panel_inbox_alert = False
+                request.state.panel_cancel_alert = False
+            else:
+                from app.services.panel_sidebar_cache import (
+                    peek_sidebar_counts,
+                    sidebar_cache_key,
+                    store_sidebar_counts,
+                )
+
+                cache_key = sidebar_cache_key(user)
+                cached = peek_sidebar_counts(cache_key)
+                if cached is not None:
+                    request.state.panel_tickets_unread = cached[0]
+                    request.state.panel_inbox_alert = cached[1]
+                    request.state.panel_cancel_alert = cached[2]
+                else:
+                    unread = await sidebar_unread_count(session, user)
+                    from app.services.panel_inbox import sidebar_inbox_has_alerts
+
+                    alert = await sidebar_inbox_has_alerts(session, request, user)
+                    cancel_alert = False
+                    try:
+                        from app.services.authz import authz_from_staff, can_shop
+                        from app.services.service_cancellations import has_pending_cancellations
+                        from app.services.shop_scope import ShopScopeError, resolve_shop_scope_id
+
+                        if can_shop(authz_from_staff(user), "orders"):
+                            scope = resolve_shop_scope_id(user)
+                            cancel_alert = await has_pending_cancellations(session, scope)
+                    except ShopScopeError:
+                        cancel_alert = False
+                    except Exception:
+                        cancel_alert = False
+                    store_sidebar_counts(cache_key, unread, alert, cancel_alert)
+                    request.state.panel_tickets_unread = unread
+                    request.state.panel_inbox_alert = alert
+                    request.state.panel_cancel_alert = cancel_alert
+        except Exception:
+            from app.services.db_safe import rollback_quiet
+
+            await rollback_quiet(session)
+            request.state.panel_tickets_unread = 0
+            request.state.panel_inbox_alert = False
+            request.state.panel_cancel_alert = False
+        from app.services.db_safe import recover_session
+
+        await recover_session(session)
+        # Header brand of the shop this person works for (default on any failure).
+        request.state.panel_brand = await brand_for_staff(session, user)
+        finish_panel_authentication(request)
+        return user
+
+    async def require_admin(
+        request: Request,
+        session: AsyncSession = Depends(get_db),
+    ) -> dict:
+        from app.services.platform_identity import is_explicit_owner_staff
+
+        user = await require_staff(request, session)
+        # C2: role=admin alone is not Owner — require attached Owner principal.
+        if user.get("role") != "admin" or not is_explicit_owner_staff(user):
+            raise NotAdmin()
+        return user
+
+    def require_perm(perm: str):
+        async def _dep(
+            request: Request,
+            session: AsyncSession = Depends(get_db),
+        ) -> dict:
+            from app.services.authz import authz_from_staff, can_shop
+
+            user = await require_staff(request, session)
+            if not can_shop(authz_from_staff(user), perm):
+                raise NotAdmin()
+            return user
+
+        return _dep
+
+    def _live_pg_home(features: list[str] | tuple[str, ...] | set[str]) -> str:
+        feats = set(features or [])
+        if "pg_overview" in feats:
+            return "/pg"
+        if "pg_users" in feats:
+            return "/pg/users"
+        if "pg_templates" in feats:
+            return "/pg/templates"
+        if "pg_groups" in feats:
+            return "/pg/groups"
+        if "pg_hosts" in feats:
+            return "/pg/hosts"
+        if "pg_nodes" in feats:
+            return "/pg/nodes"
+        if "pg_inbounds" in feats:
+            return "/pg/inbounds"
+        return "/logout"
+
+    def require_pg_perm(perm: str):
+        """Require mapped PG feature (Hybrid: Owner also clamped to env PG role).
+
+        Phase 2C: Level-1 Principals use the same PG page keys + local safety.
+        """
+
+        async def _dep(
+            request: Request,
+            session: AsyncSession = Depends(get_db),
+        ) -> dict:
+            from app.services.authz import authz_from_staff, can_pg_page, is_platform_admin
+            from app.services.pg_read import effective_pg_menu_keys
+            from app.services.principal_pg_authz import (
+                is_level1_principal_staff,
+                staff_may_pg_page,
+            )
+
+            user = await require_staff(request, session)
+            ctx = authz_from_staff(user)
+            if is_level1_principal_staff(user):
+                if not staff_may_pg_page(user, perm):
+                    features = list(ctx.pg_permissions)
+                    raise NotAdmin(redirect=_live_pg_home(features))
+                return user
+            if not can_pg_page(ctx, perm):
+                features = list(ctx.pg_permissions)
+                # Platform admin without PG features → shop home, not logout
+                if is_platform_admin(ctx) and not features:
+                    raise NotAdmin(redirect="/home")
+                raise NotAdmin(redirect=_live_pg_home(features))
+            # C1: uncredentialed pg_staff may only open overview (menu clamp alone is insufficient)
+            if not is_platform_admin(ctx):
+                allowed = set(effective_pg_menu_keys(user))
+                if perm not in allowed:
+                    raise NotAdmin(redirect="/pg")
+            return user
+
+        return _dep
+
+    @app.middleware("http")
+    async def setup_gate(request: Request, call_next):
+        path = request.url.path
+        complete = is_setup_complete()
+
+        if complete:
+            if path == "/setup" or path.startswith("/setup/"):
+                return RedirectResponse("/", status_code=303)
+            return await call_next(request)
+
+        # First-run: only wizard + static/health. Everything else → /
+        allowed = (
+            path == "/"
+            or path == "/setup"
+            or path.startswith("/setup/")
+            or path.startswith("/static")
+            or path.startswith("/help")
+            or path.startswith("/.well-known/")
+            or path.startswith("/pwa/")
+            or path == "/health"
+            or path == "/sw.js"
+            or path == "/manifest.webmanifest"
+        )
+        if not allowed:
+            return RedirectResponse("/", status_code=303)
+
+        # Protect open wizard from remote takeover with a one-time gate token
+        needs_gate = path == "/" or path == "/setup" or path.startswith("/setup/")
+        if needs_gate:
+            gate_q = (request.query_params.get("gate") or "").strip()
+            gate_c = (request.cookies.get("setup_gate") or "").strip()
+            q_ok = bool(gate_q) and setup_gate_ok(gate_q)
+            c_ok = bool(gate_c) and setup_gate_ok(gate_c)
+            local_ok = is_local_setup_client(_client_ip(request))
+            if q_ok or c_ok or local_ok:
+                response = await call_next(request)
+                cookie_ttl = setup_gate_cookie_max_age()
+                tok = ensure_setup_gate_token()
+                if local_ok and not c_ok and tok and cookie_ttl > 0:
+                    response.set_cookie(
+                        "setup_gate",
+                        tok,
+                        httponly=True,
+                        samesite="strict",
+                        secure=_cookie_secure(request),
+                        max_age=cookie_ttl,
+                        path="/",
+                    )
+                elif q_ok and not c_ok:
+                    new_tok = rotate_setup_gate_token()
+                    cookie_ttl = setup_gate_cookie_max_age()
+                    if new_tok and cookie_ttl > 0:
+                        response.set_cookie(
+                            "setup_gate",
+                            new_tok,
+                            httponly=True,
+                            samesite="strict",
+                            secure=_cookie_secure(request),
+                            max_age=cookie_ttl,
+                            path="/",
+                        )
+                return response
+            return render_panel_status(
+                request,
+                code=403,
+                title="راه‌اندازی اولیه",
+                message=(
+                    "برای امنیت، دسترسی اینترنتی به ویزارد راه‌اندازی فقط با "
+                    "لینک یک‌بارمصرف نصب ممکن است (حدود ۱۵ دقیقه اعتبار؛ "
+                    "بعد از اتمام راه‌اندازی غیرفعال می‌شود)."
+                ),
+                primary_href="",
+                secondary_href="",
+                guide_heading="چطور توکن / لینک راه‌اندازی بگیرم؟",
+                guide_steps=[
+                    {
+                        "title": "۱. به سرور وصل شوید",
+                        "body": "با SSH به همان سروری که PGClockBot روی آن نصب است وارد شوید.",
+                    },
+                    {
+                        "title": "۲. وارد پوشهٔ نصب شوید و وضعیت را چاپ کنید",
+                        "body": (
+                            "<code dir=\"ltr\">pgclock.sh</code> فقط داخل پوشهٔ پروژه کار می‌کند. "
+                            "اول با دستور زیر وارد همان پوشه شوید، بعد وضعیت را بگیرید "
+                            "(لینک یک‌بارمصرف راه‌اندازی را نشان می‌دهد):"
+                        ),
+                    },
+                    {
+                        "title": "۳. لینک را در مرورگر باز کنید",
+                        "body": (
+                            "آدرسی که شامل پارامتر "
+                            "<code dir=\"ltr\">?gate=…</code> "
+                            "است را کپی کنید. همان مقدار "
+                            "<code dir=\"ltr\">gate</code> "
+                            "توکن شماست — آن را در نوار آدرس مرورگر باز کنید."
+                        ),
+                    },
+                ],
+                code_block=(
+                    'cd "$(cat /usr/local/lib/pgclockbot/install_root)"\n'
+                    "bash pgclock.sh status"
+                ),
+                guide_note=(
+                    "اگر مسیر بالا خطا داد، معمولاً "
+                    "<code dir=\"ltr\">cd /root/PGClockBot</code> "
+                    "یا "
+                    "<code dir=\"ltr\">cd ~/PGClockBot</code> "
+                    "است. بدون ورود به پوشه هم می‌توانید از هر جا "
+                    "<code dir=\"ltr\">pgclock status</code> "
+                    "بزنید. از خود سرور با "
+                    "<code dir=\"ltr\">127.0.0.1</code> "
+                    "یا "
+                    "<code dir=\"ltr\">::1</code> "
+                    "بدون لینک هم باز می‌شود. دسترسی از راه دور حتماً به "
+                    "<code dir=\"ltr\">?gate=…</code> "
+                    "نیاز دارد."
+                ),
+                footer="بعد از اتمام راه‌اندازی، این لینک و توکن دیگر کار نمی‌کنند.",
+            )
+        return await call_next(request)
+
+    @app.middleware("http")
+    async def csrf_origin_guard(request: Request, call_next):
+        """Reject cross-site unsafe requests that carry a session cookie (defense-in-depth).
+
+        Authenticated panel mutations also require a double-submit CSRF token
+        (cookie ``csrf`` matching form field / ``X-CSRF-Token``).
+        """
+        if request.method in {"POST", "PUT", "PATCH", "DELETE"}:
+            has_session = bool(request.cookies.get("session") or request.cookies.get("setup_gate"))
+            if has_session:
+                path_now = request.url.path
+
+                def _csrf_reject(message: str, *, token_fail: bool = False):
+                    # Panel AJAX clients expect JSON — HTML 403 made res.json() throw
+                    # and only showed a generic failure.
+                    # token_fail marks double-submit mismatch (CSRF token rejected).
+                    accept = (request.headers.get("accept") or "").lower()
+                    ctype = (request.headers.get("content-type") or "").lower()
+                    xrw = (request.headers.get("x-requested-with") or "").lower()
+                    wants_json = (
+                        path_now.startswith("/update/")
+                        or path_now.startswith("/backup/")
+                        or path_now.startswith("/api/")
+                        or "application/json" in accept
+                        or "application/json" in ctype
+                        or xrw in {"fetch", "xmlhttprequest", "setup-probe"}
+                    )
+                    if wants_json:
+                        return JSONResponse(
+                            {"ok": False, "error": message},
+                            status_code=403,
+                        )
+                    return render_panel_status(
+                        request,
+                        code=403,
+                        title="درخواست امنیتی رد شد",
+                        message=message,
+                        primary_href="/login",
+                        primary_label="صفحه ورود",
+                        secondary_href="/",
+                        secondary_label="تلاش دوباره",
+                        footer=(
+                            "صفحه را تازه کنید و دوباره ارسال کنید. "
+                            "اگر ادامه داشت، از حساب خارج شوید و دوباره وارد شوید."
+                        ),
+                    )
+
+                origin = request.headers.get("origin")
+                referer = request.headers.get("referer")
+                host = request.headers.get("host")
+                # Require Origin or Referer for cookie-authenticated mutations
+                if not origin and not referer:
+                    return _csrf_reject(
+                        "درخواست امنیتی رد شد؛ صفحه را تازه کنید و دوباره تلاش کنید."
+                    )
+                allowed = (
+                    request_host_allowed(host, origin)
+                    or request_host_allowed(host, referer)
+                )
+                if not allowed:
+                    # Prefer configured public host over raw Host (Host can be spoofed
+                    # when the panel is reached via an unexpected name).
+                    try:
+                        from urllib.parse import urlparse
+                        from app.services.ssl_certs import public_panel_base_url
+
+                        pub = (public_panel_base_url() or "").strip()
+                        pub_host = urlparse(pub).netloc if pub else ""
+                        if pub_host and (
+                            request_host_allowed(pub_host, origin)
+                            or request_host_allowed(pub_host, referer)
+                        ):
+                            allowed = True
+                    except Exception:
+                        logger.debug("csrf_origin_guard: ignored failure", exc_info=True)
+                if not allowed:
+                    return _csrf_reject(
+                        "درخواست امنیتی رد شد؛ صفحه را تازه کنید و دوباره تلاش کنید."
+                    )
+                # Token check for logged-in panel sessions only — never for /login
+                # (stale/expired session cookies must not block re-authentication).
+                # Mini App POSTs authenticate via Telegram initData, not the panel
+                # session cookie; skip the double-submit token there so a leftover
+                # panel login in the same browser cannot block /api/mini/*.
+                if request.cookies.get("session") and path_now not in {
+                    "/login",
+                    "/setup",
+                    "/setup/save",
+                } and not path_now.startswith("/api/mini"):
+                    from app.services.csrf import (
+                        CSRF_COOKIE,
+                        csrf_tokens_match,
+                        extract_csrf_from_request,
+                    )
+
+                    cookie_tok = (request.cookies.get(CSRF_COOKIE) or "").strip()
+                    submitted = await extract_csrf_from_request(request)
+                    if not csrf_tokens_match(cookie_tok, submitted):
+                        return _csrf_reject(
+                            "نشست امنیتی منقضی شده؛ صفحه را تازه کنید و دوباره تلاش کنید.",
+                            token_fail=True,
+                        )
+        path = request.url.path
+        if request.method == "POST" and path in {"/login", "/setup", "/setup/save", "/"}:
+            if not content_length_ok(request.headers.get("content-length"), PUBLIC_FORM_MAX_BODY_BYTES):
+                return render_panel_status(
+                    request,
+                    code=413,
+                    title="درخواست خیلی بزرگ است",
+                    message="حجم دادهٔ ارسالی از حد مجاز بیشتر است. صفحه را تازه کنید و دوباره تلاش کنید.",
+                    primary_href="/",
+                    primary_label="تلاش دوباره",
+                    secondary_href="",
+                )
+        return await call_next(request)
+
+    @app.middleware("http")
+    async def panel_timing_middleware(request: Request, call_next):
+        """Observation-only timing for panel HTML/JSON — never touches auth/ACL."""
+        from app.services.panel_timing import (
+            begin,
+            finish_log,
+            server_timing_header,
+            should_time,
+        )
+
+        if request.method != "GET" or not should_time(request.url.path):
+            return await call_next(request)
+        begin(request)
+        response = await call_next(request)
+        snap = finish_log(request, status_code=getattr(response, "status_code", 0) or 0)
+        hdr = server_timing_header(snap)
+        if hdr:
+            response.headers.setdefault("Server-Timing", hdr)
+        return response
+
+    @app.middleware("http")
+    async def security_headers(request: Request, call_next):
+        import secrets as _secrets
+
+        if not getattr(request.state, "csp_nonce", None):
+            request.state.csp_nonce = _secrets.token_urlsafe(16)
+        response = await call_next(request)
+        response.headers.setdefault("X-Content-Type-Options", "nosniff")
+        is_miniapp = request.url.path.startswith("/miniapp")
+        # Mini App opens inside Telegram WebView — allow framing only there
+        if is_miniapp:
+            response.headers["X-Frame-Options"] = "SAMEORIGIN"
+        else:
+            response.headers.setdefault("X-Frame-Options", "DENY")
+        response.headers.setdefault("Referrer-Policy", "same-origin")
+        response.headers.setdefault("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+        # COOP can interfere with Telegram WebView initData injection on some
+        # clients when the Mini App is opened from a ReplyKeyboard web_app button.
+        if not is_miniapp:
+            response.headers.setdefault("Cross-Origin-Opener-Policy", "same-origin")
+        # Panel pages: nonce + transitional unsafe-inline (many page templates still
+        # ship inline scripts). Prefer nonce on new scripts; drop unsafe-inline later.
+        if not request.url.path.startswith("/static") and not request.url.path.startswith("/media"):
+            nonce = getattr(request.state, "csp_nonce", "") or ""
+            nonce_src = f" 'nonce-{nonce}'" if nonce else ""
+            script_src = f"script-src 'self'{nonce_src} 'unsafe-inline'"
+            frame_ancestors = "frame-ancestors 'none'"
+            # Mini App needs Telegram WebApp SDK (+ Telegram may embed the sheet)
+            if is_miniapp:
+                script_src = (
+                    f"script-src 'self'{nonce_src} 'unsafe-inline' https://telegram.org"
+                )
+                frame_ancestors = (
+                    "frame-ancestors 'self' https://web.telegram.org https://telegram.org"
+                )
+            response.headers.setdefault(
+                "Content-Security-Policy",
+                "default-src 'self'; img-src 'self' data: blob:; "
+                "style-src 'self' 'unsafe-inline'; "
+                f"{script_src}; "
+                "font-src 'self' data:; connect-src 'self'; "
+                f"{frame_ancestors}; base-uri 'self'; form-action 'self'",
+            )
+            # Browsers ignore 'unsafe-inline' when a nonce is present — stamp every
+            # <script> tag so deferred dashboard widgets and page scripts still run.
+            try:
+                from app.services.csp_nonce import buffer_and_inject_nonce
+
+                response = await buffer_and_inject_nonce(response, nonce)
+            except Exception:
+                logging.getLogger(__name__).exception(
+                    "CSP nonce injection failed; inline scripts may be blocked"
+                )
+        path = request.url.path
+        ct = (response.headers.get("content-type") or "").lower()
+        # Authenticated panel HTML must never be cached — flash + table must stay in sync
+        if "text/html" in ct:
+            response.headers["Cache-Control"] = "no-store, private"
+            response.headers["Pragma"] = "no-cache"
+        elif path in {"/login", "/setup", "/security"} or path.startswith("/setup/"):
+            response.headers["Cache-Control"] = "no-store, private"
+            response.headers["Pragma"] = "no-cache"
+        if _cookie_secure(request):
+            response.headers.setdefault(
+                "Strict-Transport-Security", "max-age=31536000; includeSubDomains"
+            )
+        return response
+
+    @app.exception_handler(NotAuthenticated)
+    async def _unauth(request: Request, exc: NotAuthenticated):
+        err = getattr(exc, "login_error", None) or getattr(exc, "message", None)
+        # Always clear the session cookie so stale roles (e.g. pg_staff after
+        # conversion to reseller) cannot loop /login ↔ /dashboard.
+        target = f"/login?err={quote(str(err), safe='')}" if err else "/login"
+        resp = RedirectResponse(target, status_code=303)
+        resp.delete_cookie("session", path="/")
+        return resp
+
+    @app.exception_handler(NotAdmin)
+    async def _not_admin(request: Request, exc: NotAdmin):
+        # Prefer live-ACL redirect from the dependency that raised (avoids stale cookie loops).
+        live = getattr(exc, "redirect", None)
+        if live:
+            if live != request.url.path:
+                return RedirectResponse(live, status_code=303)
+            return RedirectResponse("/logout", status_code=303)
+        user = None
+        try:
+            cookie = request.cookies.get("session")
+            if cookie:
+                user = get_signer().loads(cookie, max_age=SESSION_MAX_AGE)
+        except Exception:
+            user = None
+        role = (user or {}).get("role")
+        if role in {"reseller", "pg_staff", "principal"}:
+            pg = (user or {}).get("pg_permissions") or []
+            if role in {"pg_staff", "principal"}:
+                return RedirectResponse("/pg", status_code=303)
+            for path in (
+                "/home",
+                "/pg/users" if "pg_users" in pg else None,
+                "/pg" if pg else None,
+            ):
+                if path and path != request.url.path:
+                    return RedirectResponse(path, status_code=303)
+            perms = (user or {}).get("permissions") or []
+            for path, key in (
+                ("/home", "dashboard"),
+                ("/dashboard", "dashboard"),
+                ("/plans", "plans"),
+                ("/finance", "orders"),
+                ("/finance", "payments"),
+                ("/tickets", "tickets"),
+                ("/loyalty", "loyalty"),
+                ("/shop-settings", "shop_settings"),
+            ):
+                if key in perms and path != request.url.path:
+                    return RedirectResponse(path, status_code=303)
+            return RedirectResponse("/home", status_code=303)
+        return RedirectResponse("/home", status_code=303)
+
+    def _status_page(
+        request: Request,
+        *,
+        code: int,
+        title: str,
+        message: str,
+        ref: str | None = None,
+        primary_href: str = "/home",
+        primary_label: str = "بازگشت به داشبورد",
+        secondary_href: str = "/logout",
+        secondary_label: str = "خروج",
+    ):
+        return render_panel_status(
+            request,
+            code=code,
+            title=title,
+            message=message,
+            ref=ref,
+            primary_href=primary_href,
+            primary_label=primary_label,
+            secondary_href=secondary_href,
+            secondary_label=secondary_label,
+        )
+
+    @app.exception_handler(StarletteHTTPException)
+    async def _http_exc(request: Request, exc: StarletteHTTPException):
+        accept = (request.headers.get("accept") or "").lower()
+        wants_json = (
+            "application/json" in accept
+            or request.url.path.startswith("/api")
+            or request.url.path.endswith(".json")
+        )
+        if wants_json:
+            detail = exc.detail if isinstance(exc.detail, (str, dict, list)) else "خطا"
+            return JSONResponse({"detail": detail}, status_code=exc.status_code)
+        if exc.status_code == 404:
+            return _status_page(
+                request,
+                code=404,
+                title="صفحه پیدا نشد",
+                message="این آدرس وجود ندارد یا جابه‌جا شده است.",
+                primary_href="/home",
+                primary_label="بازگشت به داشبورد",
+                secondary_href="/login",
+                secondary_label="صفحه ورود",
+            )
+        if exc.status_code in {401, 403}:
+            return _status_page(
+                request,
+                code=exc.status_code,
+                title="دسترسی مجاز نیست",
+                message="برای دیدن این بخش وارد شوید یا سطح دسترسی کافی ندارید.",
+                primary_href="/login",
+                primary_label="صفحه ورود",
+                secondary_href="/logout",
+                secondary_label="خروج",
+            )
+        if exc.status_code == 405:
+            # Usually a GET on a POST-only mutation URL (delete admin/plan).
+            safe_back = "/"
+            ref = (request.headers.get("referer") or "").strip()
+            if ref:
+                try:
+                    from urllib.parse import urlparse
+
+                    host = (request.headers.get("host") or "").split(":")[0].lower()
+                    parsed = urlparse(ref)
+                    ref_host = (parsed.hostname or "").lower()
+                    if parsed.scheme in {"http", "https"} and (
+                        not host or not ref_host or ref_host == host
+                    ):
+                        path = parsed.path or "/"
+                        if path.startswith("/") and not path.startswith("//"):
+                            safe_back = path + (
+                                ("?" + parsed.query) if parsed.query else ""
+                            )
+                except Exception:
+                    safe_back = "/"
+            return _status_page(
+                request,
+                code=405,
+                title="این عملیات از این آدرس ممکن نیست",
+                message=(
+                    "حذف ادمین یا پلن فقط با دکمهٔ حذف داخل پنل انجام می‌شود. "
+                    "به لیست برگردید و دوباره از همان دکمه اقدام کنید."
+                ),
+                primary_href=safe_back if safe_back != "/" else "/home",
+                primary_label="بازگشت",
+                secondary_href="/home",
+                secondary_label="داشبورد",
+            )
+        # Other HTTP errors → branded status without leaking details
+        msg = "درخواست قابل انجام نیست."
+        if isinstance(exc.detail, str) and exc.detail and len(exc.detail) < 120:
+            # Only safe short Persian product messages (no traces)
+            if not any(c in exc.detail for c in ("\n", "Traceback", "/", "\\")):
+                msg = exc.detail
+        return _status_page(
+            request,
+            code=exc.status_code,
+            title="خطا",
+            message=msg,
+            primary_href="/home",
+            primary_label="بازگشت به داشبورد",
+        )
+
+    @app.exception_handler(Exception)
+    async def _unhandled(request: Request, exc: Exception):
+        """Last-resort HTML/JSON 500 — log server-side only; never echo secrets/traces."""
+        import uuid
+
+        ref = uuid.uuid4().hex[:8]
+        logging.getLogger(__name__).exception(
+            "unhandled error ref=%s method=%s path=%s",
+            ref,
+            request.method,
+            request.url.path,
+        )
+        accept = (request.headers.get("accept") or "").lower()
+        wants_json = (
+            "application/json" in accept
+            or request.url.path.startswith("/home/metrics")
+            or request.url.path.startswith("/dashboard/metrics")
+            or request.url.path.startswith("/pg/metrics")
+            or request.url.path.startswith("/api")
+            or request.url.path.endswith(".json")
+        )
+        if wants_json:
+            return JSONResponse(
+                {"detail": "خطای داخلی سرور", "ref": ref}, status_code=500
+            )
+        return _status_page(
+            request,
+            code=500,
+            title="خطای داخلی سرور",
+            message="مشکلی پیش آمد. چند لحظه دیگر دوباره تلاش کنید.",
+            ref=ref,
+            primary_href="/login",
+            primary_label="صفحه ورود",
+            secondary_href="/logout",
+            secondary_label="خروج",
+        )
+
+    register_home_pages(
+        app,
+        render=render,
+        require_admin=require_admin,
+        require_staff=require_staff,
+        get_db=get_db,
+    )
+    register_dashboard_trend_pages(app, require_staff=require_staff, get_db=get_db)
+    register_bot_overview_pages(
+        app, render=render, require_perm=require_perm, require_admin=require_admin, get_db=get_db
+    )
+    register_pg_pages(
+        app,
+        render=render,
+        require_pg_perm=require_pg_perm,
+        get_db=get_db,
+    )
+    from app.api.reseller_pages import register_reseller_pages
+    from app.api.security import register_security_pages
+    from app.api.shop_settings import register_shop_settings
+    from app.api.user_pages import register_user_pages
+
+    register_reseller_pages(
+        app, render=render, require_admin=require_admin, require_staff=require_staff, get_db=get_db
+    )
+    from app.api.principal_pages import register_principal_pages
+
+    register_principal_pages(
+        app,
+        render=render,
+        require_admin=require_admin,
+        require_staff=require_staff,
+        get_db=get_db,
+    )
+    register_user_pages(
+        app,
+        render=render,
+        require_admin=require_admin,
+        require_perm=require_perm,
+        get_db=get_db,
+    )
+    from app.api.bulk_pages import register_bulk_pages
+    from app.api.plan_catalog_extras import register_plan_catalog_extras
+
+    register_plan_catalog_extras(app, require_perm=require_perm, get_db=get_db)
+    register_bulk_pages(
+        app,
+        require_admin=require_admin,
+        require_perm=require_perm,
+        require_pg_perm=require_pg_perm,
+        require_staff=require_staff,
+        get_db=get_db,
+    )
+    from app.api.finance_pages import register_finance_pages
+    register_finance_pages(
+        app,
+        render=render,
+        require_staff=require_staff,
+        get_db=get_db,
+    )
+    from app.api.reseller_subscription_pages import register_reseller_subscription_pages
+    register_reseller_subscription_pages(app, render=render, require_staff=require_staff, get_db=get_db)
+    from app.api.settlement_pages import register_settlement_pages
+
+    register_settlement_pages(app, get_db=get_db)
+    from app.api.ux20_pages import register_ux20_pages
+    register_ux20_pages(
+        app,
+        render=render,
+        require_staff=require_staff,
+        require_admin=require_admin,
+        get_db=get_db,
+    )
+    from app.api.delivery_failure_pages import register_delivery_failure_pages
+    register_delivery_failure_pages(app, require_orders=require_perm("orders"), get_db=get_db)
+    from app.api.service_shop_review_pages import register_service_shop_review_pages
+    register_service_shop_review_pages(app, render=render, require_admin=require_admin, get_db=get_db)
+    from app.api.reseller_capacity_repair_pages import register_reseller_capacity_repair_pages
+    register_reseller_capacity_repair_pages(app, require_staff=require_staff, get_db=get_db)
+    register_shop_settings(
+        app,
+        render=render,
+        require_staff=require_staff,
+        require_shop_settings=require_perm("shop_settings"),
+        get_db=get_db,
+    )
+    register_guide_media_pages(
+        app, require_admin=require_admin, require_shop_settings=require_perm("shop_settings"), get_db=get_db
+    )
+    from app.api.miniapp_brand_pages import register_miniapp_brand_pages
+
+    register_miniapp_brand_pages(
+        app, require_admin=require_admin, require_shop_settings=require_perm("shop_settings"), get_db=get_db
+    )
+    from app.api.loyalty_pages import register_loyalty_pages
+
+    register_loyalty_pages(
+        app,
+        render=render,
+        require_perm=require_perm,
+        require_admin=require_admin,
+        get_db=get_db,
+    )
+    from app.api.message_variables_pages import register_message_variables_pages
+
+    register_message_variables_pages(
+        app,
+        render=render,
+        require_perm=require_perm,
+        require_admin=require_admin,
+        get_db=get_db,
+    )
+    from app.api.backup_pages import register_backup_pages
+
+    register_backup_pages(app, render=render, require_admin=require_admin, get_db=get_db)
+    register_security_pages(
+        app,
+        render=render,
+        require_staff=require_staff,
+        get_db=get_db,
+        get_signer=get_signer,
+        cookie_secure=_cookie_secure,
+    )
+    from app.api.panel_tickets_pages import register_panel_tickets_pages
+
+    register_panel_tickets_pages(
+        app,
+        render=render,
+        require_staff=require_staff,
+        get_db=get_db,
+    )
+    from app.api.miniapp_codes import register_miniapp_codes
+    from app.api.miniapp_feeds import register_miniapp_feeds
+    from app.api.miniapp_guides import register_miniapp_guides
+    from app.api.miniapp_loyalty import register_miniapp_loyalty
+    from app.api.miniapp_pages import register_miniapp_pages
+    from app.api.miniapp_review import register_miniapp_review
+    from app.api.miniapp_support import register_miniapp_support
+    from app.api.miniapp_topup import register_miniapp_topup
+
+    register_miniapp_pages(app, render=render, get_db=get_db)
+    register_miniapp_feeds(app, get_db=get_db)
+    register_miniapp_topup(app, get_db=get_db)
+    register_miniapp_support(app, get_db=get_db)
+    register_miniapp_codes(app, get_db=get_db)
+    register_miniapp_guides(app, get_db=get_db)
+    register_miniapp_loyalty(app, get_db=get_db)
+    register_miniapp_review(app, get_db=get_db)
+    from app.api.customer_features import register_customer_features
+
+    register_customer_features(app, render=render, require_staff=require_staff, get_db=get_db)
+    from app.api.automation_review_pages import register_automation_review_pages
+    from app.api.broadcast_queue_pages import register_broadcast_queue_pages
+    from app.api.payment_void_pages import register_payment_void_pages
+
+    register_automation_review_pages(app, require_staff=require_staff, get_db=get_db)
+    register_payment_void_pages(app, require_staff=require_staff, get_db=get_db)
+    register_broadcast_queue_pages(app, require_admin=require_admin, get_db=get_db)
+    register_gift_code_pages(app, render=render, require_staff=require_staff, get_db=get_db)
+    register_funnel_pages(app, render=render, require_staff=require_staff, get_db=get_db)
+    register_order_purge_pages(app, require_staff=require_staff, get_db=get_db)
+    register_staff_audit_pages(app, render=render, require_staff=require_staff, get_db=get_db)
+    register_shop_wallet_pages(app, require_staff=require_staff, get_db=get_db)
+    register_shop_points_pages(app, require_staff=require_staff, get_db=get_db)
+    register_shop_customer_block_pages(app, require_staff=require_staff, get_db=get_db)
+    register_trial_users_pages(app, render=render, require_staff=require_staff, get_db=get_db)
+    register_panel_brand_pages(app, require_staff=require_staff, get_db=get_db)
+    register_service_import_pages(app, require_staff=require_staff, get_db=get_db)
+    register_connection_status_pages(app, render=render, require_staff=require_staff, get_db=get_db)
+
+    @app.get("/settings/ssl/progress")
+    async def ssl_progress(staff: dict = Depends(require_admin)):
+        from fastapi.responses import JSONResponse
+
+        from app.services.ssl_certs import read_progress
+
+        return JSONResponse(read_progress())
+
+    @app.get("/health")
+    async def health():
+        from fastapi.responses import JSONResponse
+
+        # Public probe — CORS allows HTTPS health check from HTTP settings during SSL restart
+        return JSONResponse(
+            {"ok": True},
+            headers={"Access-Control-Allow-Origin": "*"},
+        )
+
+    @app.get("/help")
+    async def help_docs_redirect():
+        return RedirectResponse("/help/", status_code=307)
+
+    @app.get("/health/detail")
+    async def health_detail(staff: dict = Depends(require_admin)):
+        from app.runtime import BOOT_AT, BOOT_ID, PID
+        from app.services.updates import local_version
+
+        creds = load_web_admin()
+        settings = get_settings()
+        webhook_base = normalize_webhook_base_url(settings.webhook_url)
+        webhook_path = normalize_webhook_path(settings.webhook_path)
+        return {
+            "ok": True,
+            "web_panel": True,
+            "admin_user_configured": bool(creds.get("username") and creds.get("password")),
+            "setup_complete": is_setup_complete(),
+            "version": local_version(),
+            "boot_id": BOOT_ID,
+            "boot_at": BOOT_AT,
+            "pid": PID,
+            "staff": staff.get("username"),
+            "bot_update_mode": "webhook" if webhook_base else "polling",
+            "webhook_url": webhook_base,
+            "webhook_path": webhook_path,
+            "webhook_full_url": (webhook_base + webhook_path) if webhook_base else "",
+        }
+
+    @app.get("/manifest.webmanifest")
+    async def pwa_manifest(session: AsyncSession = Depends(get_db)):
+        from fastapi.responses import JSONResponse
+
+        from app.services.pwa import build_manifest, load_pwa_settings
+
+        cfg = await load_pwa_settings(session)
+        resp = JSONResponse(build_manifest(cfg), media_type="application/manifest+json")
+        resp.headers["Cache-Control"] = "no-cache"
+        return resp
+
+    @app.get("/sw.js")
+    async def pwa_service_worker():
+        from fastapi.responses import Response
+
+        from app.services.pwa import service_worker_js
+
+        return Response(
+            service_worker_js(),
+            media_type="application/javascript; charset=utf-8",
+            headers={
+                "Cache-Control": "no-cache",
+                "Service-Worker-Allowed": "/",
+            },
+        )
+
+    @app.get("/pwa/icon/{size}")
+    async def pwa_icon(size: int, request: Request):
+        from fastapi.responses import Response
+
+        from app.services.pwa import icon_bytes
+
+        if size not in (180, 192, 512):
+            raise HTTPException(status_code=404)
+        maskable = request.query_params.get("maskable") in {"1", "true", "yes"} and size == 512
+        data = icon_bytes(size, maskable=maskable)
+        if not data:
+            raise HTTPException(status_code=404)
+        return Response(
+            data,
+            media_type="image/png",
+            headers={"Cache-Control": "public, max-age=3600"},
+        )
+
+    # -------- Setup wizard --------
+    def _setup_https_ready() -> bool:
+        try:
+            from app.services.ssl_certs import https_is_active
+
+            return bool(https_is_active())
+        except Exception:
+            return False
+
+    async def _setup_page(
+        request: Request,
+        *,
+        step: int = 0,
+        err: str | None = None,
+        ok: str | None = None,
+        show_done: bool = False,
+        pg_audit: dict | None = None,
+    ):
+        begin_setup()
+        values = current_setup_values()
+        from app.services.security_policy import is_placeholder_bot_token
+
+        has_bot_token = bool((values.get("BOT_TOKEN") or "").strip()) and not is_placeholder_bot_token(
+            values.get("BOT_TOKEN")
+        )
+        has_pg_password = bool((values.get("PG_PASSWORD") or "").strip())
+        has_pg_api_key = bool((values.get("PG_API_KEY") or "").strip())
+        has_sui_api_token = bool((values.get("SUI_API_TOKEN") or "").strip())
+        # Never echo live secrets back into the HTML source — a re-run of the
+        # wizard (e.g. to change one unrelated field) must not require
+        # re-typing the bot token / PG password, but it also must not leak
+        # them in the page source. Leave both blank; the empty-field-keeps-
+        # previous-value logic lives in setup_bot()/setup_other().
+        display_values = dict(values)
+        display_values["BOT_TOKEN"] = ""
+        display_values["PG_PASSWORD"] = ""
+        display_values["PG_API_KEY"] = ""
+        display_values["SUI_API_TOKEN"] = ""
+        if pg_audit is None and (show_done or step >= 4) and values.get("PANEL_BACKEND") != "sui":
+            try:
+                pg_audit = await setup_pg_access_audit()
+            except Exception:
+                pg_audit = None
+        return render(
+            request,
+            "setup.html",
+            {
+                "values": display_values,
+                "has_bot_token": has_bot_token,
+                "has_pg_password": has_pg_password,
+                "has_pg_api_key": has_pg_api_key,
+                "has_sui_api_token": has_sui_api_token,
+                "initial_step": step,
+                "show_done": show_done,
+                "flash_err": err or request.query_params.get("err"),
+                "flash_ok": ok or request.query_params.get("ok"),
+                "panel_url": wizard_panel_url_hint(values.get("WEB_PORT", "9000")),
+                "finish_login_url": setup_finish_login_url(),
+                "https_ready": _setup_https_ready(),
+                "bot_username": (values.get("BOT_USERNAME") or "").lstrip("@"),
+                "pg_audit": pg_audit,
+            },
+        )
+
+    def _setup_wants_json(request: Request) -> bool:
+        return (request.headers.get("x-requested-with") or "").strip() == "setup-probe"
+
+    @app.get("/setup", response_class=HTMLResponse)
+    async def setup_page(request: Request):
+        if is_setup_complete():
+            return RedirectResponse("/", status_code=303)
+        step = 0
+        try:
+            step = int(request.query_params.get("step") or "0")
+        except ValueError:
+            step = 0
+        show_done = step >= 4
+        return await _setup_page(request, step=step if step < 4 else 4, show_done=show_done)
+
+    @app.post("/setup/admin")
+    async def setup_admin(
+        request: Request,
+        username: str = Form(...),
+        password: str = Form(...),
+        password_confirm: str = Form(...),
+    ):
+        if is_setup_complete():
+            return RedirectResponse("/", status_code=303)
+        begin_setup()
+        user = (username or "").strip() or "admin"
+        p1 = password or ""
+        p2 = password_confirm or ""
+        if p1 != p2:
+            return await _setup_page(request, step=1, err="رمز عبور و تکرار آن یکسان نیستند.")
+        ok, msg = validate_password_strength(p1)
+        if not ok:
+            return await _setup_page(request, step=1, err=msg)
+        try:
+            save_web_admin(user, p1)
+        except ValueError as e:
+            return await _setup_page(request, step=1, err=str(e))
+        ensure_web_secret()
+        update_env_keys({"WEB_ADMIN_USER": user})
+        return RedirectResponse("/setup?step=2", status_code=303)
+
+    @app.post("/setup/bot")
+    async def setup_bot(
+        request: Request,
+        bot_token: str = Form(...),
+        bot_username: str = Form(""),
+        admin_ids: str = Form(...),
+    ):
+        if is_setup_complete():
+            return RedirectResponse("/", status_code=303)
+        begin_setup()
+        from app.services.security_policy import is_placeholder_bot_token
+
+        token = (bot_token or "").strip()
+        uname = (bot_username or "").strip().lstrip("@")
+        ids_raw = (admin_ids or "").strip()
+        if not token:
+            # Wizard never re-displays the saved token (see _setup_page) — an
+            # empty submit here means "keep the existing one", not "clear it".
+            existing = (current_setup_values().get("BOT_TOKEN") or "").strip()
+            if existing and not is_placeholder_bot_token(existing):
+                token = existing
+            else:
+                return await _setup_page(request, step=2, err="توکن ربات الزامی است.")
+        if is_placeholder_bot_token(token):
+            return await _setup_page(request, step=2, err="توکن ربات نامعتبر است — یک توکن واقعی از BotFather وارد کنید.")
+        if not uname:
+            return await _setup_page(request, step=2, err="نام کاربری ربات الزامی است.")
+        try:
+            ids = parse_admin_ids(ids_raw)
+        except ValueError:
+            return await _setup_page(request, step=2, err="آیدی ادمین‌ها باید عدد باشد (با کاما جدا کنید).")
+        if not ids:
+            return await _setup_page(request, step=2, err="حداقل یک آیدی ادمین وارد کنید.")
+        update_env_keys(
+            {
+                "BOT_TOKEN": token,
+                "BOT_USERNAME": uname,
+                "ADMIN_IDS": ",".join(str(i) for i in ids),
+            }
+        )
+        ensure_web_secret()
+        return RedirectResponse("/setup?step=3", status_code=303)
+
+    @app.post("/setup/other")
+    async def setup_other(
+        request: Request,
+        panel_backend: str = Form("pasarguard"),
+        pg_base_url: str = Form(...),
+        pg_subscription_path: str = Form("/sub"),
+        pg_username: str = Form(""),
+        pg_password: str = Form(""),
+        pg_api_key: str = Form(""),
+        clear_pg_api_key: str = Form(""),
+        sui_base_url: str = Form(""),
+        sui_api_token: str = Form(""),
+        sui_subscription_base_url: str = Form(""),
+        sui_inbound_ids: str = Form(""),
+        sui_admin_username: str = Form("s-ui"),
+        web_port: str = Form("9000"),
+        public_base_url: str = Form(""),
+        currency: str = Form("تومان"),
+    ):
+        async def fail(err: str):
+            if _setup_wants_json(request):
+                return JSONResponse({"ok": False, "error": err}, status_code=400)
+            return await _setup_page(request, step=3, err=err)
+
+        if is_setup_complete():
+            if _setup_wants_json(request):
+                return JSONResponse({"ok": False, "error": "راه‌اندازی قبلاً کامل شده است"}, status_code=400)
+            return RedirectResponse("/", status_code=303)
+        begin_setup()
+
+        backend = (panel_backend or "pasarguard").strip().lower().replace("_", "-")
+        if backend in {"sui", "s-ui"}:
+            try:
+                current_vals = current_setup_values()
+                env_update = await prepare_sui_env_update(
+                    base_url=sui_base_url,
+                    api_token=sui_api_token,
+                    subscription_base_url=sui_subscription_base_url,
+                    inbound_ids=sui_inbound_ids,
+                    admin_username=sui_admin_username,
+                    current_api_token=current_vals.get("SUI_API_TOKEN", ""),
+                    web_port=web_port,
+                    public_base_url=public_base_url,
+                    currency=currency,
+                )
+            except ValueError as exc:
+                return await fail(str(exc))
+            ensure_web_secret()
+            update_env_keys(env_update)
+            get_settings.cache_clear()
+            from app.services.pasarguard import reset_pg
+
+            reset_pg()
+            if _setup_wants_json(request):
+                return JSONResponse({"ok": True, "next": "/setup?step=4"})
+            return RedirectResponse("/setup?step=4", status_code=303)
+
+        try:
+            sub_path = normalize_pg_subscription_path(pg_subscription_path)
+        except ValueError as exc:
+            return await fail(str(exc))
+        base = normalize_pg_base_url((pg_base_url or "").strip())
+        if not base:
+            return await fail("آدرس پاسارگارد الزامی است.")
+        try:
+            base = await asyncio.to_thread(assert_safe_pg_base_url, base)
+        except UnsafePgUrlError as exc:
+            return await fail(str(exc))
+        if not (pg_username or "").strip():
+            return await fail("نام کاربری پاسارگارد الزامی است.")
+        current_vals = current_setup_values()
+        clear_key = str(clear_pg_api_key or "").strip().lower() in {
+            "1",
+            "on",
+            "true",
+            "yes",
+        }
+        raw_key = (pg_api_key or "").replace("\r", "").strip()
+        if clear_key:
+            resolved_api_key = ""
+        elif raw_key:
+            if len(raw_key) < 16:
+                return await fail(
+                    "کلید API پاسارگارد کوتاه است — مقدار کامل را از پنل پاسارگارد کپی کنید."
+                )
+            resolved_api_key = raw_key
+        else:
+            # Empty = keep previously saved key (never echoed in HTML).
+            resolved_api_key = (current_vals.get("PG_API_KEY") or "").strip()
+        if not (pg_password or "").strip():
+            # Wizard never re-displays the saved password (see _setup_page) —
+            # an empty submit here means "keep the existing one".
+            existing_pw = (current_vals.get("PG_PASSWORD") or "").strip()
+            if existing_pw:
+                pg_password = existing_pw
+            elif not resolved_api_key:
+                return await fail(
+                    "رمز یا کلید API پاسارگارد الزامی است "
+                    "(حداقل یکی برای ادمین متصل)."
+                )
+        port = (web_port or "9000").strip()
+        try:
+            port_n = int(port)
+            if port_n < 1 or port_n > 65535:
+                raise ValueError
+        except ValueError:
+            return await fail("پورت وب نامعتبر است.")
+        # Hybrid: probe credentials + role before saving (fail closed on bad login).
+        from app.services.pg_access import (
+            clear_platform_pg_capability_cache,
+            resolve_platform_pg_capabilities,
+        )
+
+        caps = await resolve_platform_pg_capabilities(
+            username=(pg_username or "").strip(),
+            password=(pg_password or "").strip() or None,
+            api_key=resolved_api_key or None,
+            base_url=base,
+            use_cache=False,
+        )
+        if not caps.get("ok"):
+            detail = caps.get("error") or "نامعتبر"
+            return await fail(
+                f"ورود به پاسارگارد ناموفق بود: {detail}. "
+                "علت محتمل: آدرس، نام کاربری، رمز یا کلید API اشتباه. "
+                "راه حل: اعتبارنامه همان ادمین متصل در پاسارگارد را وارد کنید "
+                "(لزوماً owner پاسارگارد نیست)."
+            )
+        ensure_web_secret()
+        pub = (public_base_url or "").strip().rstrip("/")
+        if pub.startswith("https://"):
+            pub = "http://" + pub[len("https://") :]
+        env_update: dict[str, str | int | None] = {
+            "PG_BASE_URL": base,
+            "PG_SUBSCRIPTION_PATH": sub_path,
+            "PG_USERNAME": (pg_username or "").strip(),
+            "PG_PASSWORD": (pg_password or "").strip(),
+            "PG_API_KEY": resolved_api_key,
+            "WEB_PORT": str(port_n),
+            "PUBLIC_BASE_URL": pub,
+            "CURRENCY": (currency or "").strip() or "تومان",
+        }
+        update_env_keys(env_update)
+        clear_platform_pg_capability_cache()
+        if _setup_wants_json(request):
+            return JSONResponse({"ok": True, "next": "/setup?step=4"})
+        return RedirectResponse("/setup?step=4", status_code=303)
+
+    @app.post("/setup/finish")
+    async def setup_finish(request: Request):
+        mark_setup_complete()
+        ensure_web_secret()
+        from app.services.service_control import schedule_panel_restart
+        from app.services.setup_wizard import force_http_login_url
+
+        schedule_panel_restart(delay_sec=2.5, reason="setup wizard finished")
+        # Prefer an explicit next from the wizard page (matches the displayed
+        # panel URL). Coerce to http only when TLS is not live yet; install-time
+        # SSL already serves HTTPS so we must not downgrade the login URL.
+        next_url = ""
+        try:
+            form = await request.form()
+            next_url = str(form.get("next") or "").strip()
+        except Exception:
+            next_url = ""
+        return RedirectResponse(force_http_login_url(next_url), status_code=303)
+
+    @app.get("/", response_class=HTMLResponse)
+    async def root(request: Request):
+        """Single entry URL: first-run → setup wizard, otherwise login/dashboard."""
+        if not is_setup_complete():
+            step = 0
+            try:
+                step = int(request.query_params.get("step") or "0")
+            except ValueError:
+                step = 0
+            show_done = step >= 4
+            return await _setup_page(request, step=step if step < 4 else 4, show_done=show_done)
+        user = get_session_user(request)
+        if not user:
+            return RedirectResponse("/login", status_code=303)
+        if user.get("role") == "admin":
+            return RedirectResponse("/home", status_code=303)
+        if user.get("role") in {"pg_staff", "principal"}:
+            # Legacy pg_staff / Level-1 Principal → PG home
+            return RedirectResponse("/pg", status_code=303)
+        # Reseller / sub-admin → web dashboard (bot + PG summaries)
+        return RedirectResponse("/home", status_code=303)
+
+    @app.get("/login", response_class=HTMLResponse)
+    async def login_page(request: Request):
+        if not is_setup_complete():
+            return RedirectResponse("/", status_code=303)
+        err = request.query_params.get("err")
+        # With an error (often after cookie clear), always show the form.
+        clear_stale_session = False
+        if not err:
+            sess = get_session_user(request)
+            if sess:
+                if sess.get("role") == "admin":
+                    return _panel_redirect(request, "/home")
+                if sess.get("role") in {"pg_staff", "principal"}:
+                    return _panel_redirect(request, "/pg")
+                # Reseller / sub-admin: web dashboard
+                return _panel_redirect(request, "/home")
+            # Cookie present but invalid/expired — drop it so re-login is not CSRF-blocked.
+            if request.cookies.get("session"):
+                clear_stale_session = True
+        page = render(
+            request,
+            "login.html",
+            {
+                "error": err,
+                "username": "",
+                "flash_ok": request.query_params.get("ok"),
+            },
+        )
+        if err or clear_stale_session:
+            # Belt-and-suspenders: drop leftover session when showing the login form.
+            page.delete_cookie("session", path="/")
+        return page
+    @app.post("/login")
+    async def login_submit(
+        request: Request,
+        username: str = Form(""),
+        password: str = Form(""),
+        session: AsyncSession = Depends(get_db),
+    ):
+        if not is_setup_complete():
+            return RedirectResponse("/", status_code=303)
+
+        ip = _client_ip(request)
+        typed_user = (username or "").strip()
+        # Rate-limit by IP and by username+IP so XFF spoofing (when TRUST_PROXY=1) is harder.
+        limit_keys = [ip, f"{ip}|{typed_user.lower()}"]
+        if any(_login_blocked(k) for k in limit_keys):
+            return render(
+                request,
+                "login.html",
+                {
+                    "error": "تعداد تلاش‌های ناموفق زیاد است. ۱۵ دقیقه دیگر دوباره تلاش کنید.",
+                    "username": typed_user,
+                },
+                status_code=429,
+            )
+
+        role = None
+        display = (username or "").strip()
+        u = display
+        p = password or ""
+        # Autofill / password-managers sometimes omit fields — never return raw 422 JSON.
+        if not typed_user or not p:
+            return render(
+                request,
+                "login.html",
+                {
+                    "error": "نام کاربری و رمز دسترسی الزامی است.",
+                    "username": typed_user,
+                },
+                status_code=400,
+            )
+        permissions: list[str] = []
+        pg_permissions: list[str] = []
+        pg_user_actions: dict = {}
+        pg_access: dict = {}
+        pg_writes: dict = {}
+        pg_admin_username = None
+        bot_user_id = None
+        pg_role_id = None
+        reseller_pv = ""
+        pg_credentials_ready = False
+        pg_staff_id = None
+
+        # Bind the login to the credential version before yielding for hashing;
+        # a concurrent password change must not issue a session for the old password.
+        owner_session_version = await asyncio.to_thread(admin_session_version)
+        if await asyncio.to_thread(verify_web_admin, u, p):
+            role = "admin"
+            display = load_web_admin()["username"]
+        else:
+            # Reseller web credentials (self-serve wizard only — no referral-code login)
+            from app.services.pg_staff_access import (
+                PG_ACCESS_DENIED_MSG,
+                access_by_web_username,
+                enforce_pg_admin_web_gate,
+                login_denial,
+                resolve_pg_role_id_for_admin,
+                staff_has_pg_auth_secret,
+            )
+
+            result = await session.execute(
+                select(BotUser, ResellerProfile)
+                .join(ResellerProfile, ResellerProfile.user_id == BotUser.id)
+                .where(
+                    ResellerProfile.web_username == u.strip().lower(),
+                    BotUser.role == Role.RESELLER.value,
+                )
+            )
+            row = result.first()
+            if row:
+                ru, profile = row
+                if await asyncio.to_thread(verify_password_hash, p, profile.web_password_hash):
+                    if not profile.is_active:
+                        for k in limit_keys:
+                            _login_fail(k)
+                        return render(
+                            request,
+                            "login.html",
+                            {"error": PG_ACCESS_DENIED_MSG, "username": typed_user},
+                            status_code=403,
+                        )
+                    if not setup_is_complete(profile):
+                        for k in limit_keys:
+                            _login_fail(k)
+                        return render(
+                            request,
+                            "login.html",
+                            {
+                                "error": "راه‌اندازی پنل هنوز کامل نشده. از لینک تلگرام استفاده کنید.",
+                                "username": typed_user,
+                            },
+                            status_code=400,
+                        )
+                    if profile.pg_admin_username:
+                        allowed, deny_msg = await enforce_pg_admin_web_gate(
+                            session, profile.pg_admin_username, revoke_if_missing=True
+                        )
+                        if not allowed:
+                            # The password was right; an outage must not count toward lockout.
+                            status_code, counts_as_failure = login_denial(deny_msg)
+                            if counts_as_failure:
+                                for k in limit_keys:
+                                    _login_fail(k)
+                            return render(
+                                request,
+                                "login.html",
+                                {
+                                    "error": deny_msg or PG_ACCESS_DENIED_MSG,
+                                    "username": typed_user,
+                                },
+                                status_code=status_code,
+                            )
+                    from app.services.pg_access import (
+                        map_pg_role_writes,
+                        resolve_reseller_pg_features,
+                        role_access_limits,
+                        role_user_actions,
+                    )
+
+                    role = "reseller"
+                    display = profile.web_username or ru.full_name or str(ru.telegram_id)
+                    # Same ACL resolution as Bot (empty = deny; None = DEFAULT)
+                    from app.services.authz import resolve_shop_permissions_from_profile
+
+                    permissions = list(resolve_shop_permissions_from_profile(profile) or [])
+                    bot_user_id = ru.id
+                    pg_admin_username = profile.pg_admin_username
+                    pg_role_id = int(profile.pg_role_id) if profile.pg_role_id else None
+                    pg_client = None
+                    if profile.pg_admin_username:
+                        try:
+                            from app.services.pasarguard import get_pg_for_reseller
+
+                            pg_client = await get_pg_for_reseller(
+                                session, int(profile.user_id)
+                            )
+                        except Exception:
+                            pg_client = None
+                        if pg_client is not None:
+                            live_role = await resolve_pg_role_id_for_admin(
+                                profile.pg_admin_username, client=pg_client
+                            )
+                            if live_role:
+                                pg_role_id = int(live_role)
+                                if profile.pg_role_id != pg_role_id:
+                                    profile.pg_role_id = pg_role_id
+                                    try:
+                                        await session.commit()
+                                    except Exception:
+                                        await session.rollback()
+                    if pg_client is not None:
+                        pg_permissions, pg_role = await resolve_reseller_pg_features(
+                            pg_role_id, client=pg_client
+                        )
+                    else:
+                        pg_permissions, pg_role = [], None
+                    pg_user_actions = role_user_actions(pg_role)
+                    pg_access = role_access_limits(pg_role)
+                    pg_writes = map_pg_role_writes(pg_role)
+                    reseller_pv = (profile.web_password_hash or "")[:24]
+            if not role:
+                from app.services.pg_access import (
+                    map_pg_role_writes,
+                    resolve_reseller_pg_features,
+                    role_access_limits,
+                    role_user_actions,
+                )
+
+                staff_row = await access_by_web_username(session, u.strip().lower())
+                if staff_row and await asyncio.to_thread(verify_password_hash, p, staff_row.web_password_hash):
+                    if not staff_row.is_active:
+                        for k in limit_keys:
+                            _login_fail(k)
+                        return render(
+                            request,
+                            "login.html",
+                            {"error": PG_ACCESS_DENIED_MSG, "username": typed_user},
+                            status_code=403,
+                        )
+                    allowed, deny_msg = await enforce_pg_admin_web_gate(
+                        session, staff_row.pg_username, revoke_if_missing=True
+                    )
+                    if not allowed:
+                        # The password was right; an outage must not count toward lockout.
+                        status_code, counts_as_failure = login_denial(deny_msg)
+                        if counts_as_failure:
+                            for k in limit_keys:
+                                _login_fail(k)
+                        return render(
+                            request,
+                            "login.html",
+                            {
+                                "error": deny_msg or PG_ACCESS_DENIED_MSG,
+                                "username": typed_user,
+                            },
+                            status_code=status_code,
+                        )
+                    # Re-load in case revoke removed the row
+                    staff_row = await access_by_web_username(session, u.strip().lower())
+                    if not staff_row or not staff_row.is_active:
+                        for k in limit_keys:
+                            _login_fail(k)
+                        return render(
+                            request,
+                            "login.html",
+                            {"error": PG_ACCESS_DENIED_MSG, "username": typed_user},
+                            status_code=403,
+                        )
+                    role = "pg_staff"
+                    display = staff_row.web_username
+                    permissions = []
+                    pg_admin_username = staff_row.pg_username
+                    pg_credentials_ready = staff_has_pg_auth_secret(staff_row)
+                    pg_staff_id = int(staff_row.id)
+                    # Prefer stored role; refresh live when reachable
+                    pg_role_id = (
+                        int(staff_row.pg_role_id) if staff_row.pg_role_id else None
+                    )
+                    pg_client = None
+                    try:
+                        from app.services.pasarguard import get_pg_for_staff
+
+                        pg_client = await get_pg_for_staff(
+                            session, staff_id=int(staff_row.id)
+                        )
+                    except Exception:
+                        pg_client = None
+                    if pg_client is not None:
+                        live_role = await resolve_pg_role_id_for_admin(
+                            staff_row.pg_username, client=pg_client
+                        )
+                        if live_role:
+                            pg_role_id = live_role
+                        pg_permissions, pg_role = await resolve_reseller_pg_features(
+                            pg_role_id, client=pg_client
+                        )
+                    else:
+                        pg_permissions, pg_role = [], None
+                    pg_user_actions = role_user_actions(pg_role)
+                    pg_access = role_access_limits(pg_role)
+                    pg_writes = map_pg_role_writes(pg_role)
+                    reseller_pv = (staff_row.web_password_hash or "")[:24]
+                    if not pg_permissions:
+                        for k in limit_keys:
+                            _login_fail(k)
+                        return render(
+                            request,
+                            "login.html",
+                            {
+                                "error": "نقش پاسارگارد این ادمین هیچ دسترسی قابل‌نمایشی در وب‌پنل ندارد.",
+                                "username": typed_user,
+                            },
+                            status_code=400,
+                        )
+
+            if not role:
+                # Phase 2B: Level-1 OrgPrincipal independent Web identity
+                from app.services.principal_web_identity import (
+                    PrincipalWebIdentityError,
+                    authenticate_level1_web,
+                    build_principal_session_payload,
+                )
+                from app.services.pg_access import (
+                    map_pg_role_writes,
+                    resolve_reseller_pg_features,
+                    role_access_limits,
+                    role_user_actions,
+                )
+                from app.services.pg_staff_access import resolve_pg_role_id_for_admin
+
+                try:
+                    auth = await authenticate_level1_web(
+                        session, username=u, password=p
+                    )
+                except PrincipalWebIdentityError as exc:
+                    for k in limit_keys:
+                        _login_fail(k)
+                    return render(
+                        request,
+                        "login.html",
+                        {"error": exc.message, "username": typed_user},
+                        status_code=403,
+                    )
+                if auth is not None:
+                    pg_role_id = None
+                    pg_permissions = []
+                    pg_user_actions = {}
+                    pg_access = {}
+                    pg_writes = {}
+                    pg_client = None
+                    if auth.pg_username:
+                        try:
+                            from app.services.pasarguard import get_pg_for_principal
+
+                            pg_client = await get_pg_for_principal(
+                                session, principal_id=int(auth.principal.id)
+                            )
+                        except Exception:
+                            pg_client = None
+                        if pg_client is not None:
+                            live_role = await resolve_pg_role_id_for_admin(
+                                auth.pg_username, client=pg_client
+                            )
+                            if live_role:
+                                pg_role_id = int(live_role)
+                    if pg_role_id and pg_client is not None:
+                        pg_permissions, pg_role = await resolve_reseller_pg_features(
+                            pg_role_id, client=pg_client
+                        )
+                        pg_user_actions = role_user_actions(pg_role)
+                        pg_access = role_access_limits(pg_role)
+                        pg_writes = map_pg_role_writes(pg_role)
+                    for k in limit_keys:
+                        _login_success(k)
+                    payload = build_principal_session_payload(
+                        auth,
+                        permissions=[],
+                        pg_permissions=pg_permissions,
+                        pg_user_actions=pg_user_actions,
+                        pg_access=pg_access,
+                        pg_writes=pg_writes,
+                        pg_role_id=pg_role_id,
+                    )
+                    home = "/pg" if pg_permissions else "/home"
+                    resp = _panel_redirect(request, home)
+                    try:
+                        cookie_val = get_signer().dumps(payload)
+                    except Exception:
+                        logging.getLogger(__name__).exception("session cookie sign failed")
+                        return render(
+                            request,
+                            "login.html",
+                            {
+                                "error": "خطای داخلی نشست — دوباره تلاش کنید",
+                                "username": typed_user,
+                            },
+                            status_code=500,
+                        )
+                    resp.set_cookie(
+                        "session",
+                        cookie_val,
+                        httponly=True,
+                        samesite="lax",
+                        max_age=SESSION_MAX_AGE,
+                        secure=_cookie_secure(request),
+                        path="/",
+                    )
+                    try:
+                        revoke_setup_gate()
+                    except Exception:
+                        logging.getLogger(__name__).exception("revoke_setup_gate failed")
+                    resp.delete_cookie("setup_gate", path="/")
+                    return resp
+
+        if not role:
+            for k in limit_keys:
+                _login_fail(k)
+            return render(
+                request,
+                "login.html",
+                {
+                    "error": "نام کاربری یا رمز عبور اشتباه است. اگر تازه نصب کرده‌اید: python scripts/set_web_password.py",
+                    "username": typed_user,
+                },
+                status_code=400,
+            )
+
+        for k in limit_keys:
+            _login_success(k)
+        payload = {
+            "role": role,
+            "username": display,
+            "permissions": permissions,
+            "pg_permissions": pg_permissions,
+        }
+        if role == "admin":
+            payload["sv"] = owner_session_version
+            payload["web_owner"] = True
+        if bot_user_id is not None:
+            payload["bot_user_id"] = bot_user_id
+        if pg_admin_username:
+            payload["pg_admin_username"] = pg_admin_username
+        if role in {"reseller", "pg_staff"}:
+            payload["pg_user_actions"] = pg_user_actions
+            payload["pg_access"] = pg_access
+            payload["pg_writes"] = pg_writes
+            if pg_role_id:
+                payload["pg_role_id"] = int(pg_role_id)
+            if reseller_pv:
+                payload["pv"] = reseller_pv
+        if role == "pg_staff":
+            payload["pg_credentials_ready"] = bool(pg_credentials_ready)
+            if pg_staff_id is not None:
+                payload["pg_staff_id"] = int(pg_staff_id)
+        home = "/home" if role == "admin" else "/home"
+        if role == "pg_staff":
+            home = "/pg"
+        elif role == "reseller":
+            # Prefer web dashboard; fall back by shop/PG perms.
+            home = "/home"
+            if "dashboard" not in permissions and not pg_permissions:
+                home = ""
+                for path, key in (
+                    ("/plans", "plans"),
+                    ("/finance", "orders"),
+                    ("/finance", "payments"),
+                    ("/tickets", "tickets"),
+                    ("/shop-settings", "shop_settings"),
+                ):
+                    if key in permissions:
+                        home = path
+                        break
+            if not home:
+                if "pg_users" in pg_permissions:
+                    home = "/pg/users"
+                elif "pg_overview" in pg_permissions:
+                    home = "/pg"
+                elif pg_permissions:
+                    home = "/pg"
+                else:
+                    home = "/logout"
+        resp = _panel_redirect(request, home)
+        try:
+            cookie_val = get_signer().dumps(payload)
+        except Exception:
+            logging.getLogger(__name__).exception("session cookie sign failed")
+            return render(
+                request,
+                "login.html",
+                {
+                    "error": "ورود انجام شد ولی ذخیره نشست ناموفق بود. WEB_SECRET یا دسترسی نوشتن .env را بررسی کنید.",
+                    "username": typed_user,
+                },
+                status_code=500,
+            )
+        resp.set_cookie(
+            "session",
+            cookie_val,
+            httponly=True,
+            samesite="lax",
+            secure=_cookie_secure(request),
+            max_age=60 * 60 * 24 * 7,
+            path="/",
+        )
+        try:
+            revoke_setup_gate()
+        except Exception:
+            logging.getLogger(__name__).exception("revoke_setup_gate failed")
+        resp.delete_cookie("setup_gate", path="/")
+        return resp
+
+    @app.post("/logout")
+    async def logout_post():
+        resp = RedirectResponse("/login", status_code=303)
+        resp.delete_cookie("session", path="/")
+        return resp
+
+    @app.get("/logout")
+    async def logout():
+        # GET kept for bookmark/back-compat; prefer POST from the panel UI.
+        resp = RedirectResponse("/login", status_code=303)
+        resp.delete_cookie("session", path="/")
+        return resp
+
+    @app.get("/plans", response_class=HTMLResponse)
+    async def plans_page(
+        request: Request,
+        staff: dict = Depends(require_perm("plans")),
+        session: AsyncSession = Depends(get_db),
+    ):
+        legacy_gifts = legacy_gift_modal_redirect(request.query_params)
+        if legacy_gifts:
+            return RedirectResponse(legacy_gifts, status_code=303)
+        from app.services.plans_catalog import (
+            catalog_owner_id,
+            custom_range_limit_issue,
+            list_catalog_plans,
+            load_pg_plan_options,
+            plan_limit_issue,
+            staff_can_create_pg_template,
+        )
+        from app.services.pg_quota import limit_snapshot_cards, load_staff_limit_snapshot
+        from app.services.shop_scope import is_platform_admin
+
+        plans = await list_catalog_plans(session, staff, include_trial=True)
+        trial = next((p for p in plans if p.is_trial), None)
+        sale_plans = [p for p in plans if not p.is_trial]
+        templates, groups, pg_error = await load_pg_plan_options(staff, session=session)
+        pg_live_template_ids: set[int] = set()
+        for t in templates or []:
+            try:
+                tid = t.get("id") if isinstance(t, dict) else None
+                if tid is not None:
+                    pg_live_template_ids.add(int(tid))
+            except (TypeError, ValueError):
+                continue
+        rid = catalog_owner_id(staff)
+        # Non-admin without shop id must never load platform (admin) settings.
+        if not is_platform_admin(staff) and not rid:
+            values = {}
+        else:
+            values = await get_all_settings(session, reseller_id=rid)
+        limit_snapshot = await load_staff_limit_snapshot(staff, session=session)
+        plan_limit_issues: dict[int, str] = {}
+        for p in sale_plans:
+            issue = await plan_limit_issue(staff, p, session=session)
+            if issue:
+                plan_limit_issues[int(p.id)] = issue
+        trial_limit_issue = await plan_limit_issue(staff, trial, session=session) if trial else None
+        try:
+            custom_limit_msg = custom_range_limit_issue(
+                min_gb=float(values.get("custom_plan_min_gb") or 1),
+                max_gb=float(values.get("custom_plan_max_gb") or 500),
+                min_days=int(float(values.get("custom_plan_min_days") or 1)),
+                max_days=int(float(values.get("custom_plan_max_days") or 365)),
+                snapshot=limit_snapshot,
+            )
+        except (TypeError, ValueError):
+            custom_limit_msg = "تنظیمات پلن دلخواه نامعتبر است"
+        trial_group_ids = set()
+        if trial and trial.pg_group_ids:
+            trial_group_ids = {x.strip() for x in trial.pg_group_ids.split(",") if x.strip()}
+        custom_group_ids = {
+            x.strip()
+            for x in (values.get("custom_plan_group_ids") or "").split(",")
+            if x.strip()
+        }
+        reseller_plans = []
+        feature_perms = []
+        pg_roles = []
+        reseller_plans_err = None
+        if is_platform_admin(staff):
+            from app.services.resellers import (
+                FEATURE_PERMS,
+                ensure_current_capacity_reseller_plan,
+                list_reseller_plans,
+            )
+
+            feature_perms = FEATURE_PERMS
+            try:
+                await ensure_current_capacity_reseller_plan(session)
+                await session.commit()
+            except Exception:
+                import logging
+
+                logging.getLogger(__name__).exception(
+                    "ensure current_capacity plan failed on /plans"
+                )
+                try:
+                    await session.rollback()
+                except Exception:
+                    logger.debug("plans_page: ignored failure", exc_info=True)
+            try:
+                reseller_plans = await list_reseller_plans(session)
+            except Exception:
+                # Missing additive columns (e.g. billing_mode before migrate) must
+                # not 500 the whole plans page — user catalog still loads.
+                import logging
+
+                logging.getLogger(__name__).exception("list_reseller_plans failed on /plans")
+                reseller_plans = []
+                reseller_plans_err = (
+                    "بارگذاری پلن‌های نمایندگی ناموفق بود — پس از به‌روزرسانی، سرویس را یک‌بار ری‌استارت کنید."
+                )
+            try:
+                from app.services.pasarguard import get_pg
+
+                pg_roles = await get_pg().get_admin_roles()
+            except Exception:
+                pg_roles = []
+
+        plan_categories: list = []
+        plan_category_map: dict = {}
+        reseller_plan_category_map: dict = {}
+        category_linked_plans: dict = {}
+        service_addon_packs: list = []
+        try:
+            from app.services.plan_categories import (
+                category_map_for_plans,
+                category_plans_map,
+                list_categories,
+            )
+            from app.services.service_addons import list_packs
+
+            if is_platform_admin(staff) or rid:
+                plan_categories = await list_categories(session, staff)
+                plan_category_map = await category_map_for_plans(
+                    session, staff, sale_plans
+                )
+                if reseller_plans:
+                    reseller_plan_category_map = await category_map_for_plans(
+                        session, staff, reseller_plans
+                    )
+                category_linked_plans = await category_plans_map(
+                    session, staff, plan_categories
+                )
+                service_addon_packs = await list_packs(session, staff)
+                if service_addon_packs:
+                    plan_category_map.update(
+                        await category_map_for_plans(
+                            session, staff, service_addon_packs
+                        )
+                    )
+        except Exception:
+            import logging
+
+            logging.getLogger(__name__).exception(
+                "plan categories/addons load failed on /plans"
+            )
+
+        return render(
+            request,
+            "plans.html",
+            {
+                "staff": staff,
+                "plans": sale_plans,
+                "trial": trial,
+                "trial_group_ids": trial_group_ids,
+                "custom_group_ids": custom_group_ids,
+                "values": values,
+                "templates": templates,
+                "pg_live_template_ids": pg_live_template_ids,
+                "groups": groups,
+                "pg_error": pg_error,
+                "can_create_template": staff_can_create_pg_template(staff),
+                "is_platform_admin": is_platform_admin(staff),
+                "reseller_plans": reseller_plans,
+                "reseller_plans_err": reseller_plans_err,
+                "feature_perms": feature_perms,
+                "pg_roles": pg_roles,
+                "plan_categories": plan_categories,
+                "plan_category_map": plan_category_map,
+                "reseller_plan_category_map": reseller_plan_category_map,
+                "category_linked_plans": category_linked_plans,
+                "service_addon_packs": service_addon_packs,
+                "pg_limit_snapshot": limit_snapshot,
+                "pg_limit_cards": limit_snapshot_cards(limit_snapshot),
+                "plan_limit_issues": plan_limit_issues,
+                "trial_limit_issue": trial_limit_issue,
+                "custom_limit_issue": custom_limit_msg,
+                "open_categories": request.query_params.get("categories")
+                in {"1", "true", "yes"},
+                "open_addons": request.query_params.get("addons") in {"1", "true", "yes"},
+                "flash_err": request.query_params.get("err"),
+                "flash_ok": request.query_params.get("ok"),
+                "plan_style_options": __import__(
+                    "app.services.button_styles", fromlist=["PLAN_BUTTON_STYLE_OPTIONS"]
+                ).PLAN_BUTTON_STYLE_OPTIONS,
+                "category_style_options": __import__(
+                    "app.services.button_styles",
+                    fromlist=["CATEGORY_BUTTON_STYLE_OPTIONS"],
+                ).CATEGORY_BUTTON_STYLE_OPTIONS,
+            },
+        )
+
+    @app.post("/plans")
+    async def plans_create(
+        request: Request,
+        name: str = Form(...),
+        price: int = Form(...),
+        duration_days: str = Form(""),
+        data_limit_gb: str = Form(""),
+        pg_template_id: str = Form(""),
+        description: str = Form(""),
+        mode: str = Form("custom"),
+        also_create_template: str = Form(""),
+        staff: dict = Depends(require_perm("plans")),
+        session: AsyncSession = Depends(get_db),
+    ):
+        from urllib.parse import quote
+
+        from app.services.pg_quota import PgQuotaError, assert_user_plan_within_limits
+        from app.services.plans_catalog import (
+            groups_allowed_for_staff,
+            parse_group_ids_from_form,
+            parse_user_plan_duration_days,
+            require_catalog_owner_id,
+            staff_can_create_pg_template,
+            template_allowed_for_staff,
+        )
+        from app.services.shop_scope import ShopScopeError
+
+        form = await request.form()
+        gb = float(data_limit_gb) if str(data_limit_gb).strip() else None
+        try:
+            days = parse_user_plan_duration_days(duration_days)
+        except ValueError as e:
+            return RedirectResponse(f"/plans?err={quote(str(e))}", status_code=303)
+        try:
+            await assert_user_plan_within_limits(
+                staff,
+                data_limit=int(gb * (1024**3)) if gb is not None else None,
+                duration_days=days,
+                label="پلن فروش",
+                session=session,
+            )
+        except PgQuotaError as e:
+            return RedirectResponse(f"/plans?err={quote(e.message)}", status_code=303)
+        tpl = None
+        group_csv = None
+        try:
+            owner_id = require_catalog_owner_id(staff)
+        except ShopScopeError as e:
+            return RedirectResponse(f"/plans?err={quote(e.message)}", status_code=303)
+
+        if mode == "template":
+            tpl = int(pg_template_id) if str(pg_template_id).strip() else None
+            if not tpl:
+                return RedirectResponse(
+                    f"/plans?err={quote('تمپلیت پاسارگارد را انتخاب کنید')}",
+                    status_code=303,
+                )
+            if not template_allowed_for_staff(staff, tpl):
+                return RedirectResponse(
+                    f"/plans?err={quote('به این تمپلیت دسترسی ندارید')}",
+                    status_code=303,
+                )
+        else:
+            ids = parse_group_ids_from_form(form)
+            if not ids:
+                return RedirectResponse(
+                    f"/plans?err={quote('حداقل یک گروه پاسارگارد انتخاب کنید')}",
+                    status_code=303,
+                )
+            if not groups_allowed_for_staff(staff, ids):
+                return RedirectResponse(
+                    f"/plans?err={quote('به یکی از گروه‌های انتخاب‌شده دسترسی ندارید')}",
+                    status_code=303,
+                )
+            group_csv = ",".join(str(i) for i in ids)
+            if also_create_template:
+                if not staff_can_create_pg_template(staff):
+                    return RedirectResponse(
+                        f"/plans?err={quote('اجازه ساخت تمپلیت در پاسارگارد را ندارید')}",
+                        status_code=303,
+                    )
+                try:
+                    # Must use staff PG credentials — never owner token for non-admin
+                    from app.api.pg_pages import _staff_pg
+
+                    pg_client, _as_owner = await _staff_pg(session, staff)
+                    tpl_payload: dict = {
+                        "name": name.strip(),
+                        "group_ids": ids,
+                        "data_limit": int(gb * (1024**3)) if gb is not None else None,
+                        "status": "active",
+                    }
+                    if days > 0:
+                        tpl_payload["expire_duration"] = days * 86400
+                    created = await pg_client.create_user_template(tpl_payload)
+                    if isinstance(created, dict) and created.get("id"):
+                        tpl = int(created["id"])
+                except Exception as e:
+                    return RedirectResponse(
+                        f"/plans?err={quote(f'ساخت تمپلیت در پاسارگارد ناموفق: {e}')}",
+                        status_code=303,
+                    )
+
+        from app.services.orders import parse_naming_form
+        from app.services.button_styles import parse_plan_button_style_form
+        from app.services.plan_categories import resolve_category_for_plan_write
+
+        uname_prefix, uname_suffix, uname_pattern = parse_naming_form(form)
+        button_style = parse_plan_button_style_form(form)
+        try:
+            category_id = await resolve_category_for_plan_write(
+                session, staff, form.get("category_id")
+            )
+        except (ShopScopeError, ValueError) as e:
+            return RedirectResponse(f"/plans?err={quote(str(e))}", status_code=303)
+
+        session.add(
+            Plan(
+                name=name.strip(),
+                price=price,
+                duration_days=days,
+                data_limit_gb=gb,
+                pg_template_id=tpl,
+                pg_group_ids=group_csv,
+                pg_username_prefix=uname_prefix,
+                pg_username_suffix=uname_suffix,
+                pg_username_pattern=uname_pattern,
+                button_style=button_style,
+                category_id=category_id,
+                owner_reseller_id=owner_id,
+                description=description or None,
+                is_active=True,
+            )
+        )
+        await session.commit()
+        return RedirectResponse(
+            f"/plans?ok={quote('پلن ذخیره شد')}",
+            status_code=303,
+        )
+
+    @app.post("/plans/trial")
+    async def plans_trial_save(
+        request: Request,
+        staff: dict = Depends(require_perm("plans")),
+        session: AsyncSession = Depends(get_db),
+    ):
+        from urllib.parse import quote
+
+        from app.services.pg_quota import PgQuotaError, assert_user_plan_within_limits
+        from app.services.plans_catalog import (
+            groups_allowed_for_staff,
+            parse_group_ids_from_form,
+            require_catalog_owner_id,
+            template_allowed_for_staff,
+        )
+        from app.services.shop_scope import ShopScopeError
+
+        form = await request.form()
+        try:
+            owner_id = require_catalog_owner_id(staff)
+        except ShopScopeError as e:
+            return RedirectResponse(f"/plans?err={quote(e.message)}", status_code=303)
+        enabled = str(form.get("trial_enabled") or "") in {"1", "on", "true", "yes"}
+        await set_setting(session, "trial_enabled", "1" if enabled else "0", reseller_id=owner_id)
+        name = str(form.get("name") or "تست رایگان").strip() or "تست رایگان"
+        try:
+            days = max(1, int(str(form.get("duration_days") or "1")))
+        except ValueError:
+            days = 1
+        gb_raw = str(form.get("data_limit_gb") or "").strip()
+        gb = float(gb_raw) if gb_raw else None
+        try:
+            await assert_user_plan_within_limits(
+                staff,
+                data_limit=int(gb * (1024**3)) if gb is not None else None,
+                duration_days=days,
+                label="پلن تست",
+                session=session,
+            )
+        except PgQuotaError as e:
+            return RedirectResponse(f"/plans?err={quote(e.message)}", status_code=303)
+        mode = str(form.get("mode") or "custom")
+        tpl = None
+        group_csv = None
+        if mode == "template":
+            tpl_raw = str(form.get("pg_template_id") or "").strip()
+            tpl = int(tpl_raw) if tpl_raw.isdigit() else None
+            if enabled and not tpl:
+                return RedirectResponse(
+                    f"/plans?err={quote('برای پلن تست، تمپلیت را انتخاب کنید')}",
+                    status_code=303,
+                )
+            if tpl and not template_allowed_for_staff(staff, tpl):
+                return RedirectResponse(
+                    f"/plans?err={quote('به این تمپلیت دسترسی ندارید')}",
+                    status_code=303,
+                )
+        else:
+            ids = parse_group_ids_from_form(form)
+            if enabled and not ids:
+                return RedirectResponse(
+                    f"/plans?err={quote('برای پلن تست حداقل یک گروه انتخاب کنید')}",
+                    status_code=303,
+                )
+            if ids and not groups_allowed_for_staff(staff, ids):
+                return RedirectResponse(
+                    f"/plans?err={quote('به یکی از گروه‌های انتخاب‌شده دسترسی ندارید')}",
+                    status_code=303,
+                )
+            group_csv = ",".join(str(i) for i in ids) if ids else None
+
+        from app.services.orders import parse_naming_form
+        from app.services.button_styles import parse_plan_button_style_form
+
+        uname_prefix, uname_suffix, uname_pattern = parse_naming_form(form)
+        button_style = parse_plan_button_style_form(form)
+
+        q = select(Plan).where(Plan.is_trial.is_(True))
+        if owner_id:
+            q = q.where(Plan.owner_reseller_id == owner_id)
+        else:
+            q = q.where(Plan.owner_reseller_id.is_(None))
+        result = await session.execute(q)
+        trial = result.scalar_one_or_none()
+        if not trial:
+            trial = Plan(
+                name=name,
+                price=0,
+                duration_days=days,
+                data_limit_gb=gb,
+                pg_template_id=tpl,
+                pg_group_ids=group_csv,
+                pg_username_prefix=uname_prefix,
+                pg_username_suffix=uname_suffix,
+                pg_username_pattern=uname_pattern,
+                button_style=button_style,
+                owner_reseller_id=owner_id,
+                is_trial=True,
+                is_active=enabled,
+                description="پلن تست رایگان",
+            )
+            session.add(trial)
+        else:
+            trial.name = name
+            trial.price = 0
+            trial.duration_days = days
+            trial.data_limit_gb = gb
+            trial.pg_template_id = tpl
+            trial.pg_group_ids = group_csv
+            trial.pg_username_prefix = uname_prefix
+            trial.pg_username_suffix = uname_suffix
+            trial.pg_username_pattern = uname_pattern
+            trial.button_style = button_style
+            trial.is_active = enabled
+        await session.commit()
+        return RedirectResponse(
+            f"/plans?ok={quote('تنظیمات پلن تست ذخیره شد')}",
+            status_code=303,
+        )
+
+    @app.post("/plans/custom")
+    async def plans_custom_save(
+        request: Request,
+        staff: dict = Depends(require_perm("plans")),
+        session: AsyncSession = Depends(get_db),
+    ):
+        from urllib.parse import quote
+
+        from app.services.pg_quota import PgQuotaError, assert_custom_plan_range_within_limits
+        from app.services.plans_catalog import (
+            groups_allowed_for_staff,
+            parse_group_ids_from_form,
+            require_catalog_owner_id,
+            template_allowed_for_staff,
+        )
+        from app.services.shop_scope import ShopScopeError
+
+        form = await request.form()
+        try:
+            owner_id = require_catalog_owner_id(staff)
+        except ShopScopeError as e:
+            return RedirectResponse(f"/plans?err={quote(e.message)}", status_code=303)
+        enabled = str(form.get("custom_plan_enabled") or "") in {"1", "on", "true", "yes"}
+        try:
+            await assert_custom_plan_range_within_limits(
+                staff,
+                min_gb=float(str(form.get("custom_plan_min_gb") or "1") or "1"),
+                max_gb=float(str(form.get("custom_plan_max_gb") or "500") or "500"),
+                min_days=max(1, int(float(str(form.get("custom_plan_min_days") or "1") or "1"))),
+                max_days=max(1, int(float(str(form.get("custom_plan_max_days") or "365") or "365"))),
+                session=session,
+            )
+        except (PgQuotaError, ValueError) as e:
+            return RedirectResponse(
+                f"/plans?err={quote(getattr(e, 'message', str(e)))}",
+                status_code=303,
+            )
+        await set_setting(
+            session, "custom_plan_enabled", "1" if enabled else "0", reseller_id=owner_id
+        )
+        for key in (
+            "custom_plan_price_per_gb",
+            "custom_plan_price_per_day",
+            "custom_plan_min_gb",
+            "custom_plan_max_gb",
+            "custom_plan_min_days",
+            "custom_plan_max_days",
+        ):
+            raw = str(form.get(key) or "").strip()
+            if raw:
+                await set_setting(session, key, raw, reseller_id=owner_id)
+        mode = str(form.get("mode") or "custom")
+        if mode == "template":
+            tpl = str(form.get("custom_plan_template_id") or "").strip()
+            if tpl and tpl.isdigit() and not template_allowed_for_staff(staff, int(tpl)):
+                return RedirectResponse(
+                    f"/plans?err={quote('به این تمپلیت دسترسی ندارید')}",
+                    status_code=303,
+                )
+            await set_setting(session, "custom_plan_template_id", tpl, reseller_id=owner_id)
+            await set_setting(session, "custom_plan_group_ids", "", reseller_id=owner_id)
+        else:
+            ids = parse_group_ids_from_form(form)
+            if ids and not groups_allowed_for_staff(staff, ids):
+                return RedirectResponse(
+                    f"/plans?err={quote('به یکی از گروه‌های انتخاب‌شده دسترسی ندارید')}",
+                    status_code=303,
+                )
+            await set_setting(
+                session,
+                "custom_plan_group_ids",
+                ",".join(str(i) for i in ids),
+                reseller_id=owner_id,
+            )
+            await set_setting(session, "custom_plan_template_id", "", reseller_id=owner_id)
+        from app.services.orders import parse_naming_form
+        from app.services.button_styles import parse_custom_plan_button_style_form
+
+        c_prefix, c_suffix, c_pattern = parse_naming_form(
+            form,
+            prefix_key="custom_plan_username_prefix",
+            suffix_key="custom_plan_username_suffix",
+            pattern_key="custom_plan_username_pattern",
+        )
+        custom_btn_style = parse_custom_plan_button_style_form(form)
+        await set_setting(
+            session,
+            "custom_plan_button_style",
+            "" if custom_btn_style is None else custom_btn_style,
+            reseller_id=owner_id,
+        )
+        await set_setting(
+            session, "custom_plan_username_prefix", c_prefix or "", reseller_id=owner_id
+        )
+        await set_setting(
+            session, "custom_plan_username_suffix", c_suffix or "", reseller_id=owner_id
+        )
+        await set_setting(
+            session, "custom_plan_username_pattern", c_pattern or "", reseller_id=owner_id
+        )
+        return RedirectResponse(
+            f"/plans?ok={quote('تنظیمات پلن دلخواه ذخیره شد')}",
+            status_code=303,
+        )
+
+    @app.post("/plans/wholesale")
+    async def plans_wholesale_save(
+        request: Request,
+        staff: dict = Depends(require_perm("plans")),
+        session: AsyncSession = Depends(get_db),
+    ):
+        from urllib.parse import quote
+
+        from app.services.orders import parse_wholesale_tiers
+        from app.services.plans_catalog import require_catalog_owner_id
+        from app.services.shop_scope import ShopScopeError
+
+        form = await request.form()
+        try:
+            owner_id = require_catalog_owner_id(staff)
+        except ShopScopeError as e:
+            return RedirectResponse(f"/plans?err={quote(e.message)}", status_code=303)
+        enabled = str(form.get("wholesale_enabled") or "") in {"1", "on", "true", "yes"}
+        await set_setting(
+            session, "wholesale_enabled", "1" if enabled else "0", reseller_id=owner_id
+        )
+        try:
+            mn = max(1, int(float(str(form.get("wholesale_min_qty") or "5"))))
+        except (TypeError, ValueError):
+            mn = 5
+        try:
+            mx = max(mn, int(float(str(form.get("wholesale_max_qty") or "20"))))
+        except (TypeError, ValueError):
+            mx = max(mn, 20)
+        await set_setting(session, "wholesale_min_qty", str(mn), reseller_id=owner_id)
+        await set_setting(session, "wholesale_max_qty", str(mx), reseller_id=owner_id)
+        btn = str(form.get("btn_wholesale") or "").strip() or "📦 فروش عمده"
+        await set_setting(session, "btn_wholesale", btn, reseller_id=owner_id)
+        tiers = parse_wholesale_tiers(str(form.get("wholesale_tiers") or ""))
+
+        await set_setting(
+            session,
+            "wholesale_tiers",
+            json.dumps(tiers, ensure_ascii=False),
+            reseller_id=owner_id,
+        )
+        return RedirectResponse(
+            f"/plans?ok={quote('تنظیمات فروش عمده ذخیره شد')}",
+            status_code=303,
+        )
+
+    async def _plans_context(session: AsyncSession, request: Request, staff: dict, extra: dict | None = None):
+        from app.services.plans_catalog import list_catalog_plans, load_pg_plan_options
+        from app.services.pg_quota import limit_snapshot_cards, load_staff_limit_snapshot
+
+        plans = await list_catalog_plans(session, staff, include_trial=True)
+        templates, groups, pg_error = await load_pg_plan_options(staff, session=session)
+        snap = await load_staff_limit_snapshot(staff, session=session)
+        ctx = {
+            "staff": staff,
+            "plans": plans,
+            "templates": templates,
+            "groups": groups,
+            "pg_error": pg_error,
+            "pg_limit_snapshot": snap,
+            "pg_limit_cards": limit_snapshot_cards(snap),
+            "flash_err": request.query_params.get("err"),
+            "flash_ok": request.query_params.get("ok"),
+        }
+        if extra:
+            ctx.update(extra)
+        return ctx
+
+    @app.get("/plans/{plan_id}/edit", response_class=HTMLResponse)
+    async def plans_edit_page(
+        plan_id: int,
+        request: Request,
+        staff: dict = Depends(require_perm("plans")),
+        session: AsyncSession = Depends(get_db),
+    ):
+        from app.services.plans_catalog import catalog_owner_id, get_owned_plan
+        from app.services.shop_scope import is_platform_admin
+
+        plan = await get_owned_plan(session, plan_id, staff)
+        if not plan:
+            return RedirectResponse("/plans?err=" + quote("پلن یافت نشد"), status_code=303)
+        rid = catalog_owner_id(staff)
+        if not is_platform_admin(staff) and not rid:
+            values = {}
+        else:
+            values = await get_all_settings(session, reseller_id=rid)
+        from app.services.plan_categories import list_categories
+
+        cats = []
+        if is_platform_admin(staff) or rid:
+            cats = await list_categories(session, staff, active_only=False)
+        ctx = await _plans_context(
+            session,
+            request,
+            staff,
+            {"plan": plan, "values": values, "plan_categories": cats},
+        )
+        from app.services.button_styles import PLAN_BUTTON_STYLE_OPTIONS
+
+        ctx["plan_style_options"] = PLAN_BUTTON_STYLE_OPTIONS
+        return render(request, "plan_edit.html", ctx)
+
+    @app.post("/plans/{plan_id}/edit")
+    async def plans_edit_save(
+        plan_id: int,
+        request: Request,
+        name: str = Form(...),
+        price: int = Form(...),
+        duration_days: str = Form(""),
+        data_limit_gb: str = Form(""),
+        pg_template_id: str = Form(""),
+        description: str = Form(""),
+        mode: str = Form("custom"),
+        sort_order: int = Form(0),
+        staff: dict = Depends(require_perm("plans")),
+        session: AsyncSession = Depends(get_db),
+    ):
+        from app.services.pg_quota import PgQuotaError, assert_user_plan_within_limits
+        from app.services.plans_catalog import (
+            get_owned_plan,
+            groups_allowed_for_staff,
+            parse_group_ids_from_form,
+            parse_user_plan_duration_days,
+            template_allowed_for_staff,
+        )
+
+        plan = await get_owned_plan(session, plan_id, staff)
+        if not plan:
+            return RedirectResponse("/plans?err=" + quote("پلن یافت نشد"), status_code=303)
+
+        form = await request.form()
+        gb = float(data_limit_gb) if str(data_limit_gb).strip() else None
+        try:
+            days = parse_user_plan_duration_days(duration_days)
+        except ValueError as e:
+            return RedirectResponse(
+                "/plans/%d/edit?err=%s" % (plan_id, quote(str(e))),
+                status_code=303,
+            )
+        try:
+            await assert_user_plan_within_limits(
+                staff,
+                data_limit=int(gb * (1024**3)) if gb is not None else None,
+                duration_days=days,
+                label="ویرایش پلن",
+                session=session,
+            )
+        except PgQuotaError as e:
+            return RedirectResponse(
+                "/plans/%d/edit?err=%s" % (plan_id, quote(e.message)),
+                status_code=303,
+            )
+        tpl = None
+        group_csv = None
+
+        if mode == "template":
+            tpl = int(pg_template_id) if str(pg_template_id).strip() else None
+            if not tpl:
+                return RedirectResponse(
+                    f"/plans/{plan_id}/edit?err={quote('تمپلیت پاسارگارد را انتخاب کنید')}",
+                    status_code=303,
+                )
+            if not template_allowed_for_staff(staff, tpl):
+                return RedirectResponse(
+                    f"/plans/{plan_id}/edit?err={quote('به این تمپلیت دسترسی ندارید')}",
+                    status_code=303,
+                )
+        else:
+            ids = parse_group_ids_from_form(form)
+            if not ids:
+                return RedirectResponse(
+                    f"/plans/{plan_id}/edit?err={quote('حداقل یک گروه پاسارگارد انتخاب کنید')}",
+                    status_code=303,
+                )
+            if not groups_allowed_for_staff(staff, ids):
+                return RedirectResponse(
+                    f"/plans/{plan_id}/edit?err={quote('به یکی از گروه‌های انتخاب‌شده دسترسی ندارید')}",
+                    status_code=303,
+                )
+            group_csv = ",".join(str(i) for i in ids)
+
+        plan.name = name.strip()
+        plan.price = price
+        plan.duration_days = days
+        plan.data_limit_gb = gb
+        plan.description = description or None
+        plan.sort_order = sort_order
+        plan.pg_template_id = tpl
+        plan.pg_group_ids = group_csv
+        from app.services.orders import parse_naming_form
+        from app.services.button_styles import parse_plan_button_style_form
+        from app.services.plan_categories import resolve_category_for_plan_write
+        from app.services.shop_scope import ShopScopeError
+
+        uname_prefix, uname_suffix, uname_pattern = parse_naming_form(form)
+        plan.pg_username_prefix = uname_prefix
+        plan.pg_username_suffix = uname_suffix
+        plan.pg_username_pattern = uname_pattern
+        plan.button_style = parse_plan_button_style_form(form)
+        try:
+            plan.category_id = await resolve_category_for_plan_write(
+                session,
+                staff,
+                form.get("category_id"),
+                allow_inactive_id=plan.category_id,
+            )
+        except (ShopScopeError, ValueError) as e:
+            return RedirectResponse(
+                f"/plans/{plan_id}/edit?err={quote(str(e))}",
+                status_code=303,
+            )
+        await session.commit()
+        return RedirectResponse(
+            f"/plans?ok={quote('پلن به‌روزرسانی شد')}",
+            status_code=303,
+        )
+
+    @app.post("/plans/{plan_id}/toggle")
+    async def plans_toggle(
+        plan_id: int,
+        staff: dict = Depends(require_perm("plans")),
+        session: AsyncSession = Depends(get_db),
+    ):
+        from app.services.plans_catalog import get_owned_plan
+
+        plan = await get_owned_plan(session, plan_id, staff)
+        if plan:
+            plan.is_active = not plan.is_active
+            await session.commit()
+        return RedirectResponse("/plans", status_code=303)
+
+    @app.post("/plans/{plan_id}/delete")
+    async def plans_delete(
+        plan_id: int,
+        staff: dict = Depends(require_perm("plans")),
+        session: AsyncSession = Depends(get_db),
+    ):
+        from app.services.plans_catalog import (
+            PlanDeleteBlocked,
+            delete_shop_plan,
+            get_owned_plan,
+        )
+
+        plan = await get_owned_plan(session, plan_id, staff)
+        if not plan or plan.is_trial:
+            return RedirectResponse("/plans", status_code=303)
+        try:
+            await delete_shop_plan(session, plan)
+            await session.commit()
+        except PlanDeleteBlocked as e:
+            try:
+                await session.rollback()
+            except Exception:
+                logger.debug("plans_delete: ignored failure", exc_info=True)
+            return _redirect_msg("/plans", err=e.message)
+        return _redirect_msg("/plans", ok="پلن حذف شد")
+
+
+    async def _notify_order_user(session: AsyncSession, payment: Payment, order: Order | None) -> None:
+        try:
+            from app.services.payment_settlement import notify_after_settlement
+
+            await notify_after_settlement(session, payment, order)
+        except Exception:
+            logger.debug("_notify_order_user: ignored failure", exc_info=True)
+
+    @app.post("/orders/{order_id}/approve")
+    async def order_approve(
+        order_id: int,
+        staff: dict = Depends(require_perm("orders")),
+        session: AsyncSession = Depends(get_db),
+    ):
+        order = await session.get(Order, order_id)
+        if not order:
+            return _redirect_msg("/finance?tab=orders", err="سفارش یافت نشد")
+        # Hard shop isolation (match bot ordrev + web payments): platform admin
+        # must never approve tenant shop orders.
+        if order.reseller_id and staff.get("role") == "admin":
+            return _redirect_msg(
+                "/finance?tab=orders",
+                err="این سفارش مربوط به نماینده است — فقط در ربات/پنل همان فروشگاه قابل تأیید است",
+            )
+        if staff.get("role") != "admin":
+            from app.services.shop_scope import ShopScopeError, assert_order_in_scope
+
+            try:
+                assert_order_in_scope(staff, order)
+            except ShopScopeError as e:
+                return _redirect_msg("/finance?tab=orders", err=e.message)
+        if order.status == OrderStatus.DELIVERED.value:
+            return _redirect_msg("/finance?tab=orders", ok="قبلاً تحویل شده")
+        # Already provisioned (status may have been tampered) — never re-deliver/notify.
+        # Mutation orders (renew / reseller_app / svc_addon) keep service_id as the
+        # target to mutate — do not treat them as already-minted deliveries.
+        note = (order.note or "").strip()
+        if order.service_id and not is_mutation_order_note(note):
+            if order.status != OrderStatus.DELIVERED.value:
+                order.status = OrderStatus.DELIVERED.value
+                await session.commit()
+            return _redirect_msg("/finance?tab=orders", ok="قبلاً تحویل شده")
+
+        result = await session.execute(
+            select(Payment)
+            .where(Payment.order_id == order_id)
+            .order_by(Payment.id.desc())
+            .limit(1)
+        )
+        payment = result.scalar_one_or_none()
+        try:
+            if payment and payment.status == PaymentStatus.PENDING.value:
+                # Approving a pending receipt requires payments perm (not only orders)
+                if staff.get("role") != "admin":
+                    perms = staff.get("permissions") or []
+                    if "payments" not in perms:
+                        return _redirect_msg(
+                "/finance?tab=orders",
+                            err="تأیید رسید نیاز به دسترسی «پرداخت‌ها» دارد",
+                        )
+                delivered = await approve_payment(session, payment, reviewer_tg=0)
+                await _notify_order_user(session, payment, delivered or order)
+            elif order.status == OrderStatus.PAID.value:
+                had_service = bool(order.service_id)
+                was_mutation = is_mutation_order_note(note)
+                delivered = await fulfill_paid_order(session, order)
+                if payment and (was_mutation or not had_service):
+                    await _notify_order_user(session, payment, delivered)
+            elif payment and payment.status == PaymentStatus.APPROVED.value and order.status != OrderStatus.DELIVERED.value:
+                had_service = bool(order.service_id)
+                was_mutation = is_mutation_order_note(note)
+                delivered = await fulfill_paid_order(session, order)
+                if was_mutation or not had_service:
+                    await _notify_order_user(session, payment, delivered)
+            elif order.status in {
+                OrderStatus.PENDING.value,
+                OrderStatus.AWAITING_RECEIPT.value,
+            }:
+                # Pending without receipt: staff can still approve → deliver once
+                delivered, payment = await manual_fulfill_unpaid_order(
+                    session, order, note="web manual approve"
+                )
+                await _notify_order_user(session, payment, delivered)
+            else:
+                return _redirect_msg("/finance?tab=orders", err="این سفارش هنوز قابل تأیید نیست (رسید لازم است)")
+        except Exception as e:
+            return _redirect_msg("/finance?tab=orders", err=str(e))
+        return _redirect_msg("/finance?tab=orders", ok="سفارش تأیید و تحویل شد")
+
+    @app.post("/orders/{order_id}/reject")
+    async def order_reject(
+        order_id: int,
+        staff: dict = Depends(require_perm("orders")),
+        session: AsyncSession = Depends(get_db),
+    ):
+        order = await session.get(Order, order_id)
+        if not order:
+            return _redirect_msg("/finance?tab=orders", err="سفارش یافت نشد")
+        if order.reseller_id and staff.get("role") == "admin":
+            return _redirect_msg(
+                "/finance?tab=orders",
+                err="این سفارش مربوط به نماینده است — فقط در ربات/پنل همان فروشگاه قابل رد است",
+            )
+        if staff.get("role") != "admin":
+            from app.services.shop_scope import ShopScopeError, assert_order_in_scope
+
+            try:
+                assert_order_in_scope(staff, order)
+            except ShopScopeError as e:
+                return _redirect_msg("/finance?tab=orders", err=e.message)
+        # Rejecting a pending receipt also requires payments perm for limited staff
+        pending_pay = (
+            await session.execute(
+                select(Payment)
+                .where(Payment.order_id == order_id, Payment.status == PaymentStatus.PENDING.value)
+                .order_by(Payment.id.desc())
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+        if pending_pay and staff.get("role") != "admin":
+            perms = staff.get("permissions") or []
+            if "payments" not in perms:
+                return _redirect_msg(
+                "/finance?tab=orders",
+                    err="رد رسید نیاز به دسترسی «پرداخت‌ها» دارد",
+                )
+        try:
+            if pending_pay:
+                await reject_payment(session, pending_pay, reviewer_tg=0, note="web order reject")
+            else:
+                await reject_order(session, order, note="web order reject")
+        except Exception as e:
+            return _redirect_msg("/finance?tab=orders", err=str(e))
+        await notify_payer(
+            session,
+            order.user_id,
+            title="❌ سفارش رد شد",
+            body=f"سفارش #{order_id} رد شد. اگر اشتباهی رخ داده با پشتیبانی در تماس باشید.",
+            shop_id=order.reseller_id,
+        )
+        return _redirect_msg("/finance?tab=orders", ok="سفارش رد شد")
+
+    @app.post("/orders/{order_id}/cancel")
+    async def order_cancel(
+        order_id: int,
+        staff: dict = Depends(require_perm("orders")),
+        session: AsyncSession = Depends(get_db),
+    ):
+        order = await session.get(Order, order_id)
+        if not order:
+            return _redirect_msg("/finance?tab=orders", err="سفارش یافت نشد")
+        if order.reseller_id and staff.get("role") == "admin":
+            return _redirect_msg(
+                "/finance?tab=orders",
+                err="این سفارش مربوط به نماینده است — فقط در ربات/پنل همان فروشگاه قابل لغو است",
+            )
+        if staff.get("role") != "admin":
+            from app.services.shop_scope import ShopScopeError, assert_order_in_scope
+
+            try:
+                assert_order_in_scope(staff, order)
+            except ShopScopeError as e:
+                return _redirect_msg("/finance?tab=orders", err=e.message)
+        try:
+            await cancel_order(session, order, note="web order cancel")
+        except Exception as e:
+            return _redirect_msg("/finance?tab=orders", err=str(e))
+        await notify_payer(
+            session,
+            order.user_id,
+            title="⏹ سفارش لغو شد",
+            body=f"سفارش #{order_id} لغو شد.",
+            shop_id=order.reseller_id,
+        )
+        return _redirect_msg("/finance?tab=orders", ok="سفارش لغو شد")
+
+
+    @app.get("/payments/{payment_id}/approve")
+    async def payment_approve_get(payment_id: int):
+        return _redirect_msg("/finance?tab=payments", err="برای تأیید از دکمه داخل صفحه پرداخت‌ها استفاده کنید")
+
+    @app.post("/payments/{payment_id}/approve")
+    async def payment_approve(
+        payment_id: int,
+        staff: dict = Depends(require_perm("payments")),
+        session: AsyncSession = Depends(get_db),
+    ):
+        payment = await session.get(Payment, payment_id)
+        if not payment:
+            return _redirect_msg("/finance?tab=payments", err="پرداخت یافت نشد")
+        if staff.get("role") != "admin":
+            from app.services.shop_scope import ShopScopeError, require_shop_owner_id
+
+            # Wallet top-ups mint global balance — tenant reviewers cannot approve them.
+            if payment.is_wallet_topup:
+                return _redirect_msg("/finance?tab=payments", err="شارژ کیف پول فقط توسط مدیر اصلی تأیید می‌شود")
+            try:
+                rid = require_shop_owner_id(staff)
+            except ShopScopeError as e:
+                return _redirect_msg("/finance?tab=payments", err=e.message)
+            if not payment.order_id:
+                return _redirect_msg("/finance?tab=payments", err="دسترسی به این پرداخت ندارید")
+            order_row = await session.get(Order, payment.order_id)
+            if not order_row or order_row.reseller_id != rid:
+                return _redirect_msg("/finance?tab=payments", err="دسترسی به این پرداخت ندارید")
+        else:
+            # Platform admin must not approve shop-tenant payments or shop wallet top-ups.
+            from app.services.shop_scope import platform_may_review_payment
+
+            order_row = await session.get(Order, payment.order_id) if payment.order_id else None
+            if not platform_may_review_payment(payment, order_row):
+                return _redirect_msg(
+                    "/finance?tab=payments",
+                    err=(
+                        "شارژ کیف پول فروشگاه فقط توسط نماینده همان فروشگاه تأیید می‌شود"
+                        if payment.is_wallet_topup
+                        else "پرداخت‌های فروشگاه فقط توسط نماینده همان فروشگاه تأیید می‌شود"
+                    ),
+                )
+        if payment.status != PaymentStatus.PENDING.value:
+            return _redirect_msg("/finance?tab=payments", err="این پرداخت قابل تأیید نیست")
+        try:
+            order = await approve_payment(session, payment, reviewer_tg=0)
+        except Exception as e:
+            return _redirect_msg("/finance?tab=payments", err=str(e))
+        user = await session.get(BotUser, payment.user_id)
+        if user:
+            try:
+                from app.services.delivery import send_delivery_to_user
+                from app.services.notifications import notify_new_subscription, notify_wallet_topup_ok
+                from app.services.reseller_bots import open_notify_bot_for_user
+
+                bot, should_close = await open_notify_bot_for_user(
+                    session, user, shop_id=payment_shop_id(payment, order)
+                )
+                try:
+                    try:
+                        await send_delivery_to_user(
+                            bot, user.telegram_id, session, payment, order
+                        )
+                    except Exception as send_exc:
+                        if order is not None:
+                            from app.services.ux20 import note_delivery_send_failure
+
+                            await note_delivery_send_failure(
+                                session, order=order, payment=payment, error=str(send_exc)
+                            )
+                        raise
+                    if payment.is_wallet_topup:
+                        await notify_wallet_topup_ok(bot, session, payment, user.telegram_id)
+                    elif order:
+                        plan = await session.get(Plan, order.plan_id) if order.plan_id else None
+                        await notify_new_subscription(
+                            bot,
+                            session,
+                            order=order,
+                            user_tg_id=user.telegram_id,
+                            user_name=user.full_name or user.username,
+                            plan_name=plan.name if plan else None,
+                            needs_approval=False,
+                        )
+                finally:
+                    if should_close:
+                        await bot.session.close()
+            except Exception:
+                logger.debug("payment_approve: ignored failure", exc_info=True)
+        return _redirect_msg("/finance?tab=payments", ok="پرداخت تأیید شد")
+
+    @app.post("/payments/{payment_id}/reject")
+    async def payment_reject(
+        payment_id: int,
+        staff: dict = Depends(require_perm("payments")),
+        session: AsyncSession = Depends(get_db),
+    ):
+        payment = await session.get(Payment, payment_id)
+        if not payment:
+            return _redirect_msg("/finance?tab=payments", err="پرداخت یافت نشد")
+        if staff.get("role") != "admin":
+            from app.services.shop_scope import ShopScopeError, require_shop_owner_id
+
+            if payment.is_wallet_topup:
+                return _redirect_msg("/finance?tab=payments", err="شارژ کیف پول فقط توسط مدیر اصلی رد می‌شود")
+            try:
+                rid = require_shop_owner_id(staff)
+            except ShopScopeError as e:
+                return _redirect_msg("/finance?tab=payments", err=e.message)
+            if not payment.order_id:
+                return _redirect_msg("/finance?tab=payments", err="دسترسی به این پرداخت ندارید")
+            order_row = await session.get(Order, payment.order_id)
+            if not order_row or order_row.reseller_id != rid:
+                return _redirect_msg("/finance?tab=payments", err="دسترسی به این پرداخت ندارید")
+        else:
+            from app.services.shop_scope import platform_may_review_payment
+
+            order_row = await session.get(Order, payment.order_id) if payment.order_id else None
+            if not platform_may_review_payment(payment, order_row):
+                return _redirect_msg(
+                    "/finance?tab=payments",
+                    err=(
+                        "شارژ کیف پول فروشگاه فقط توسط نماینده همان فروشگاه رد می‌شود"
+                        if payment.is_wallet_topup
+                        else "پرداخت‌های فروشگاه فقط توسط نماینده همان فروشگاه رد می‌شود"
+                    ),
+                )
+        try:
+            await reject_payment(session, payment, reviewer_tg=0, note="web reject")
+        except Exception as e:
+            return _redirect_msg("/finance?tab=payments", err=str(e))
+        body = "پرداخت شما رد شد. اگر اشتباهی رخ داده با پشتیبانی در تماس باشید."
+        user = await session.get(BotUser, payment.user_id)
+        if user:
+            try:
+                shop_rid = payment_shop_id(
+                    payment, await session.get(Order, payment.order_id) if payment.order_id else None
+                )
+                ui = await get_all_settings(session, reseller_id=shop_rid)
+                body = ui.get("payment_reject_text") or body
+            except Exception:
+                logger.debug("payment_reject: ignored failure", exc_info=True)
+        # Packed reject text keeps premium emoji via notify_payer unpack.
+        await notify_payer(
+            session,
+            payment.user_id,
+            title="❌ پرداخت رد شد",
+            body=body,
+            shop_id=payment_shop_id(
+                payment, await session.get(Order, payment.order_id) if payment.order_id else None
+            ),
+        )
+        return _redirect_msg("/finance?tab=payments", ok="پرداخت رد شد")
+
+    @app.get("/users", response_class=HTMLResponse)
+    async def users_page(
+        request: Request,
+        staff: dict = Depends(require_perm("dashboard")),
+        session: AsyncSession = Depends(get_db),
+    ):
+        from app.services.platform_identity import is_explicit_owner_staff
+        from app.services.shop_scope import ShopScopeError, resolve_shop_scope_id
+        from app.services.pg_access import staff_user_actions
+        from app.services.color_tags import (
+            color_tag_meta,
+            color_tags_for_ui,
+            normalize_color_filter,
+        )
+        from app.services.customer_marks import color_filter_clause, marks_for
+        from app.services.users_ops import (
+            build_users_ops_page,
+            parse_focus_uid,
+            scoped_users_where,
+            users_list_href,
+        )
+        from sqlalchemy import and_
+
+        try:
+            scope = resolve_shop_scope_id(staff)
+        except ShopScopeError:
+            return RedirectResponse("/home", status_code=303)
+
+        search_q = normalize_search_q(request.query_params.get("q"))
+        filter_raw = request.query_params.get("filter")
+        focus_uid = parse_focus_uid(request.query_params.get("uid"))
+        color_filter = normalize_color_filter(request.query_params.get("color"))
+        fetch_limit = 500 if search_q else 200
+
+        # Shop scope: Owner → platform users only; reseller → own customers.
+        # Pure resellers (no shop services) stay on /resellers.
+        where = scoped_users_where(scope)
+        if color_filter:
+            # This shop's own tags only (the platform's own on BotUser).
+            where = and_(where, color_filter_clause(scope, color_filter))
+        result = await session.execute(
+            select(BotUser)
+            .where(where)
+            .order_by(BotUser.id.desc())
+            .limit(fetch_limit)
+        )
+        users = list(result.scalars().all())
+        if search_q:
+            users = await _with_search_matches(session, users, where, search_q)
+        from app.services.wallet import wallet_balances_for_scope
+
+        # Scoped purse only — never surface another shop's ShopWallet / platform
+        # balance to tenant staff (and Owner sees platform BotUser.wallet_balance).
+        wallet_by_uid = await wallet_balances_for_scope(
+            session, [int(u.id) for u in users], shop_id=scope
+        )
+        if search_q:
+            users = filter_by_search(
+                users,
+                clean_handle(search_q),
+                lambda u: (
+                    u.id,
+                    u.telegram_id,
+                    u.username,
+                    u.full_name,
+                    u.role,
+                    wallet_by_uid.get(int(u.id), 0),
+                    "مسدود" if u.is_blocked else "فعال",
+                ),
+            )
+        rows, counts, filter_key = await build_users_ops_page(
+            session,
+            users,
+            filter_key=filter_raw,
+            focus_uid=focus_uid,
+            shop_id=scope,
+            wallet_by_uid=wallet_by_uid,
+        )
+        # Deep-link uid outside this shop → ignore (no cross-tenant leak).
+        if focus_uid and not any(int(r.user.id) == int(focus_uid) for r in rows):
+            in_fetched = any(int(u.id) == int(focus_uid) for u in users)
+            if not in_fetched:
+                focus_uid = None
+        pg_acts = staff_user_actions(staff)
+        in_shop = is_explicit_owner_staff(staff) or scope is not None
+
+        def _users_href(**kwargs):
+            kwargs.setdefault("color", color_filter)
+            return users_list_href(**kwargs)
+
+        return render(
+            request,
+            "users.html",
+            {
+                "staff": staff,
+                "rows": rows,
+                "users": [r.user for r in rows],
+                "counts": counts,
+                "filter": filter_key,
+                "focus_uid": focus_uid,
+                "filter_href": _users_href,
+                "q": search_q,
+                "color_filter": color_filter,
+                "color_tags": color_tags_for_ui(),
+                "color_tag_meta": color_tag_meta,
+                "marks_by_uid": await marks_for(session, scope, [int(r.user.id) for r in rows]),
+                "flash_ok": request.query_params.get("ok"),
+                "flash_err": request.query_params.get("err"),
+                "open_edit": request.query_params.get("edit"),
+                "can_manage_users": is_explicit_owner_staff(staff),
+                # Shop scope ∧ PasarGuard users.* ACL (same axis as /pg/users).
+                "can_pg_create": bool(pg_acts.get("create")),
+                "can_pg_update": bool(pg_acts.get("update")),
+                "can_pg_delete": bool(pg_acts.get("delete")),
+                # CRM identity create: shop scope only (no PG call yet).
+                "can_provision_users": in_shop,
+                # Service mutate UI: shop scope ∧ any relevant PG users.* action.
+                "can_edit_user_services": in_shop and bool(
+                    pg_acts.get("create") or pg_acts.get("update") or pg_acts.get("delete")
+                ),
+                "can_user_ops": True,
+            },
+        )
+
+    @app.post("/users/{user_id}/role")
+    async def users_set_role(
+        request: Request,
+        user_id: int,
+        role: str = Form(...),
+        staff: dict = Depends(require_admin),
+        session: AsyncSession = Depends(get_db),
+    ):
+        form = await request.form()
+        reason = str(form.get("reason") or "").strip()
+        user = await session.get(BotUser, user_id)
+        if not user:
+            return _redirect_msg("/users", err="کاربر یافت نشد")
+        from app.services.shop_scope import ShopScopeError, assert_bot_user_in_scope
+
+        try:
+            assert_bot_user_in_scope(staff, user)
+        except ShopScopeError as e:
+            return _redirect_msg("/users", err=e.message)
+        if role not in {Role.USER.value, Role.RESELLER.value, Role.ADMIN.value}:
+            return _redirect_msg("/users", err="نقش نامعتبر")
+
+        from app.services.notifications import actor_label_from_staff, notify_account_edit
+
+        old_role = user.role
+        actor = actor_label_from_staff(staff)
+
+        if role == Role.RESELLER.value:
+            from app.services.resellers import (
+                format_credentials_message,
+                get_reseller_panel_base_url,
+                provision_reseller,
+            )
+
+            try:
+                creds = await provision_reseller(
+                    session,
+                    user=user,
+                    web_permissions=DEFAULT_FEATURE_PERMS,
+                    bot_permissions=DEFAULT_FEATURE_PERMS,
+                    create_pg_admin=True,
+                    panel_base_url=await get_reseller_panel_base_url(session),
+                )
+            except Exception as e:
+                return _redirect_msg("/users", err=str(e))
+            try:
+                from app.bot import create_bot
+
+                bot = create_bot()
+                try:
+                    await bot.send_message(
+                        user.telegram_id,
+                        format_credentials_message(creds),
+                        parse_mode="HTML",
+                    )
+                finally:
+                    await bot.session.close()
+            except Exception:
+                logger.debug("users_set_role: ignored failure", exc_info=True)
+            # Admin mirror + short role notice (credentials already sent to subject)
+            await notify_account_edit(
+                session,
+                user=user,
+                event="role",
+                reason=reason,
+                old_role=old_role,
+                new_role=role,
+                actor=actor,
+                notify_subject=False,
+            )
+        else:
+            # Demoting a reseller must tear down profile / PG admin / shop bot
+            if user.role == Role.RESELLER.value and role != Role.RESELLER.value:
+                from app.services.resellers import notify_reseller_revoked, revoke_reseller
+
+                try:
+                    info = await revoke_reseller(
+                        session,
+                        user.id,
+                        delete_pg_admin=True,
+                        reason=reason,
+                    )
+                except ValueError:
+                    user.role = role
+                    await session.commit()
+                    info = {"telegram_id": user.telegram_id}
+                except Exception as e:
+                    from app.services.users import friendly_user_delete_error
+
+                    return _redirect_msg("/users", err=friendly_user_delete_error(e))
+                if role == Role.ADMIN.value:
+                    user = await session.get(BotUser, user_id)
+                    if user and user.role != Role.ADMIN.value:
+                        user.role = Role.ADMIN.value
+                        await session.commit()
+                user = await session.get(BotUser, user_id)
+                if user and role == Role.USER.value:
+                    await notify_reseller_revoked(
+                        int(info.get("telegram_id") or user.telegram_id),
+                        reason,
+                        session=session,
+                        user=user,
+                        actor=actor,
+                    )
+                elif user:
+                    await notify_account_edit(
+                        session,
+                        user=user,
+                        event="role",
+                        reason=reason,
+                        old_role=old_role,
+                        new_role=role,
+                        actor=actor,
+                    )
+            else:
+                user.role = role
+                await session.commit()
+                await notify_account_edit(
+                    session,
+                    user=user,
+                    event="role",
+                    reason=reason,
+                    old_role=old_role,
+                    new_role=role,
+                    actor=actor,
+                )
+        return RedirectResponse(
+            f"/users?edit={int(user_id)}&ok={quote('نقش به‌روز شد')}&_={int(time.time())}",
+            status_code=303,
+        )
+
+    @app.post("/users/{user_id}/block")
+    async def users_toggle_block(
+        request: Request,
+        user_id: int,
+        staff: dict = Depends(require_admin),
+        session: AsyncSession = Depends(get_db),
+    ):
+        from app.services.notifications import actor_label_from_staff, notify_account_edit
+        from app.services.users import is_protected_admin
+
+        form = await request.form()
+        reason = str(form.get("reason") or "").strip()
+        user = await session.get(BotUser, user_id)
+        if not user:
+            return _redirect_msg("/users", err="کاربر یافت نشد")
+        from app.services.shop_scope import ShopScopeError, assert_bot_user_in_scope
+
+        try:
+            assert_bot_user_in_scope(staff, user)
+        except ShopScopeError as e:
+            return _redirect_msg("/users", err=e.message)
+        if is_protected_admin(user):
+            return _redirect_msg("/users", err="مسدود کردن ادمین مجاز نیست")
+        will_block = not user.is_blocked
+        user.is_blocked = will_block
+        await session.commit()
+        await notify_account_edit(
+            session,
+            user=user,
+            event="block" if will_block else "unblock",
+            reason=reason or None,
+            actor=actor_label_from_staff(staff),
+        )
+        return _redirect_msg("/users", ok="وضعیت مسدودی تغییر کرد")
+
+    @app.post("/users/{user_id}/delete")
+    async def users_delete(
+        request: Request,
+        user_id: int,
+        staff: dict = Depends(require_admin),
+        session: AsyncSession = Depends(get_db),
+    ):
+        from app.services.notifications import actor_label_from_staff, notify_account_edit
+        from app.services.users import delete_bot_user, friendly_user_delete_error
+
+        form = await request.form()
+        from app.services.delete_reason import delete_reason_too_short, extract_delete_reason
+
+        reason = extract_delete_reason(form)
+        if delete_reason_too_short(reason):
+            return _redirect_msg("/users", err="علت حذف کاربر الزامی است (حداقل ۳ کاراکتر)")
+
+        actor_id = None
+        try:
+            actor_id = int(staff.get("user_id") or 0) or None
+        except (TypeError, ValueError):
+            actor_id = None
+        # Prefer matching by telegram if panel session stores it
+        if not actor_id and staff.get("telegram_id"):
+            try:
+                tg = int(staff["telegram_id"])
+                actor = (
+                    await session.execute(select(BotUser).where(BotUser.telegram_id == tg))
+                ).scalar_one_or_none()
+                actor_id = actor.id if actor else None
+            except Exception:
+                actor_id = None
+
+        user = await session.get(BotUser, user_id)
+        if not user:
+            return _redirect_msg("/users", err="کاربر یافت نشد")
+        from app.services.shop_scope import ShopScopeError, assert_bot_user_in_scope
+
+        try:
+            assert_bot_user_in_scope(staff, user)
+        except ShopScopeError as e:
+            return _redirect_msg("/users", err=e.message)
+        await notify_account_edit(
+            session,
+            user=user,
+            event="user_delete",
+            reason=reason,
+            actor=actor_label_from_staff(staff),
+        )
+        try:
+            info = await delete_bot_user(
+                session,
+                user_id,
+                actor_user_id=actor_id,
+            )
+        except ValueError as e:
+            return _redirect_msg("/users", err=str(e))
+        except Exception as e:
+            return _redirect_msg("/users", err=friendly_user_delete_error(e))
+        label = info.get("name") or info.get("telegram_id")
+        return _redirect_msg("/users", ok=f"کاربر {label} حذف شد")
+
+    @app.get("/menu-layout", response_class=HTMLResponse)
+    async def menu_layout_page(staff: dict = Depends(require_admin)):
+        return RedirectResponse("/settings?tab=menu", status_code=303)
+
+    @app.post("/menu-layout")
+    async def menu_layout_save(
+        request: Request,
+        staff: dict = Depends(require_admin),
+        session: AsyncSession = Depends(get_db),
+    ):
+        form = await request.form()
+        await _save_menu_layout(session, form)
+        return RedirectResponse("/settings?tab=menu&saved=1", status_code=303)
+
+    @app.get("/update", response_class=HTMLResponse)
+    async def update_page(
+        request: Request,
+        staff: dict = Depends(require_admin),
+    ):
+        q = "tab=update"
+        if request.query_params.get("force") == "1":
+            q += "&force=1"
+        return RedirectResponse(f"/settings?{q}", status_code=303)
+
+    @app.get("/update/status")
+    async def update_status(staff: dict = Depends(require_admin)):
+        from app.runtime import BOOT_ID, PID
+        from app.services.panel_update import resolve_stale_update_status
+        from app.services.updates import local_version
+
+        st = resolve_stale_update_status()
+        st["current_version"] = local_version()
+        st["boot_id"] = BOOT_ID
+        st["pid"] = PID
+        return st
+
+    @app.post("/update/clear")
+    async def update_clear(staff: dict = Depends(require_admin)):
+        """Admin escape hatch: unlock stuck update UI."""
+        from app.services.panel_update import clear_idle_status, resolve_stale_update_status
+
+        st = resolve_stale_update_status()
+        if st.get("state") == "running":
+            # Still try to clear zombies
+            from app.services.panel_update import _thread_alive
+
+            if _thread_alive():
+                return {"ok": False, "error": "عملیات در حال اجراست", "status": st}
+        return {"ok": True, "status": clear_idle_status()}
+
+    @app.post("/update/channel")
+    async def update_channel_set(
+        request: Request,
+        staff: dict = Depends(require_admin),
+    ):
+        """Persist UPDATE_CHANNEL (main|dev) and return fresh update-tab context."""
+        from app.services.panel_update import update_page_context
+        from app.services.update_channel import normalize_channel, set_update_channel
+        from app.services.updates import clear_update_cache
+
+        body = {}
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        raw = (body or {}).get("channel")
+        if raw is None or str(raw).strip() == "":
+            return {"ok": False, "error": "کانال آپدیت مشخص نشده"}
+        channel = set_update_channel(raw)
+        clear_update_cache()
+        # Always re-check GitHub for the newly selected channel tip.
+        # Header badge stays on DEPLOYED_CHANNEL until an update is applied.
+        ctx = await update_page_context(force_check=True)
+        return {
+            "ok": True,
+            "channel": channel,
+            "channel_label": ctx.get("update_channel_label"),
+            "deployed_channel": ctx.get("deployed_channel"),
+            "deployed_channel_label": ctx.get("deployed_channel_label"),
+            "channels": ctx.get("update_channels"),
+            "update_info": ctx.get("update_info"),
+            "migration_preflight": ctx.get("migration_preflight"),
+            "can_start_update": ctx.get("can_start_update"),
+            "local_version": ctx.get("local_version"),
+            "changelog": ctx.get("changelog"),
+            "channel_check_message": ctx.get("channel_check_message"),
+            "channel_check_tone": ctx.get("channel_check_tone"),
+            "normalized": normalize_channel(raw),
+        }
+
+    @app.post("/update/start")
+    async def update_start(
+        request: Request,
+        staff: dict = Depends(require_admin),
+    ):
+        from app.services.panel_update import clear_idle_status, start_update
+        from app.services.update_channel import get_update_channel, migration_preflight
+        from app.services.updates import check_github_update, clear_update_cache, is_newer
+
+        body = {}
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        clear_update_cache()
+        channel = get_update_channel()
+        info = await check_github_update(force=True, channel=channel)
+        target = (body or {}).get("target") or info.get("remote_version")
+        force = bool((body or {}).get("force"))
+        preflight = await migration_preflight(channel, force=True)
+        if preflight.get("blocked"):
+            return {
+                "ok": False,
+                "error": preflight.get("message") or "مایگریشن کانال مقصد ناسازگار است",
+                "info": info,
+                "migration_preflight": preflight,
+            }
+        # Retry after error may force; otherwise require a real newer remote.
+        if not info.get("update_available") and not force:
+            from app.services.panel_update import read_status
+
+            st = read_status()
+            if st.get("state") != "error" and not st.get("restart_required"):
+                return {"ok": False, "error": "نسخه جدیدی برای آپدیت نیست", "info": info}
+        if target and info.get("remote_version") and not force:
+            # Prefer the freshly checked remote over a stale client target.
+            if is_newer(info.get("remote_version"), target):
+                target = info.get("remote_version")
+        # Clear leftover awaiting before starting a forced retry.
+        if force:
+            clear_idle_status()
+        return start_update(target_version=target)
+
+    @app.get("/notifications", response_class=HTMLResponse)
+    async def notifications_page(staff: dict = Depends(require_admin)):
+        return RedirectResponse("/settings?tab=notifications", status_code=303)
+
+    @app.post("/notifications")
+    async def notifications_save(
+        request: Request,
+        staff: dict = Depends(require_admin),
+        session: AsyncSession = Depends(get_db),
+    ):
+        from app.services.notifications import save_notify_prefs
+
+        form = await request.form()
+        await save_notify_prefs(session, dict(form))
+        return RedirectResponse("/settings?tab=notifications&saved=1", status_code=303)
+
+    @app.post("/supports/save")
+    async def supports_save(
+        request: Request,
+        staff: dict = Depends(require_admin),
+        session: AsyncSession = Depends(get_db),
+    ):
+        from urllib.parse import quote
+
+        from app.services.support_contacts import contacts_from_form_json, save_support_contacts
+
+        form = await request.form()
+        raw = form.get("support_contacts")
+        if raw is not None:
+            contacts, err = contacts_from_form_json(str(raw))
+            if err:
+                return RedirectResponse(
+                    f"/tickets?supports=1&err={quote(err)}",
+                    status_code=303,
+                )
+            await save_support_contacts(session, contacts or [])
+            return RedirectResponse("/tickets?supports=1&saved=1", status_code=303)
+
+        # Legacy single-row upsert (bot / older clients)
+        from app.services.button_styles import parse_item_button_style_form
+        from app.services.support_contacts import upsert_support_contact
+
+        contact_id = str(form.get("id") or "").strip() or None
+        title = str(form.get("title") or "").strip()
+        telegram = str(form.get("telegram") or "").strip()
+        try:
+            sort = int(str(form.get("sort") or "0").strip() or "0")
+        except ValueError:
+            sort = 0
+        enabled = str(form.get("enabled") or "") in {"1", "on", "true", "yes"}
+        if contact_id and "enabled" not in form:
+            enabled = False
+        button_style = parse_item_button_style_form(form)
+        _, err = await upsert_support_contact(
+            session,
+            contact_id=contact_id,
+            title=title,
+            telegram=telegram,
+            sort=sort,
+            enabled=enabled,
+            button_style=button_style,
+        )
+        if err:
+            return RedirectResponse(
+                f"/tickets?supports=1&err={quote(err)}",
+                status_code=303,
+            )
+        return RedirectResponse("/tickets?supports=1&saved=1", status_code=303)
+
+    @app.post("/supports/delete")
+    async def supports_delete(
+        request: Request,
+        staff: dict = Depends(require_admin),
+        session: AsyncSession = Depends(get_db),
+    ):
+        from app.services.support_contacts import delete_support_contact
+
+        form = await request.form()
+        contact_id = str(form.get("id") or "").strip()
+        if contact_id:
+            await delete_support_contact(session, contact_id)
+        return RedirectResponse("/tickets?supports=1&saved=1", status_code=303)
+
+    def _menu_tab_context(values: dict) -> dict:
+        from app.bot.keyboards import DEFAULT_ACTIVE_MENU_ORDER, DEFAULT_MENU_ORDER
+
+        order_raw = values.get("menu_order") or ",".join(DEFAULT_ACTIVE_MENU_ORDER)
+        order = [p.strip() for p in order_raw.split(",") if p.strip()]
+        order = [k for k in order if k in DEFAULT_MENU_ORDER]
+        if "shop" not in order:
+            order.insert(0, "shop")
+        catalog_meta = {
+            "connection_status": {"label": "وضعیت اتصال", "required": False},
+            "shop": {"label": "خرید سرویس", "required": True},
+            "services": {"label": "سرویس‌های من", "required": False},
+            "wallet": {"label": "کیف پول", "required": False},
+            "support": {"label": "پشتیبانی", "required": False},
+            "loyalty": {"label": "باشگاه مشتریان", "required": False},
+            "reseller_apply": {"label": "درخواست نمایندگی", "required": False},
+        }
+        # Migrate legacy referral → loyalty for DnD UI
+        if "referral" in order and "loyalty" not in order:
+            order = ["loyalty" if k == "referral" else k for k in order]
+        order = [k for k in order if k != "referral"]
+        items = []
+        for key in order:
+            meta = catalog_meta.get(key)
+            if not meta:
+                continue
+            items.append(
+                {
+                    "key": key,
+                    "label": meta["label"],
+                    "required": meta["required"],
+                }
+            )
+        pool = []
+        for key in DEFAULT_MENU_ORDER:
+            if key not in order and key != "shop":
+                meta = catalog_meta.get(key)
+                if not meta:
+                    continue
+                pool.append(
+                    {
+                        "key": key,
+                        "label": meta["label"],
+                        "required": False,
+                    }
+                )
+        return {"items": items, "pool": pool, "order_csv": ",".join(order)}
+
+    async def _save_menu_layout(session: AsyncSession, form, *, reseller_id: int | None = None) -> None:
+        from app.bot.keyboards import DEFAULT_MENU_ORDER, sync_show_flags_for_order
+
+        order = [p.strip() for p in str(form.get("menu_order") or "").split(",") if p.strip()]
+        order = [k for k in order if k in DEFAULT_MENU_ORDER]
+        if reseller_id is not None:
+            order = [k for k in order if k != "reseller_apply"]
+        if "shop" not in order:
+            order.insert(0, "shop")
+        layout = str(form.get("menu_layout") or "compact").strip()
+        payload = {"menu_order": ",".join(order)}
+        if layout in {"classic", "compact"}:
+            payload["menu_layout"] = layout
+        # nav_mode classic removed — always inline (Option B)
+        payload["nav_mode"] = "inline"
+        payload.update(sync_show_flags_for_order(order))
+        payload.update(chat_cleanup_payload(form))
+        # miniapp is welcome-inline only — never a DnD / ReplyKeyboard item
+        payload["show_miniapp"] = "0"
+        if reseller_id is not None:
+            payload["show_reseller_apply"] = "0"
+        # The resellers' Mini App switch lives on the «مینی‌اپ» tab now (miniapp_brand_pages).
+        await set_settings_bulk(session, payload, reseller_id=reseller_id)
+        if reseller_id is None:
+            schedule_shop_menu_sync()
+
+    @app.get("/settings", response_class=HTMLResponse)
+    async def settings_page(
+        request: Request,
+        staff: dict = Depends(require_admin),
+        session: AsyncSession = Depends(get_db),
+    ):
+        from app.services.notifications import PLATFORM_NOTIFY_PREFS, get_notify_prefs
+        from app.services.updates import clear_update_cache, local_version
+
+        tab = (request.query_params.get("tab") or "welcome").strip()
+        valid = {t[0] for t in SETTINGS_TABS} | PANEL_SETTINGS_KEYS
+        if tab in SETTINGS_DOMAIN_REDIRECTS:
+            dest = SETTINGS_DOMAIN_REDIRECTS[tab]
+            from urllib.parse import urlencode
+            extra = {}
+            for k in ("ok", "err", "saved", "msg"):
+                if request.query_params.get(k):
+                    extra[k] = request.query_params.get(k)
+            if extra:
+                sep = "&" if "?" in dest else "?"
+                dest = dest + sep + urlencode(extra)
+            return RedirectResponse(dest, status_code=303)
+        if tab == "users":
+            return RedirectResponse("/settings?tab=naming", status_code=303)
+        if tab == "security":
+            return RedirectResponse("/security", status_code=303)
+        if tab not in valid:
+            tab = "welcome"
+
+        values = await get_all_settings(session)
+        tab_groups = TAB_SETTING_GROUPS.get(tab, [])
+        groups = {name: SETTING_GROUPS[name] for name in tab_groups if name in SETTING_GROUPS}
+        # Texts edited in the bot may be packed with premium emoji; fields show their plain text.
+        from app.services.rich_text import prepare_settings_values_for_web
+
+        values = prepare_settings_values_for_web(values)
+
+        if tab == "guides":
+            from app.services.connection_guides import (
+                default_connection_guides,
+                parse_connection_guides,
+                serialize_connection_guides,
+            )
+
+            guides = parse_connection_guides(values.get("connection_guides"))
+            if not guides:
+                values["connection_guides"] = serialize_connection_guides(
+                    default_connection_guides()
+                )
+
+        if tab == "colors":
+            from app.services.payment_destinations import enrich_payment_settings
+
+            values = enrich_payment_settings(values)
+
+        # Bot settings tabs only in horizontal nav; panel tabs use sidebar.
+        page_tabs = SETTINGS_TABS if tab not in PANEL_SETTINGS_KEYS else []
+
+        ctx: dict = {
+            "staff": staff,
+            "values": values,
+            "groups": groups,
+            "tab_groups": tab_groups,
+            "tabs": page_tabs,
+            "tab_nav": group_settings_tabs(tabs_with_message_variables(page_tabs, staff) if page_tabs else [], tab),
+            "tab": tab,
+            "is_panel_settings": tab in PANEL_SETTINGS_KEYS,
+            "panel_tab_label": dict(PANEL_SETTINGS_TABS).get(tab),
+            "reset_tabs": RESETTABLE_SETTINGS_TABS,
+            "saved": request.query_params.get("saved") == "1",
+            "saved_msg": request.query_params.get("msg") or "",
+        }
+        if tab == "guides":
+            ctx["guides_media"] = await guides_media_view(session, GUIDE_MEDIA_PLATFORM_BASE, reseller_id=None)
+            ctx["guides_media_base"] = GUIDE_MEDIA_PLATFORM_BASE
+        # Single flash above page title (base.html) — avoid below-title duplicates
+        if request.query_params.get("saved") == "1":
+            ctx["flash_ok"] = request.query_params.get("msg") or "ذخیره شد."
+        elif request.query_params.get("ok"):
+            ctx["flash_ok"] = request.query_params.get("ok")
+        if request.query_params.get("err"):
+            ctx["flash_err"] = request.query_params.get("err")
+
+        if tab == "menu":
+            ctx.update(_menu_tab_context(values))
+        elif tab in {"terms", "limits", "guides"}:
+            from app.services.button_styles import STYLE_OPTIONS
+
+            ctx["style_options"] = STYLE_OPTIONS
+        elif tab == "colors":
+            from app.services.button_styles import (
+                STYLE_OPTIONS,
+                build_dynamic_color_summary,
+                colors_page_grouped_sections,
+            )
+            from app.services.payment_destinations import (
+                enrich_payment_settings,
+                parse_payment_cards,
+                parse_payment_crypto_wallets,
+                parse_payment_gateways,
+            )
+            from app.services.support_contacts import parse_support_contacts
+
+            pay_ui = enrich_payment_settings(values)
+            ctx["colors_page_sections"] = colors_page_grouped_sections()
+            ctx["style_options"] = STYLE_OPTIONS
+            ctx["dynamic_color_rows"] = build_dynamic_color_summary(
+                values,
+                support_contacts=parse_support_contacts(values.get("support_contacts")),
+                payment_cards=parse_payment_cards(pay_ui.get("payment_cards")),
+                payment_gateways=parse_payment_gateways(pay_ui.get("payment_gateways")),
+                payment_crypto_wallets=parse_payment_crypto_wallets(
+                    pay_ui.get("payment_crypto_wallets")
+                ),
+            )
+        elif tab == "notifications":
+            prefs = await get_notify_prefs(session)
+            ctx["notify_prefs"] = prefs
+            ctx["notify_items"] = PLATFORM_NOTIFY_PREFS
+        elif tab == "daily_report":
+            from app.services.daily_report import (
+                ACTOR_OWNER,
+                DEFAULT_REPORT_TEMPLATE,
+                metric_groups_for_ui,
+                parse_metric_keys,
+            )
+
+            actor = ACTOR_OWNER
+            ctx["daily_report_actor"] = actor
+            ctx["daily_report_metric_groups"] = metric_groups_for_ui(actor)
+            ctx["daily_report_enabled_metrics"] = parse_metric_keys(
+                values.get("admin_daily_report_metrics"), actor=actor
+            )
+            if not (values.get("admin_daily_report_template") or "").strip():
+                values["admin_daily_report_template"] = DEFAULT_REPORT_TEMPLATE
+        elif tab == "update":
+            from app.services.panel_update import clear_idle_status, update_page_context
+            from app.services.updates import clear_update_cache
+
+            # Always re-check GitHub on the update tab (CDN + in-process cache
+            # otherwise hide a just-published release for several minutes).
+            clear_update_cache()
+            # Success flash after confirmed restart — wipe progress UI
+            if request.query_params.get("ok"):
+                clear_idle_status()
+            ctx.update(await update_page_context(force_check=True))
+        elif tab == "pwa":
+            from app.services.pwa import load_pwa_settings
+
+            ctx["pwa"] = await load_pwa_settings(session)
+            ctx["brand_values"] = await load_own_values(session, None)
+            ctx["brand_form_action"] = "/panel-brand"
+        elif tab == "backup":
+            from app.services.backup import (
+                clear_idle_restore_status,
+                list_backups,
+                read_restore_notice,
+                resolve_stale_restore_status,
+                sqlite_db_path,
+            )
+
+            if request.query_params.get("ok"):
+                clear_idle_restore_status()
+            ctx["backups"] = list_backups()
+            ctx["restore_status"] = resolve_stale_restore_status()
+            ctx["restore_warnings"] = read_restore_notice()
+            ctx["local_version"] = local_version()
+            ctx["db_path"] = str(sqlite_db_path())
+            # values already loaded above — do not re-import get_all_settings
+            # (that would shadow the module-level name and 500 every settings tab).
+            names = TAB_SETTING_GROUPS.get("backup") or []
+            ctx["backup_schedule_groups"] = {
+                name: SETTING_GROUPS[name] for name in names if name in SETTING_GROUPS
+            }
+        elif tab == "general":
+            from app.services.setup_wizard import current_setup_values
+
+            ctx["env_values"] = current_setup_values()
+        elif tab == "bot":
+            from app.services.setup_wizard import current_setup_values
+
+            env_values = current_setup_values()
+            ctx["env_values"] = env_values
+            token = env_values.get("BOT_TOKEN") or ""
+            ctx["bot_status"] = await _bot_token_status(token)
+            ctx["bot_token_masked"] = (
+                ("••••" + token[-6:]) if len(token) > 8 else ("••••" if token else "")
+            )
+            wh_base = env_values.get("WEBHOOK_URL") or ""
+            wh_path = env_values.get("WEBHOOK_PATH") or "/telegram/webhook"
+            ctx["bot_update_mode"] = env_values.get("BOT_UPDATE_MODE") or (
+                "webhook" if wh_base else "polling"
+            )
+            ctx["webhook_full_url"] = (wh_base + wh_path) if wh_base else ""
+        elif tab == "links":
+            from app.services.ux20 import build_magic_links_context
+
+            ctx.update(await build_magic_links_context(session, staff))
+        elif tab == "ssl":
+            from urllib.parse import urlparse
+
+            from app.services.setup_wizard import current_setup_values
+            from app.services.ssl_certs import cert_status, normalize_domain
+
+            st = cert_status()
+            if not st.get("domain"):
+                pub = (current_setup_values().get("PUBLIC_BASE_URL") or "").strip()
+                if pub:
+                    host = urlparse(pub if "://" in pub else f"https://{pub}").hostname or ""
+                    st["domain"] = normalize_domain(host)
+            ctx["ssl"] = st
+        elif tab == "miniapp":
+            ctx["miniapp_url"] = get_settings().miniapp_url
+        elif tab == "appearance":
+            from app.services.bot_appearance import load_appearance_context
+            from app.services.setup_wizard import current_setup_values
+
+            env_values = current_setup_values()
+            token = (env_values.get("BOT_TOKEN") or "").strip()
+            uname = (env_values.get("BOT_USERNAME") or "").strip()
+            ctx.update(
+                await load_appearance_context(
+                    session, token=token, fallback_username=uname
+                )
+            )
+
+        return render(request, "settings.html", ctx)
+
+    @app.post("/settings/cancel-pending-orders")
+    async def settings_cancel_pending_orders(
+        request: Request,
+        staff: dict = Depends(require_admin),
+        session: AsyncSession = Depends(get_db),
+    ):
+        """Manual cancel of stale pending/unapproved orders (platform shop)."""
+        from app.services.orders import cancel_stale_pending_for_settings
+
+        try:
+            n = await cancel_stale_pending_for_settings(
+                session, reseller_id=None, force=True
+            )
+        except Exception:
+            logging.getLogger(__name__).exception("manual pending order cancel failed")
+            dest = _settings_next(request, "/finance?tab=orders&settings=cleanup")
+            return _redirect_msg(dest, err="لغو سفارش‌ها ناموفق بود. لاگ سرور را بررسی کنید.")
+        dest = _settings_next(request, "/finance?tab=orders&settings=cleanup")
+        return _redirect_msg(
+            dest,
+            ok=f"{n} سفارش معلق/تأییدنشده لغو شد" if n else "سفارش معلقی برای لغو نبود",
+        )
+
+    async def _bot_token_status(token: str) -> dict:
+        token = (token or "").strip()
+        if not token:
+            return {"ok": False, "error": "توکن تنظیم نشده"}
+        try:
+            import httpx
+
+            async with httpx.AsyncClient(timeout=8.0) as client:
+                resp = await client.get(f"https://api.telegram.org/bot{token}/getMe")
+                data = resp.json()
+            if data.get("ok") and isinstance(data.get("result"), dict):
+                me = data["result"]
+                return {
+                    "ok": True,
+                    "username": me.get("username"),
+                    "id": me.get("id"),
+                    "name": me.get("first_name"),
+                }
+            return {"ok": False, "error": data.get("description") or "توکن نامعتبر"}
+        except Exception as exc:
+            from app.services.redact import redact
+            return {"ok": False, "error": f"عدم اتصال به تلگرام: {redact(exc)}"}
+
+    @app.post("/settings")
+    async def settings_save(
+        request: Request,
+        staff: dict = Depends(require_admin),
+        session: AsyncSession = Depends(get_db),
+    ):
+        import uuid
+
+        from starlette.datastructures import UploadFile
+
+        from app.services.screen_titles import SCREEN_TEXT_TAB, validate_screen_text_settings
+        from app.services.users import (
+            IMAGE_KEYS,
+            SECRET_KEYS,
+            TOGGLE_KEYS,
+            default_values_for_keys,
+            keys_for_tab,
+            should_keep_secret_value,
+        )
+
+        tab = (request.query_params.get("tab") or "welcome").strip()
+        form = await request.form()
+
+        if tab == "pasarguard":
+            from fastapi.responses import JSONResponse
+
+            from app.services.pasarguard import reset_pg
+            from app.services.pg_access import clear_platform_pg_capability_cache, resolve_platform_pg_capabilities
+            from app.services.setup_wizard import current_setup_values
+
+            ajax = str(form.get("ajax") or "") == "1"
+            action = str(form.get("action") or "save")
+
+            def pg_result(ok: bool, message: str, *, code: int = 200):
+                if ajax:
+                    return JSONResponse({"ok": ok, "message" if ok else "error": message}, status_code=code)
+                return RedirectResponse("/settings?tab=pasarguard&" + ("ok=" if ok else "err=") + quote(message), status_code=303)
+
+            if action not in {"save", "test"}:
+                return pg_result(False, "عملیات نامعتبر است", code=400)
+            current = current_setup_values()
+            try:
+                base = await asyncio.to_thread(assert_safe_pg_base_url, str(form.get("PG_BASE_URL") or ""))
+                sub_path = normalize_pg_subscription_path(str(form.get("PG_SUBSCRIPTION_PATH") or "/sub"))
+            except (ValueError, UnsafePgUrlError) as exc:
+                return pg_result(False, str(exc), code=400)
+            username = str(form.get("PG_USERNAME") or "").strip()
+            password = str(form.get("PG_PASSWORD") or "").strip() or current.get("PG_PASSWORD", "")
+            clear_key = str(form.get("clear_pg_api_key") or "").strip().lower() in {
+                "1", "on", "true", "yes",
+            }
+            raw_key = str(form.get("PG_API_KEY") or "").replace("\r", "").strip()
+            if clear_key:
+                api_key = ""
+            elif raw_key:
+                if len(raw_key) < 16:
+                    return pg_result(
+                        False,
+                        "کلید API پاسارگارد کوتاه است — مقدار کامل را از پنل پاسارگارد کپی کنید",
+                        code=400,
+                    )
+                api_key = raw_key
+            else:
+                api_key = (current.get("PG_API_KEY") or "").strip()
+            if not username or not (password or api_key):
+                return pg_result(
+                    False,
+                    "نام کاربری و (رمز یا کلید API) الزامی است؛ فیلد خالی مقدار فعلی را حفظ می‌کند",
+                    code=400,
+                )
+            if action == "test":
+
+                try:
+                    caps = await asyncio.wait_for(resolve_platform_pg_capabilities(
+                        username=username,
+                        password=password or None,
+                        api_key=api_key or None,
+                        base_url=base,
+                        use_cache=False,
+                    ), timeout=8.0)
+                except Exception:
+                    return pg_result(False, "پنل در زمان مقرر پاسخ نداد؛ آدرس و اتصال پنل را بررسی کنید", code=502)
+                if not caps.get("ok"):
+                    return pg_result(
+                        False,
+                        "اتصال پاسارگارد ناموفق بود؛ آدرس، نام کاربری، رمز یا کلید API را بررسی کنید",
+                        code=400,
+                    )
+                return pg_result(True, f"اتصال پاسارگارد موفق است؛ مسیر سابسکریپشن: {sub_path}/")
+            update_env_keys({
+                "PG_BASE_URL": base, "PG_SUBSCRIPTION_PATH": sub_path,
+                "PG_USERNAME": username, "PG_PASSWORD": password,
+                "PG_API_KEY": api_key,
+            })
+            get_settings.cache_clear()
+            reset_pg()
+            clear_platform_pg_capability_cache()
+            return pg_result(True, "تنظیمات اتصال پاسارگارد ذخیره و اعمال شد")
+
+        if tab == "ssl":
+            from app.services.ssl_certs import (
+                disable_https,
+                enable_https,
+                is_valid_domain,
+                normalize_domain,
+                read_meta,
+                start_issue_job,
+                write_meta,
+            )
+
+            action = str(form.get("action") or "issue").strip()
+            domain = normalize_domain(str(form.get("domain") or ""))
+            email = str(form.get("acme_email") or "").strip()
+            # The Mini App's own domain; blank or «same as the panel» keeps the panel's.
+            same_miniapp = str(form.get("miniapp_same_domain") or "") in {"1", "on", "true", "yes"}
+            miniapp_domain = "" if same_miniapp else normalize_domain(str(form.get("miniapp_domain") or ""))
+            if miniapp_domain == domain:
+                miniapp_domain = ""
+
+            if action == "enable":
+                # Enable only applies the cert already on disk. Switching domains
+                # requires a successful issue first — never flip PUBLIC_BASE_URL
+                # to a hostname the live cert does not cover.
+                meta = read_meta()
+                active = normalize_domain(
+                    meta.get("domain") or meta.get("host") or meta.get("panel_domain") or ""
+                )
+                if domain and is_valid_domain(domain) and active and domain != active:
+                    return RedirectResponse(
+                        "/settings?tab=ssl&err="
+                        + quote(
+                            "برای تعویض دامنه ابتدا «دریافت گواهی» را بزنید. "
+                            "فعال‌سازی HTTPS فقط برای دامنه‌ای است که گواهی‌اش صادر شده."
+                        ),
+                        status_code=303,
+                    )
+                result = enable_https(restart=True)
+                if not result.get("ok"):
+                    return RedirectResponse(
+                        "/settings?tab=ssl&err=" + quote(str(result.get("error") or "خطا")[:400]),
+                        status_code=303,
+                    )
+                return RedirectResponse("/settings?tab=ssl", status_code=303)
+
+            if action == "disable":
+                result = disable_https(restart=True)
+                if not result.get("ok"):
+                    return RedirectResponse(
+                        "/settings?tab=ssl&err=" + quote(str(result.get("error") or "خطا")[:400]),
+                        status_code=303,
+                    )
+                return RedirectResponse(
+                    "/settings?tab=ssl&ok=" + quote("HTTPS غیرفعال شد — ری‌استارت…"),
+                    status_code=303,
+                )
+
+            if not is_valid_domain(domain):
+                return RedirectResponse(
+                    "/settings?tab=ssl&err=" + quote("دامنه نامعتبر است"),
+                    status_code=303,
+                )
+            if miniapp_domain and not is_valid_domain(miniapp_domain):
+                return RedirectResponse(
+                    "/settings?tab=ssl&err=" + quote("دامنهٔ مینی‌اپ نامعتبر است"),
+                    status_code=303,
+                )
+            if not email or "@" not in email:
+                return RedirectResponse(
+                    "/settings?tab=ssl&err=" + quote("ایمیل معتبر لازم است"),
+                    status_code=303,
+                )
+            # Do NOT commit domain/panel_domain/public_https until issue succeeds.
+            # Premature write left HTTPS=on + old cert + new hostname (browser
+            # domain mismatch) when Let's Encrypt failed after a domain switch.
+            meta = read_meta()
+            meta["pending_domain"] = domain
+            meta["pending_email"] = email
+            meta["pending_miniapp_domain"] = miniapp_domain
+            meta["last_error"] = None
+            write_meta(meta)
+            force = action == "renew"
+            result = start_issue_job(domain=domain, email=email, force=force, miniapp_domain=miniapp_domain)
+            if not result.get("ok"):
+                meta = read_meta()
+                meta.pop("pending_domain", None)
+                meta.pop("pending_email", None)
+                meta.pop("pending_miniapp_domain", None)
+                write_meta(meta)
+                return RedirectResponse(
+                    "/settings?tab=ssl&err=" + quote(str(result.get("error") or "خطا")[:400]),
+                    status_code=303,
+                )
+            return RedirectResponse("/settings?tab=ssl&working=1", status_code=303)
+
+        if tab == "bot":
+            from fastapi.responses import JSONResponse
+
+            from app.runtime import BOOT_ID
+            from app.services.pasarguard import reset_pg
+            from app.services.service_control import schedule_panel_restart
+            from app.services.setup_wizard import current_setup_values, parse_admin_ids
+
+            ajax = str(form.get("ajax") or "").strip() == "1"
+            preview = str(form.get("preview") or "").strip() == "1"
+            confirmed = str(form.get("confirm_restart") or "").strip() == "1"
+
+            def _bot_err(msg: str, *, code: int = 400):
+                if ajax or preview:
+                    return JSONResponse(
+                        {"ok": False, "error": msg, "needs_confirm": False},
+                        status_code=code,
+                    )
+                return RedirectResponse(
+                    "/settings?tab=bot&err=" + quote(msg),
+                    status_code=303,
+                )
+
+            token = str(form.get("BOT_TOKEN") or "").strip()
+            uname = str(form.get("BOT_USERNAME") or "").strip().lstrip("@")
+            ids_raw = str(form.get("ADMIN_IDS") or "").strip()
+            pg_base = normalize_pg_base_url(str(form.get("PG_BASE_URL") or "").strip())
+            if pg_base:
+                try:
+                    pg_base = await asyncio.to_thread(assert_safe_pg_base_url, pg_base)
+                except UnsafePgUrlError as exc:
+                    return _bot_err(str(exc))
+            pg_user = str(form.get("PG_USERNAME") or "").strip()
+            pg_pass = str(form.get("PG_PASSWORD") or "").strip()
+            clear_pg_key = str(form.get("clear_pg_api_key") or "").strip().lower() in {
+                "1", "on", "true", "yes",
+            }
+            pg_api_key_raw = str(form.get("PG_API_KEY") or "").replace("\r", "").strip()
+            update_mode_raw = str(form.get("BOT_UPDATE_MODE") or "").strip().lower()
+            webhook_url_raw = str(form.get("WEBHOOK_URL") or "").strip()
+            webhook_path_raw = str(form.get("WEBHOOK_PATH") or "").strip()
+            current = current_setup_values()
+            # Web/public fields live on panel «عمومی» — keep current values here.
+            web_port = str(current.get("WEB_PORT") or "9000").strip()
+            public_base = str(current.get("PUBLIC_BASE_URL") or "").strip().rstrip("/")
+            currency = str(current.get("CURRENCY") or "تومان").strip() or "تومان"
+            try:
+                pg_sub_path = normalize_pg_subscription_path(
+                    str(form.get("PG_SUBSCRIPTION_PATH") or current.get("PG_SUBSCRIPTION_PATH") or "/sub")
+                )
+            except ValueError as exc:
+                return _bot_err(str(exc))
+            if not token:
+                token = (current.get("BOT_TOKEN") or "").strip()
+            if not pg_pass:
+                pg_pass = (current.get("PG_PASSWORD") or "").strip()
+            if clear_pg_key:
+                pg_api_key = ""
+            elif pg_api_key_raw:
+                if len(pg_api_key_raw) < 16:
+                    return _bot_err(
+                        "کلید API پاسارگارد کوتاه است — مقدار کامل را از پنل پاسارگارد کپی کنید"
+                    )
+                pg_api_key = pg_api_key_raw
+            else:
+                pg_api_key = (current.get("PG_API_KEY") or "").strip()
+            if not token or not uname or not ids_raw or not pg_base or not pg_user or not (
+                pg_pass or pg_api_key
+            ):
+                return _bot_err(
+                    "همه فیلدهای الزامی را پر کنید "
+                    "(برای پاسارگارد: نام کاربری + رمز یا کلید API)"
+                )
+            try:
+                ids = parse_admin_ids(ids_raw)
+            except ValueError:
+                return _bot_err("آیدی ادمین‌ها نامعتبر است")
+            if not ids:
+                return _bot_err("حداقل یک آیدی ادمین لازم است")
+            try:
+                port_n = int(web_port)
+                if port_n < 1 or port_n > 65535:
+                    raise ValueError
+            except ValueError:
+                return _bot_err("پورت نامعتبر است")
+            try:
+                update_mode, webhook_base, webhook_path = resolve_bot_update_mode(
+                    mode=update_mode_raw or current.get("BOT_UPDATE_MODE"),
+                    webhook_url=webhook_url_raw,
+                    webhook_path=webhook_path_raw or current.get("WEBHOOK_PATH"),
+                    public_base_url=public_base,
+                )
+            except ValueError as exc:
+                return _bot_err(str(exc))
+
+            admin_ids_norm = ",".join(str(i) for i in ids)
+            payload = {
+                "BOT_TOKEN": token,
+                "BOT_USERNAME": uname,
+                "ADMIN_IDS": admin_ids_norm,
+                "PG_BASE_URL": pg_base,
+                "PG_SUBSCRIPTION_PATH": pg_sub_path,
+                "PG_USERNAME": pg_user,
+                "PG_PASSWORD": pg_pass,
+                "PG_API_KEY": pg_api_key,
+                "WEB_PORT": str(port_n),
+                "PUBLIC_BASE_URL": public_base,
+                "CURRENCY": currency,
+                "WEBHOOK_URL": webhook_base,
+                "WEBHOOK_PATH": webhook_path,
+            }
+            try:
+                current_admin_ids = ",".join(
+                    str(i) for i in parse_admin_ids(current.get("ADMIN_IDS") or "")
+                )
+            except ValueError:
+                current_admin_ids = str(current.get("ADMIN_IDS") or "").strip()
+            current_norm = {
+                "BOT_TOKEN": str(current.get("BOT_TOKEN") or "").strip(),
+                "BOT_USERNAME": str(current.get("BOT_USERNAME") or "").strip().lstrip("@"),
+                "ADMIN_IDS": current_admin_ids,
+                "PG_BASE_URL": normalize_pg_base_url(str(current.get("PG_BASE_URL") or "").strip()),
+                "PG_SUBSCRIPTION_PATH": normalize_pg_subscription_path(current.get("PG_SUBSCRIPTION_PATH")),
+                "PG_USERNAME": str(current.get("PG_USERNAME") or "").strip(),
+                "PG_PASSWORD": str(current.get("PG_PASSWORD") or "").strip(),
+                "PG_API_KEY": str(current.get("PG_API_KEY") or "").strip(),
+                "WEB_PORT": str(current.get("WEB_PORT") or "9000").strip(),
+                "PUBLIC_BASE_URL": str(current.get("PUBLIC_BASE_URL") or "").strip().rstrip("/"),
+                "CURRENCY": str(current.get("CURRENCY") or "تومان").strip() or "تومان",
+                "WEBHOOK_URL": normalize_webhook_base_url(current.get("WEBHOOK_URL")),
+                "WEBHOOK_PATH": normalize_webhook_path(
+                    current.get("WEBHOOK_PATH") or "/telegram/webhook"
+                ),
+            }
+            needs_restart = any(
+                str(payload.get(k) or "").strip() != str(current_norm.get(k) or "").strip()
+                for k in payload
+            )
+
+            if preview:
+                return JSONResponse(
+                    {
+                        "ok": True,
+                        "needs_restart": needs_restart,
+                        "bot_update_mode": update_mode,
+                        "webhook_full_url": (webhook_base + webhook_path) if webhook_base else "",
+                    }
+                )
+
+            if needs_restart and ajax and not confirmed:
+                return JSONResponse(
+                    {
+                        "ok": False,
+                        "needs_confirm": True,
+                        "needs_restart": True,
+                        "error": "برای اعمال این تغییرات ری‌استارت سرویس لازم است",
+                        "bot_update_mode": update_mode,
+                        "webhook_full_url": (webhook_base + webhook_path) if webhook_base else "",
+                    }
+                )
+
+            if not needs_restart:
+                if ajax:
+                    return JSONResponse(
+                        {
+                            "ok": True,
+                            "restarting": False,
+                            "changed": False,
+                            "message": "تغییری برای ذخیره نبود",
+                            "bot_update_mode": update_mode,
+                            "webhook_full_url": (webhook_base + webhook_path) if webhook_base else "",
+                        }
+                    )
+                return RedirectResponse("/settings?tab=bot&saved=1", status_code=303)
+
+            update_env_keys(payload)
+            ensure_web_secret()
+            get_settings.cache_clear()
+            reset_pg()
+            from app.services.pg_access import clear_platform_pg_capability_cache
+
+            clear_platform_pg_capability_cache()
+            pre_boot = BOOT_ID
+            schedule_panel_restart(delay_sec=2.5, reason="bot settings saved")
+            if ajax:
+                return JSONResponse(
+                    {
+                        "ok": True,
+                        "restarting": True,
+                        "changed": True,
+                        "pre_boot_id": pre_boot,
+                        "bot_update_mode": update_mode,
+                        "webhook_full_url": (webhook_base + webhook_path) if webhook_base else "",
+                        "message": "تنظیمات ذخیره شد — در حال ری‌استارت",
+                    }
+                )
+            return RedirectResponse(
+                "/settings?tab=bot&restarting=1",
+                status_code=303,
+            )
+
+        if tab == "general":
+            from app.services.service_control import schedule_panel_restart
+            from app.services.setup_wizard import current_setup_values
+
+            current = current_setup_values()
+            web_port = str(form.get("WEB_PORT") or "9000").strip()
+            public_base = str(form.get("PUBLIC_BASE_URL") or "").strip().rstrip("/")
+            currency = str(form.get("CURRENCY") or "").strip() or "تومان"
+            try:
+                from app.services.ssl_certs import https_is_active
+
+                if public_base.startswith("https://") and not https_is_active():
+                    public_base = "http://" + public_base[len("https://") :]
+            except Exception:
+                logger.debug("settings_save: ignored failure", exc_info=True)
+            try:
+                port_n = int(web_port)
+                if port_n < 1 or port_n > 65535:
+                    raise ValueError
+            except ValueError:
+                return RedirectResponse(
+                    "/settings?tab=general&err=" + quote("پورت نامعتبر است"),
+                    status_code=303,
+                )
+            payload = {
+                "WEB_PORT": str(port_n),
+                "PUBLIC_BASE_URL": public_base,
+                "CURRENCY": currency,
+            }
+            current_norm = {
+                "WEB_PORT": str(current.get("WEB_PORT") or "9000").strip(),
+                "PUBLIC_BASE_URL": str(current.get("PUBLIC_BASE_URL") or "").strip().rstrip("/"),
+                "CURRENCY": str(current.get("CURRENCY") or "تومان").strip() or "تومان",
+            }
+            needs_restart = any(
+                str(payload.get(k) or "").strip() != str(current_norm.get(k) or "").strip()
+                for k in payload
+            )
+            if not needs_restart:
+                return RedirectResponse("/settings?tab=general&saved=1", status_code=303)
+            update_env_keys(payload)
+            ensure_web_secret()
+            get_settings.cache_clear()
+            schedule_panel_restart(delay_sec=2.5, reason="panel general settings saved")
+            return RedirectResponse(
+                "/settings?tab=general&ok=" + quote("تنظیمات ذخیره شد — در حال ری‌استارت"),
+                status_code=303,
+            )
+
+        if tab == "pwa":
+            from app.services.pwa import save_pwa_from_form
+
+            ok, msg = await save_pwa_from_form(session, form)
+            if not ok:
+                return RedirectResponse(
+                    "/settings?tab=pwa&err=" + quote(msg),
+                    status_code=303,
+                )
+            return RedirectResponse(
+                "/settings?tab=pwa&saved=1&msg=" + quote(msg),
+                status_code=303,
+            )
+
+        if tab == "appearance":
+            from app.services.bot_appearance import save_appearance_from_form
+            from app.services.setup_wizard import current_setup_values
+
+            token = (current_setup_values().get("BOT_TOKEN") or "").strip()
+            ok, msg = await save_appearance_from_form(
+                session, form, token=token, upload_prefix="main"
+            )
+            if not ok:
+                return RedirectResponse(
+                    "/settings?tab=appearance&err=" + quote(msg),
+                    status_code=303,
+                )
+            return RedirectResponse(
+                "/settings?tab=appearance&saved=1&msg=" + quote(msg),
+                status_code=303,
+            )
+
+        if tab == "menu" and form.get("reset_defaults"):
+            from app.bot.keyboards import default_menu_layout_settings
+
+            await set_settings_bulk(session, default_menu_layout_settings(for_shop=False))
+            return RedirectResponse(
+                "/settings?tab=menu&saved=1&msg=" + quote("چیدمان منو به پیش‌فرض برگشت."), status_code=303
+            )
+        if tab == "menu" or form.get("menu_layout_save"):
+            await _save_menu_layout(session, form)
+            return RedirectResponse("/settings?tab=menu&saved=1", status_code=303)
+
+        known = keys_for_tab(tab)
+        if tab == "menu":
+            known = known | {"menu_order"}
+        if form.get("reset_defaults") and tab in RESETTABLE_SETTINGS_TABS:
+            await set_settings_bulk(session, default_values_for_keys(known))
+            return RedirectResponse(
+                f"/settings?tab={tab}&saved=1&msg=" + quote("متن‌ها و رنگ‌های این بخش به پیش‌فرض برگشت."),
+                status_code=303,
+            )
+
+        payload: dict[str, str] = {}
+        for key in TOGGLE_KEYS:
+            if key in known:
+                payload[key] = "1" if form.get(f"s_{key}") else "0"
+        for key in known:
+            if key in TOGGLE_KEYS or key in IMAGE_KEYS:
+                continue
+            raw = form.get(f"s_{key}")
+            if raw is not None and not isinstance(raw, UploadFile):
+                val = str(raw)
+                if key in SECRET_KEYS and should_keep_secret_value(val):
+                    continue
+                if key.startswith("btn_style_"):
+                    from app.services.button_styles import normalize_style
+
+                    val = normalize_style(val)
+                if key in ("user_alert_low_traffic_pct", "user_alert_low_time_pct"):
+                    from app.services.users import clamp_alert_percent
+
+                    val = clamp_alert_percent(val)
+                if key == "force_join_channel":
+                    from app.services.users import normalize_force_join_channel_value
+
+                    val = normalize_force_join_channel_value(val)
+                if key == "connection_guides":
+                    val = await serialize_submitted_guides(session, val, reseller_id=None)
+                if key == "receipt_dup_policy":
+                    from app.services.receipt_fingerprints import normalize_dup_policy
+
+                    val = normalize_dup_policy(val)
+                if key.startswith("service_import_"):
+                    from app.services.service_import_config import normalize_setting_value
+
+                    val = normalize_setting_value(key, val)
+                payload[key] = val
+        if tab == "daily_report":
+            from app.services.daily_report import (
+                ACTOR_OWNER,
+                metrics_for_actor,
+                serialize_metric_keys,
+            )
+
+            chosen = [
+                m.key
+                for m in metrics_for_actor(ACTOR_OWNER)
+                if form.get(f"m_{m.key}")
+            ]
+            payload["admin_daily_report_metrics"] = serialize_metric_keys(
+                chosen, actor=ACTOR_OWNER
+            )
+        uploads = DATA_DIR / "uploads"
+        uploads.mkdir(parents=True, exist_ok=True)
+        max_image_bytes = 5 * 1024 * 1024
+        for key in IMAGE_KEYS:
+            if key not in known:
+                continue
+            if form.get(f"s_{key}_clear"):
+                payload[key] = ""
+                continue
+            upload = form.get(f"s_{key}")
+            if isinstance(upload, UploadFile) and upload.filename:
+                name = upload.filename.lower()
+                ext = Path(name).suffix
+                if ext not in {".png", ".jpg", ".jpeg", ".webp", ".gif"}:
+                    continue
+                dest_name = f"{key}_{uuid.uuid4().hex[:10]}{ext}"
+                dest = uploads / dest_name
+                content = await upload.read(max_image_bytes + 1)
+                if len(content) > max_image_bytes:
+                    continue
+                if content:
+                    dest.write_bytes(content)
+                    payload[key] = f"uploads/{dest_name}"
+        backup_error = normalize_backup_payload(payload) if tab == "backup" else None
+        if backup_error:
+            return RedirectResponse("/settings?tab=backup&err=" + quote(backup_error), status_code=303)
+        gateway_error = await bbc_enable_error(session, payload, reseller_id=None) if tab == "payment" else None
+        if gateway_error:
+            back = safe_internal_next(request.query_params.get("next"), "") or "/settings?tab=payment"
+            return RedirectResponse(f"{back}{'&' if '?' in back else '?'}err=" + quote(gateway_error), status_code=303)
+        if tab == SCREEN_TEXT_TAB:
+            try:
+                validate_screen_text_settings(payload)
+            except ValueError as exc:
+                return RedirectResponse(f"/settings?tab={tab}&err=" + quote(str(exc)), status_code=303)
+        if payload:
+            from app.services.rich_text import merge_rich_settings_on_save
+
+            # Unchanged text keeps the premium emoji it was saved with in the bot.
+            existing = await get_all_settings(session)
+            payload = merge_rich_settings_on_save(existing, payload)
+        if payload:
+            await set_settings_bulk(session, payload)
+            if "connection_guides" in payload:
+                await prune_guide_media(session, reseller_id=None)
+            removed = await apply_backup_retention(payload) if tab == "backup" else 0
+            if removed:
+                return RedirectResponse(
+                    "/settings?tab=backup&saved=1&msg=" + quote(f"{removed} بکاپ قدیمی‌تر از سرور پاک شد."),
+                    status_code=303,
+                )
+        elif known:
+            # Empty payload with expected keys usually means the request body was
+            # lost (e.g. CSRF middleware consumed the stream). Do not flash success.
+            return RedirectResponse(
+                f"/settings?tab={tab}&err="
+                + quote("ذخیره انجام نشد — صفحه را تازه کنید و دوباره تلاش کنید."),
+                status_code=303,
+            )
+        next_url = safe_internal_next(request.query_params.get("next"), "")
+        if next_url:
+            sep = "&" if "?" in next_url else "?"
+            return RedirectResponse(f"{next_url}{sep}saved=1", status_code=303)
+        return RedirectResponse(f"/settings?tab={tab}&saved=1", status_code=303)
+
+    @app.get("/broadcast", response_class=HTMLResponse)
+    async def broadcast_page(
+        request: Request,
+        staff: dict = Depends(require_admin),
+        session: AsyncSession = Depends(get_db),
+    ):
+        from app.services.broadcast import AUDIENCE_LABELS, list_broadcast_history
+        from app.services.broadcast_queue import STATUS_LABELS
+
+        history = await list_broadcast_history(session, limit=40)
+        return render(
+            request,
+            "broadcast.html",
+            {
+                "staff": staff,
+                "history": history,
+                "audience_labels": AUDIENCE_LABELS,
+                "status_labels": STATUS_LABELS,
+                "flash_ok": request.query_params.get("ok"),
+                "flash_err": request.query_params.get("err"),
+            },
+        )
+
+    @app.post("/broadcast")
+    async def broadcast_send(
+        request: Request,
+        staff: dict = Depends(require_admin),
+        session: AsyncSession = Depends(get_db),
+        text: str = Form(...),
+        audience: str = Form("all"),
+    ):
+        from app.services.broadcast_queue import queue_broadcast
+
+        audience = (audience or "all").strip()
+        if audience not in {"all", "users", "resellers", "admins"}:
+            audience = "all"
+        try:
+            log = await queue_broadcast(
+                session, text=text, audience=audience, created_by=str(staff.get("username") or "admin")
+            )
+        except ValueError as e:
+            return _redirect_msg("/broadcast", err=str(e))
+        return _redirect_msg("/broadcast", ok=f"در صف ارسال قرار گرفت: {log.total} مخاطب. پیشرفت را در تاریخچه ببینید.")
+
+    @app.post("/broadcast/history/clear")
+    async def broadcast_history_clear(
+        staff: dict = Depends(require_admin),
+        session: AsyncSession = Depends(get_db),
+    ):
+        from app.services.broadcast import clear_broadcast_history
+
+        n = await clear_broadcast_history(session)
+        return _redirect_msg("/broadcast", ok=f"{n} رکورد تاریخچه حذف شد")
+
+    @app.post("/broadcast/history/{log_id}/delete")
+    async def broadcast_history_delete(
+        log_id: int,
+        staff: dict = Depends(require_admin),
+        session: AsyncSession = Depends(get_db),
+    ):
+        from app.services.broadcast import delete_broadcast_log
+
+        ok = await delete_broadcast_log(session, log_id)
+        if not ok:
+            return _redirect_msg("/broadcast", err="رکورد یافت نشد")
+        return _redirect_msg("/broadcast", ok="رکورد حذف شد")
+
+    # Outermost: compress AFTER CSP nonce injection. If GZip runs first, HTML is
+    # binary gzip and bare <script> tags never receive nonces → browsers block them
+    # (update button, backup restore, bot settings, … all look like “click does nothing”).
+    from starlette.middleware.gzip import GZipMiddleware
+
+    app.add_middleware(PanelConnectionMiddleware)
+    app.add_middleware(GZipMiddleware, minimum_size=400)
+    return app

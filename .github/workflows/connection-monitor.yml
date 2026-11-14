@@ -1,0 +1,105 @@
+name: Connection monitoring compatibility
+
+on:
+  pull_request:
+    branches: [dev]
+    paths:
+      - 'app/services/connection_*.py'
+      - 'app/api/connection_status_pages.py'
+      - 'app/web/templates/connection_status.html'
+      - 'app/web/static/connection-status.css'
+      - 'app/services/xray_probe*.py'
+      - 'app/services/pasarguard.py'
+      - 'app/db/models.py'
+      - 'app/jobs/**'
+      - 'app/bot/**'
+      - 'app/cli/connection_monitor.py'
+      - 'app/cli/connection_monitor_install.py'
+      - 'app/services/panel_update.py'
+      - 'pgclock.sh'
+      - 'alembic/**'
+      - 'tests/test_connection_*.py'
+      - 'tests/test_xray_probe.py'
+      - 'tests/test_scheduler_background_jobs.py'
+      - 'tests/test_admin_marketing_hub.py'
+      - 'tests/test_nav_wave_d_admin_hubs.py'
+      - 'tests/connection_monitor_support.py'
+      - 'tests/fixtures/connection_monitor_catalog.json'
+      - 'tests/fixtures/connection_monitor_native.json'
+      - 'requirements*.txt'
+      - '.github/workflows/connection-monitor.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  postgres:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: monitor_ci
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      PGCLOCK_CONNECTION_TEST_URL: postgresql+asyncpg://postgres:postgres@127.0.0.1:5432/monitor_ci
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+          cache: pip
+      - run: pip install -r requirements-dev.txt
+      - name: Check scoped monitoring behavior on PostgreSQL
+        run: python -m pytest tests/test_connection_*.py tests/test_xray_probe.py tests/test_scheduler_background_jobs.py tests/test_admin_marketing_hub.py tests/test_nav_wave_d_admin_hubs.py -q -p no:cacheprovider
+
+  linux-core:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            architecture: amd64
+          - runner: ubuntu-24.04-arm
+            architecture: arm64
+    name: linux-core (${{ matrix.architecture }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+          cache: pip
+      - run: pip install -r requirements-dev.txt
+      - name: Install and reuse the official pinned core
+        env:
+          PGCLOCK_CORE_ROOT: ${{ runner.temp }}/monitor-install
+        run: |
+          mkdir -p "$PGCLOCK_CORE_ROOT"
+          printf 'WEB_SECRET=synthetic-ci-only\n' > "$PGCLOCK_CORE_ROOT/.env"
+          python -m app.cli.connection_monitor_install --root "$PGCLOCK_CORE_ROOT"
+          python -m app.cli.connection_monitor_install --root "$PGCLOCK_CORE_ROOT"
+      - name: Validate three synthetic routes, readiness and process cleanup
+        env:
+          PGCLOCK_CORE_ROOT: ${{ runner.temp }}/monitor-install
+        run: |
+          python - <<'PY'
+          import os
+          import subprocess
+          import sys
+          from pathlib import Path
+          from app.services.connection_monitor_install import HASH_KEY, PATH_KEY, _configured_core
+          values = _configured_core((Path(os.environ['PGCLOCK_CORE_ROOT']) / '.env').read_text())
+          subprocess.run([sys.executable, '-m', 'app.cli.connection_monitor', '--binary', values[PATH_KEY], '--sha256', values[HASH_KEY]], check=True)
+          PY

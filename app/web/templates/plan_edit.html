@@ -1,0 +1,164 @@
+{% extends "base.html" %}
+{% from "macros.html" import switch_chip, page_title %}
+{% block title %}ویرایش پلن{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div>
+    {{ page_title('plan-edit', 'ویرایش پلن #' ~ plan.id, help='plans') }}
+  </div>
+  <a class="btn btn-ghost" href="/plans">بازگشت</a>
+</div>
+
+{% if pg_error %}<div class="flash warn">پاسارگارد: {{ pg_error }}</div>{% endif %}
+{% from "_pg_limit_cards.html" import pg_snapshot_limit_board %}
+{{ pg_snapshot_limit_board(pg_limit_cards) }}
+
+<div class="card">
+  <form method="post" action="/plans/{{ plan.id }}/edit" class="form-stack">
+    <div class="form-row">
+      <label class="form-field">نام پلن
+        <input name="name" required value="{{ plan.name }}" />
+      </label>
+      <label class="form-field">قیمت (تومان)
+        <input name="price" type="number" data-money min="0" required value="{{ plan.price }}" />
+      </label>
+      <label class="form-field">مدت (روز)
+        <input name="duration_days" type="number" min="0" value="{{ plan.duration_days if plan.duration_days else '' }}" placeholder="خالی = نامحدود" />
+        <small class="muted">برای مدت نامحدود فیلد را <b>خالی</b> بگذارید (یا ۰){% if pg_limit_snapshot and pg_limit_snapshot.restricted and pg_limit_snapshot.per_user_expire_max %} — سقف زنده: {{ (pg_limit_snapshot.per_user_expire_max // 86400) or 1 }} روز{% endif %}</small>
+      </label>
+      <label class="form-field">حجم (گیگ)
+        <input name="data_limit_gb" type="number" step="0.1" min="0" value="{{ plan.data_limit_gb if plan.data_limit_gb is not none else '' }}" placeholder="خالی = نامحدود" />
+        <small class="muted">برای حجم نامحدود فیلد را <b>خالی</b> بگذارید — عدد صفر نامحدود نیست{% if pg_limit_snapshot and pg_limit_snapshot.restricted and pg_limit_snapshot.per_user_data_max %} — سقف زنده: {{ pg_limit_snapshot.per_user_data_max | bytes }}{% endif %}</small>
+      </label>
+    </div>
+
+    <label class="form-field">توضیح کوتاه
+      <input name="description" value="{{ plan.description or '' }}" placeholder="نمایش در بات" />
+    </label>
+
+    <label class="form-field">برچسب دسته (اختیاری)
+      <select name="category_id">
+        <option value="">— بدون برچسب —</option>
+        {% for c in plan_categories or [] %}
+          {% if (c.audience or 'users') == 'users' or plan.category_id == c.id %}
+          <option value="{{ c.id }}" {% if plan.category_id == c.id %}selected{% endif %}>{{ c.name }}{% if not c.is_active %} (خاموش){% endif %}</option>
+          {% endif %}
+        {% endfor %}
+      </select>
+      <small class="muted">نوع پلن (ثابت/تست/…) عوض نمی‌شود؛ برچسب خاموش فعلی قابل نگه‌داشتن است</small>
+    </label>
+
+    <label class="form-field">ترتیب نمایش
+      <input name="sort_order" type="number" value="{{ plan.sort_order }}" />
+    </label>
+
+    <label class="form-field">حالت ساخت در پاسارگارد
+      <select name="mode" id="plan-mode">
+        <option value="custom" {% if not plan.pg_template_id %}selected{% endif %}>سفارشی (گروه + حجم + مدت)</option>
+        <option value="template" {% if plan.pg_template_id %}selected{% endif %}>از تمپلیت آماده پاسارگارد</option>
+      </select>
+    </label>
+
+    {% set selected_groups = (plan.pg_group_ids or '').split(',') %}
+    <div id="mode-custom" class="form-stack">
+      <div class="form-field">
+        <span class="form-field-label">گروه‌های پاسارگارد (حداقل یکی)</span>
+        <div class="ui-switch-grid">
+          {% for g in groups %}
+          {% set gid = g.get('id')|string %}
+          {{ switch_chip('group_' ~ g.get('id'), g.get('name') or g.get('id'), checked=(gid in selected_groups), value=g.get('id')) }}
+          {% else %}
+          <span class="muted">گروهی نیست — از منوی پاسارگارد → گروه‌ها بسازید.</span>
+          {% endfor %}
+        </div>
+      </div>
+    </div>
+
+    <div id="mode-template" class="form-stack" style="display:none">
+      <label class="form-field">تمپلیت پاسارگارد
+        <select name="pg_template_id">
+          <option value="">— انتخاب کنید —</option>
+          {% for t in templates %}
+          <option value="{{ t.get('id') }}" {% if plan.pg_template_id == t.get('id') %}selected{% endif %}>
+            #{{ t.get('id') }} — {{ t.get('name') or 'بدون نام' }}
+          </option>
+          {% endfor %}
+        </select>
+      </label>
+    </div>
+
+    {% set naming_prefix = plan.pg_username_prefix or '' %}
+    {% set naming_suffix = plan.pg_username_suffix or '' %}
+    {% set naming_pattern = plan.pg_username_pattern or '' %}
+    {% set naming_preview_id = 'edit-naming-sample' %}
+    {% set global_prefix = (values or {}).get('pg_username_prefix','clk') if values is defined else 'clk' %}
+    {% set global_suffix = (values or {}).get('pg_username_suffix','') if values is defined else '' %}
+    {% set global_pattern = (values or {}).get('pg_username_pattern','{prefix}_{random}{suffix}') if values is defined else '{prefix}_{random}{suffix}' %}
+    {% include "_plan_naming_fields.html" %}
+
+    {% if plan.button_style is none %}
+    {% set plan_button_style = 'inherit' %}
+    {% else %}
+    {% set plan_button_style = plan.button_style or '' %}
+    {% endif %}
+    {% include "_plan_button_style_field.html" %}
+
+    <div class="actions">
+      <button class="btn" type="submit">ذخیره تغییرات</button>
+      <a class="btn btn-ghost" href="/plans">انصراف</a>
+    </div>
+  </form>
+</div>
+
+<script>
+(function(){
+  const mode = document.getElementById('plan-mode');
+  const custom = document.getElementById('mode-custom');
+  const tpl = document.getElementById('mode-template');
+  function sync(){
+    const isTpl = mode.value === 'template';
+    custom.style.display = isTpl ? 'none' : '';
+    tpl.style.display = isTpl ? '' : 'none';
+  }
+  mode.addEventListener('change', sync);
+  sync();
+  (function namingPreview(){
+    const root = document.querySelector('[data-plan-naming]');
+    if (!root) return;
+    function rnd(){ return Math.random().toString(36).slice(2, 10); }
+    function render(){
+      const sample = root.querySelector('[data-naming-sample]');
+      if (!sample) return;
+      const gPrefix = root.getAttribute('data-global-prefix') || 'clk';
+      const gSuffix = root.getAttribute('data-global-suffix') || '';
+      const gPattern = root.getAttribute('data-global-pattern') || '{prefix}_{random}{suffix}';
+      const prefix = ((root.querySelector('[data-naming-prefix]') || {}).value || '').trim() || gPrefix || 'clk';
+      const suffix = ((root.querySelector('[data-naming-suffix]') || {}).value || '').trim() || gSuffix || '';
+      const pattern = ((root.querySelector('[data-naming-pattern]') || {}).value || '').trim() || gPattern || '{prefix}_{random}{suffix}';
+      const form = root.closest('form');
+      const volumeInput = form && form.querySelector('[name="data_limit_gb"]');
+      const rawVolume = volumeInput ? volumeInput.value.trim() : '30';
+      const volume = rawVolume && Number(rawVolume) > 0 ? String(Number(rawVolume)) : 'unlimited';
+      let out;
+      try {
+        out = pattern
+          .replaceAll('{prefix}', prefix)
+          .replaceAll('{suffix}', suffix)
+          .replaceAll('{random}', rnd())
+          .replaceAll('{id}', '42')
+          .replaceAll('{plan_volume}', volume)
+          .replaceAll('{plan_unit}', 'GB')
+          .replaceAll('{username}', 'ali_user');
+      } catch (e) {
+        out = prefix + '_' + rnd() + suffix;
+      }
+      sample.textContent = out;
+    }
+    const form = root.closest('form') || root;
+    form.addEventListener('input', render);
+    form.addEventListener('change', render);
+    render();
+  })();
+})();
+</script>
+{% endblock %}

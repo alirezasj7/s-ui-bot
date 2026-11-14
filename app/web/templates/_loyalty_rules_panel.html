@@ -1,0 +1,62 @@
+{# Rules editor — used inside loyalty settings modal #}
+{% from "macros.html" import switch %}
+<div class="loyalty-stack">
+  <div class="card settings-card">
+    <h2>قوانین امتیاز</h2>
+    <p class="muted update-card-caption">رویدادهای فعال به کاربر امتیاز می‌دهند. فقط بار اول، حداقل خرید و کول‌داون را در هر قانون تنظیم کنید.</p>
+  </div>
+  {% for rule in rules %}
+  <div class="card settings-card loyalty-editor">
+    <div class="loyalty-editor-head">
+      <div class="loyalty-editor-title">
+        <strong>{{ event_labels.get(rule.event_key, rule.event_key) }}</strong>
+        {% if rule.enabled %}
+        <span class="badge ok">فعال</span>
+        {% else %}
+        <span class="badge neutral">غیرفعال</span>
+        {% endif %}
+      </div>
+      <form method="post" action="/loyalty/rules/{{ rule.id }}/toggle">
+        <button class="btn btn-sm btn-ghost" type="submit">{% if rule.enabled %}غیرفعال کردن{% else %}فعال کردن{% endif %}</button>
+      </form>
+    </div>
+    <form method="post" action="/loyalty/rules/{{ rule.id }}/save" class="form-stack">
+      <label class="form-field">عنوان
+        <input name="name" value="{{ rule.name }}" required />
+      </label>
+      <div class="form-row">
+        <label class="form-field">حالت محاسبه
+          <select name="amount_mode">
+            <option value="fixed" {% if rule.amount_mode=='fixed' %}selected{% endif %}>مقدار ثابت</option>
+            <option value="per_gb" {% if rule.amount_mode=='per_gb' %}selected{% endif %}>به‌ازای هر گیگ</option>
+          </select>
+        </label>
+        <label class="form-field">مقدار امتیاز
+          <input name="amount" type="number" min="0" value="{{ rule.amount }}" dir="ltr" />
+        </label>
+        <label class="form-field">حداکثر امتیاز
+          <input name="max_reward" type="number" min="0" value="{{ rule.max_reward if rule.max_reward is not none else '' }}" placeholder="بدون سقف" dir="ltr" />
+        </label>
+      </div>
+      <div class="form-row">
+        <label class="form-field">حداقل مبلغ خرید (تومان)
+          <input name="min_purchase_toman" type="number" data-money min="0" value="{{ rule.min_purchase_toman }}" dir="ltr" />
+        </label>
+        <label class="form-field">حداقل حجم (گیگ)
+          <input name="min_purchase_gb" type="number" min="0" value="{{ rule.min_purchase_gb }}" dir="ltr" />
+        </label>
+        <label class="form-field">کول‌داون (ساعت)
+          <input name="cooldown_hours" type="number" min="0" value="{{ rule.cooldown_hours }}" dir="ltr" />
+        </label>
+      </div>
+      <div class="ui-switch-list">
+        {{ switch('enabled', 'فعال', checked=rule.enabled) }}
+        {{ switch('first_time_only', 'فقط بار اول', checked=rule.first_time_only) }}
+      </div>
+      <div class="actions"><button class="btn" type="submit">ذخیره قانون</button></div>
+    </form>
+  </div>
+  {% else %}
+  <div class="card"><p class="muted">قانونی تعریف نشده — با باز کردن صفحه، پیش‌فرض‌ها ایجاد می‌شوند.</p></div>
+  {% endfor %}
+</div>

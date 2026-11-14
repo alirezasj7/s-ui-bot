@@ -1,0 +1,326 @@
+{# دامنه‌ها — دامنهٔ پنل وب، دامنهٔ مینی‌اپ و گواهی SSL مشترک آن‌ها #}
+{% from "macros.html" import modal_title %}
+
+{% set st = ssl %}
+
+{% if request.query_params.get('working') == '1' %}
+<div class="flash warn">دریافت گواهی شروع شد — پنل قطع نمی‌شود؛ پیشرفت را پایین ببینید.</div>
+{% endif %}
+
+<form method="post" action="/settings?tab=ssl" class="form-stack settings-form" id="ssl-form">
+  <div class="card settings-card">
+    <h2>دامنهٔ پنل وب</h2>
+    <p class="muted update-card-caption">
+      دامنهٔ پنل را وارد کنید. پس از دریافت موفق گواهی SSL، HTTPS به‌صورت خودکار فعال می‌شود.
+      تا قبل از آن همه آدرس‌ها با <code dir="ltr">http</code> باز می‌شوند.
+    </p>
+
+    <div class="flash {% if st.certbot %}ok{% else %}warn{% endif %}">
+      {% if st.certbot %}
+        certbot آماده است{% if st.certbot_path %}: <code dir="ltr">{{ st.certbot_path }}</code>{% endif %}
+      {% else %}
+        certbot نصب نیست — با «دریافت گواهی» خودکار نصب می‌شود.
+      {% endif %}
+      {% if st.port80_busy %}
+        <br/><strong>هشدار:</strong> پورت ۸۰ الان اشغال است — قبل از دریافت، آن را آزاد کنید.
+      {% endif %}
+    </div>
+
+    <div class="ssl-progress" id="ssl-progress" {% if not st.running and (not st.progress or st.progress.done) %}hidden{% endif %}>
+      <div class="ssl-progress-label">
+        پیشرفت:
+        <span id="ssl-progress-msg">{{ st.progress.message if st.progress else 'در حال آماده‌سازی…' }}</span>
+        <span class="muted" id="ssl-progress-pct" dir="ltr">{{ st.progress.pct if st.progress else 0 }}%</span>
+      </div>
+      <div class="ssl-progress-track" aria-hidden="true">
+        <i id="ssl-progress-bar" style="width:{{ st.progress.pct if st.progress else 0 }}%"></i>
+      </div>
+    </div>
+
+    <div class="settings-grid">
+      <div class="setting-item full">
+        <label>دامنهٔ پنل
+          <input name="domain" value="{{ st.pending_domain or st.domain }}" dir="ltr" required placeholder="bot.example.com" autocomplete="off" />
+        <small class="muted">DNS باید به IP همین سرور اشاره کند</small>
+        {% if st.pending_domain and st.domain and st.pending_domain != st.domain %}
+        <small class="muted">در حال دریافت برای <code dir="ltr">{{ st.pending_domain }}</code> — تا موفقیت، دامنهٔ فعال همان <code dir="ltr">{{ st.domain }}</code> می‌ماند.</small>
+        {% endif %}
+        </label>
+      </div>
+      <div class="setting-item full">
+        <label>ایمیل Let's Encrypt
+          <input name="acme_email" type="email" value="{{ st.pending_email or st.email }}" dir="ltr" required placeholder="admin@example.com" />
+        <small class="muted">برای اعلان انقضا — عمومی نمی‌شود.</small>
+        </label>
+      </div>
+    </div>
+  </div>
+
+  {% set own_miniapp = st.pending_miniapp_domain or st.miniapp_domain %}
+  <div class="card settings-card" id="miniapp-domain">
+    <h2>مینی‌اپ</h2>
+    <p class="muted update-card-caption">
+      مینی‌اپ تلگرام می‌تواند روی دامنهٔ جدای خودش باز شود (مثلاً <code dir="ltr">app.example.com</code>).
+      هر دو دامنه روی یک گواهی SSL قرار می‌گیرند و با همان دکمهٔ پایین صادر می‌شوند؛ دکمهٔ «Open» ربات و ربات‌های فروشگاه نمایندگان خودکار به آدرس جدید می‌روند.
+    </p>
+    <div class="settings-grid">
+      <div class="setting-item full">
+        <label class="toggle-row ui-switch-row">
+          <span class="ui-switch-copy">
+            <strong>همان دامنهٔ پنل</strong>
+            <small class="muted">روشن = مینی‌اپ روی دامنهٔ پنل باز می‌شود و فیلد زیر نادیده گرفته می‌شود.</small>
+          </span>
+          <span class="ui-switch">
+            <input type="checkbox" name="miniapp_same_domain" value="1" {% if not own_miniapp %}checked{% endif %} />
+            <span class="ui-switch-track" aria-hidden="true"></span>
+          </span>
+        </label>
+      </div>
+      <div class="setting-item full">
+        <label>دامنهٔ مینی‌اپ
+          <input name="miniapp_domain" value="{{ own_miniapp }}" dir="ltr" placeholder="app.example.com" autocomplete="off" />
+          <small class="muted">DNS این دامنه هم باید به IP همین سرور اشاره کند. پس از تغییر، «صدور مجدد گواهی» را بزنید.</small>
+          {% if st.pending_miniapp_domain and st.pending_miniapp_domain != st.miniapp_domain %}
+          <small class="muted">در حال دریافت برای <code dir="ltr">{{ st.pending_miniapp_domain }}</code> — تا موفقیت، آدرس فعلی مینی‌اپ می‌ماند.</small>
+          {% endif %}
+        </label>
+      </div>
+    </div>
+    {% if st.public_miniapp %}
+    <p class="muted ssl-status-line">آدرس فعلی مینی‌اپ:
+      <code class="ssl-status-code" dir="ltr">{{ st.public_miniapp }}</code>
+    </p>
+    {% endif %}
+  </div>
+
+  <div class="actions sticky-actions">
+    <button type="submit" class="btn" name="action" value="issue" id="ssl-issue-btn" {% if st.running %}disabled{% endif %}>
+      {% if st.has_cert %}صدور مجدد گواهی{% else %}دریافت گواهی{% endif %}
+    </button>
+    {% if st.has_cert %}
+    <button type="submit" class="btn btn-ghost" name="action" value="renew" id="ssl-renew-btn" {% if st.running %}disabled{% endif %}>تمدید</button>
+    <button type="submit" class="btn" name="action" value="enable" id="ssl-enable-btn" {% if st.running %}disabled{% endif %}>
+      {% if st.ssl_enabled %}اعمال مجدد HTTPS{% else %}فعال‌سازی HTTPS{% endif %}
+    </button>
+    {% if st.ssl_enabled %}
+    <button type="submit" class="btn btn-ghost" name="action" value="disable" id="ssl-disable-btn" {% if st.running %}disabled{% endif %}
+      data-confirm="HTTPS غیرفعال شود؟ پنل با HTTP ری‌استارت می‌شود."
+      data-confirm-title="غیرفعال‌سازی HTTPS"
+      data-confirm-warn="1"
+      data-confirm-label="غیرفعال‌سازی">غیرفعال‌سازی HTTPS</button>
+    {% endif %}
+    {% endif %}
+  </div>
+</form>
+
+<div class="card settings-card">
+  <h2>وضعیت گواهی</h2>
+  {% if st.has_cert %}
+  <p class="ssl-status-line">
+    {% if st.ssl_enabled and not st.expired %}
+    <span class="badge approved">فعال · HTTPS</span>
+    {% elif st.expired %}
+    <span class="badge rejected">منقضی</span>
+    {% else %}
+    <span class="badge warn">صادر شده · منتظر فعال‌سازی</span>
+    {% endif %}
+    {% if st.self_signed %}
+    <span class="badge warn">موقت · خودامضا (IP)</span>
+    {% endif %}
+    <code class="ssl-status-code" dir="ltr">{{ st.domain }}</code>
+    {% if st.miniapp_domain %}<code class="ssl-status-code" dir="ltr">{{ st.miniapp_domain }}</code>{% endif %}
+  </p>
+  {% if st.public_https %}
+  <p class="muted ssl-status-line">آدرس HTTPS:
+    <a class="ssl-status-link" href="{{ st.public_https }}" dir="ltr" target="_blank" rel="noopener">{{ st.public_https }}</a>
+  </p>
+  {% endif %}
+  {% if st.expires_at %}
+  <p class="muted ssl-status-line">اعتبار تا: <span dir="ltr">{{ st.expires_at }}</span></p>
+  {% endif %}
+  {% if st.issued_at %}
+  <p class="muted ssl-status-line">صدور: <span dir="ltr">{{ st.issued_at }}</span></p>
+  {% endif %}
+  {% else %}
+  <p class="muted ssl-status-line">هنوز گواهی صادر نشده.</p>
+  {% endif %}
+
+  <h3 class="ssl-subhead">مسیر فایل‌ها</h3>
+  <pre class="ssl-pre" dir="ltr">fullchain: {{ st.cert_path }}
+privkey:   {{ st.key_path }}{% if st.letsencrypt_live %}
+letsencrypt live: {{ st.letsencrypt_live }}{% endif %}</pre>
+
+  {% if st.last_error %}
+  <h3 class="ssl-subhead">آخرین خطا</h3>
+  <pre class="update-log" style="display:block" dir="ltr">{{ st.last_error }}</pre>
+  {% endif %}
+
+  <p class="muted ssl-status-line">
+    پورت پنل: <code dir="ltr">{{ st.web_port }}</code>
+    {% if st.mode %}<span class="muted"> · حالت: <code dir="ltr">{{ st.mode }}</code></span>{% endif %}
+  </p>
+  <p class="muted ssl-status-line">
+    ۱) DNS دامنه → IP سرور · ۲) پورت <code dir="ltr">80</code> آزاد · ۳) دریافت گواهی (HTTPS خودکار فعال می‌شود) ·
+    ۴) ورود با آدرس HTTPS بالا (پورت <code dir="ltr">{{ st.web_port }}</code>)
+  </p>
+</div>
+
+<div class="ui-modal" id="ssl-done-modal" hidden>
+  <div class="ui-modal-backdrop" data-ssl-modal-close></div>
+  <div class="ui-modal-panel" role="dialog" aria-modal="true" aria-labelledby="ssl-done-title">
+    <div class="ui-modal-head">
+      {{ modal_title('security', 'گواهی SSL فعال شد', caption='گواهی و دامنه', tone='neutral', heading_id='ssl-done-title') }}
+      <button type="button" class="icon-btn" data-ssl-modal-close aria-label="بستن"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
+    </div>
+    <div class="form-stack">
+      <p class="confirm-message">
+        دریافت گواهی و فعال‌سازی HTTPS با موفقیت انجام شد.
+        از این لحظه پنل روی آدرس امن دامنه در دسترس است.
+      </p>
+      <p class="muted" dir="ltr" id="ssl-done-url"></p>
+      <div class="actions">
+        <a class="btn" id="ssl-open-panel" href="#" target="_self" rel="noopener">ورود به پنل (HTTPS)</a>
+        <button type="button" class="btn btn-ghost" data-ssl-modal-close>بمان در تنظیمات</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+(function(){
+  const form = document.getElementById('ssl-form');
+  const box = document.getElementById('ssl-progress');
+  const bar = document.getElementById('ssl-progress-bar');
+  const msg = document.getElementById('ssl-progress-msg');
+  const pctEl = document.getElementById('ssl-progress-pct');
+  const doneModal = document.getElementById('ssl-done-modal');
+  const doneUrlEl = document.getElementById('ssl-done-url');
+  const openPanelBtn = document.getElementById('ssl-open-panel');
+  const btns = ['ssl-issue-btn','ssl-renew-btn','ssl-enable-btn','ssl-disable-btn']
+    .map(id => document.getElementById(id)).filter(Boolean);
+  let timer = null;
+  let finished = false;
+  let restartTimer = null;
+
+  function setBusy(v){ btns.forEach(b => b.disabled = v); }
+
+  function openSslModal(httpsBase) {
+    const base = (httpsBase || '').replace(/\/$/, '');
+    if (openPanelBtn) openPanelBtn.href = base ? base + '/home' : '/home';
+    if (doneUrlEl) doneUrlEl.textContent = base || '';
+    if (!doneModal) return;
+    doneModal.hidden = false;
+    doneModal.classList.add('open');
+    document.body.classList.add('modal-open');
+  }
+
+  function closeSslModal() {
+    if (!doneModal) return;
+    doneModal.hidden = true;
+    doneModal.classList.remove('open');
+    if (!document.querySelector('.ui-modal.open')) {
+      document.body.classList.remove('modal-open');
+    }
+  }
+
+  document.querySelectorAll('[data-ssl-modal-close]').forEach((el) => {
+    el.addEventListener('click', closeSslModal);
+  });
+
+  function probeHealth(url) {
+    return fetch(url, { cache: 'no-store', mode: 'cors' }).then((r) => r.ok);
+  }
+
+  function waitForHttpsReady(httpsUrl, onReady) {
+    const base = (httpsUrl || '').replace(/\/$/, '');
+    if (!base) {
+      onReady();
+      return;
+    }
+    let tries = 0;
+    let sawDown = false;
+    if (restartTimer) clearInterval(restartTimer);
+    restartTimer = setInterval(async () => {
+      tries++;
+      try {
+        const localOk = await probeHealth('/health');
+        if (!localOk) sawDown = true;
+      } catch (_) {
+        sawDown = true;
+      }
+      let httpsOk = false;
+      try {
+        httpsOk = await probeHealth(base + '/health');
+      } catch (_) {}
+      if (httpsOk && (sawDown || tries > 5)) {
+        clearInterval(restartTimer);
+        restartTimer = null;
+        onReady(base);
+        return;
+      }
+      if (tries > 90) {
+        clearInterval(restartTimer);
+        restartTimer = null;
+        onReady(base);
+      }
+    }, 800);
+  }
+
+  function poll(){
+    fetch('/settings/ssl/progress', {credentials:'same-origin', cache:'no-store'})
+      .then(r => r.json())
+      .then(d => {
+        if (!box) return;
+        box.hidden = false;
+        if (bar) bar.style.width = (d.pct || 0) + '%';
+        if (msg) msg.textContent = d.message || '';
+        if (pctEl) pctEl.textContent = (d.pct || 0) + '%';
+        if (d.done && !finished) {
+          finished = true;
+          clearInterval(timer);
+          if (d.restarting) {
+            setBusy(true);
+            if (msg) msg.textContent = d.message || 'HTTPS فعال شد — در حال ری‌استارت…';
+            waitForHttpsReady(d.https_url || '', function (base) {
+              setBusy(false);
+              if (msg) msg.textContent = 'HTTPS آماده است';
+              openSslModal(base);
+            });
+            return;
+          }
+          setBusy(false);
+          if (d.ok) {
+            if (msg) msg.textContent = d.message || 'موفق';
+            setTimeout(function () {
+              location.href = '/settings?tab=ssl&ok=' + encodeURIComponent(d.message || 'گواهی آماده شد');
+            }, 700);
+          }
+        }
+      }).catch(() => {});
+  }
+
+  if (form) {
+    form.addEventListener('submit', (e) => {
+      const submitter = e.submitter;
+      const action = submitter && submitter.value;
+      if (action === 'issue' || action === 'renew') {
+        finished = false;
+        setBusy(true);
+        if (box) box.hidden = false;
+        if (msg) msg.textContent = action === 'renew' ? 'در حال تمدید…' : 'در حال دریافت گواهی…';
+        if (bar) bar.style.width = '6%';
+        if (pctEl) pctEl.textContent = '6%';
+        timer = setInterval(function () { if (!document.hidden) poll(); }, 800);
+      }
+    });
+  }
+  {% if st.running or (st.progress and not st.progress.done) %}
+  setBusy(true);
+  timer = setInterval(function () { if (!document.hidden) poll(); }, 800);
+  poll();
+  {% endif %}
+  document.addEventListener('visibilitychange', function () {
+    if (!document.hidden && timer) poll();
+  });
+})();
+</script>

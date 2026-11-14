@@ -1,0 +1,84 @@
+{% set shop_mode = false %}
+{% include "_panel_brand_card.html" %}
+
+{% set p = pwa or {} %}
+<form method="post" action="/settings?tab=pwa" enctype="multipart/form-data" class="settings-form" id="pwa-form">
+  <div class="card settings-card">
+    <h2>وب‌اپ (PWA)</h2>
+    <p class="muted update-card-caption">
+      پنل را مثل اپ روی موبایل/دسکتاپ نصب کنید. اگر نام یا آیکن خالی بماند،
+      برند و لوگوی خود پنل (<strong dir="ltr">MrClockBot</strong>) استفاده می‌شود.
+    </p>
+
+    <div class="settings-grid">
+      <div class="setting-item full">
+        <label>نام وب‌اپ
+          
+          <input name="pwa_name" type="text" maxlength="80" value="{{ p.get('name_raw','') }}"
+                 placeholder="مثلاً فروشگاه من" dir="auto" />
+        <small class="muted">روی صفحه نصب و زیر آیکن دیده می‌شود — خالی = برند پنل</small>
+        </label>
+      </div>
+      <div class="setting-item">
+        <label>نام کوتاه
+          
+          <input name="pwa_short_name" type="text" maxlength="40" value="{{ p.get('short_name_raw','') }}"
+                 placeholder="مثلاً فروشگاه" dir="auto" />
+        <small class="muted">حداکثر ۴۰ کاراکتر — خالی = همان نام بالا</small>
+        </label>
+      </div>
+      <div class="setting-item">
+        <label>توضیح کوتاه
+          
+          <input name="pwa_description" type="text" maxlength="160" value="{{ p.get('description_raw','') }}"
+                 placeholder="مثلاً پنل مدیریت فروشگاه" dir="auto" />
+        <small class="muted">اختیاری</small>
+        </label>
+      </div>
+      <div class="setting-item full">
+        <div class="image-setting">
+          <strong>آیکن وب‌اپ</strong>
+          <label class="file-label upload-box">
+            <input name="pwa_icon" type="file" accept="image/png,image/jpeg,.png,.jpg,.jpeg" />
+            <span class="upload-box-plus" aria-hidden="true">+</span>
+            <span class="upload-box-title">انتخاب آیکن</span>
+            <span class="upload-box-hint muted">PNG یا JPG مربعی</span>
+            <span class="upload-box-name muted" data-upload-name>فایلی انتخاب نشده</span>
+            <span class="upload-box-progress" hidden aria-hidden="true"><i class="upload-box-progress-bar"></i></span>
+          </label>
+          <small class="muted">خالی = لوگوی پنل</small>
+          <div class="ap-photo-row">
+            <img src="{{ p.get('icon_preview') }}?v={{ app_version }}" alt="" class="ap-photo-thumb"
+                 width="64" height="64" style="border-radius:18px;object-fit:cover;background:#111" />
+            {% if p.get('has_custom_icon') %}
+            <button type="submit" name="pwa_icon_clear" value="1" class="btn btn-danger btn-sm"
+                    data-confirm="آیکن سفارشی حذف شود و لوگوی پنل برگردد؟" data-confirm-title="تأیید" data-confirm-danger="1" data-confirm-label="تأیید">
+              حذف فایل آپلودشده
+            </button>
+            {% else %}
+            <span class="muted">در حال استفاده از لوگوی پیش‌فرض پنل</span>
+            {% endif %}
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="actions sticky-actions">
+    <button class="btn" type="submit">ذخیره وب‌اپ</button>
+  </div>
+</form>
+
+<div class="card settings-card">
+  <h2>نصب روی دستگاه</h2>
+  <ol class="update-steps">
+    <li class="done"><span class="step-dot"></span><span>با آدرس HTTPS دامنه وارد پنل شوید (روی HTTP معمولی مرورگرها نصب را پیشنهاد نمی‌کنند).</span></li>
+    <li class="done"><span class="step-dot"></span><span>در کروم/اج: منوی ⋮ → «Install app» / «نصب برنامه».</span></li>
+    <li class="done"><span class="step-dot"></span><span>در سافاری آیفون: Share → Add to Home Screen.</span></li>
+  </ol>
+  <p class="muted">
+    پیش‌نمایش فعلی:
+    <strong>{{ p.get('name') }}</strong>
+    · <span dir="ltr">{{ p.get('short_name') }}</span>
+  </p>
+</div>

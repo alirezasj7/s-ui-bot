@@ -1,0 +1,72 @@
+{# Shared bot appearance form + live Telegram-style preview.
+   Expects: appearance (dict), settings_action (post URL), appearance_sync_ok, appearance_sync_err
+
+   Telegram Bot API mapping (official):
+   - short_description → profile page / share caption (کپشن) — max 120
+   - description → empty-chat center text (متن وسط) — max 512
+#}
+{% set ap = appearance or {} %}
+<form method="post" action="{{ settings_action }}" enctype="multipart/form-data" class="settings-form" id="appearance-form">
+  <div class="card settings-card">
+    <h2>هویت در تلگرام</h2>
+    <p class="muted update-card-caption">
+      این مقادیر مستقیم با Bot API روی پروفایل ربات اعمال می‌شوند
+      (<code dir="ltr">setMyName</code>، <code dir="ltr">setMyShortDescription</code>،
+      <code dir="ltr">setMyDescription</code>، <code dir="ltr">setMyProfilePhoto</code>).
+      {% if ap.get('bot_username') %}ربات فعلی: <strong dir="ltr">@{{ ap.bot_username }}</strong>{% endif %}
+    </p>
+    {% if appearance_sync_err %}
+    <div class="flash err">{{ appearance_sync_err }}</div>
+    {% elif appearance_sync_ok %}
+    <div class="flash ok">مقادیر فعلی از تلگرام خوانده شد.</div>
+    {% endif %}
+    <div class="settings-grid">
+      <div class="setting-item full">
+        <label>نام نمایشی ربات
+          <input name="bot_tg_name" id="ap-name" type="text" maxlength="64"
+                 value="{{ ap.get('bot_tg_name','') }}" required />
+          <small class="muted">حداکثر ۶۴ کاراکتر — در هدر چت و پروفایل دیده می‌شود</small>
+        </label>
+      </div>
+      <div class="setting-item full">
+        <label>کپشن / درباره ربات
+          <textarea name="bot_tg_short_description" id="ap-caption" rows="3" maxlength="120">{{ ap.get('bot_tg_short_description','') }}</textarea>
+          <small class="muted">حداکثر ۱۲۰ کاراکتر — متن About در صفحه پروفایل و هنگام اشتراک‌گذاری ربات</small>
+        </label>
+      </div>
+      <div class="setting-item full">
+        <label>متن وسط صفحه (اولین نمایش)
+          <textarea name="bot_tg_description" id="ap-middle" rows="4" maxlength="512">{{ ap.get('bot_tg_description','') }}</textarea>
+          <small class="muted">حداکثر ۵۱۲ کاراکتر — همان متنی که وسط چت خالی قبل از /start دیده می‌شود</small>
+        </label>
+      </div>
+      <div class="setting-item full">
+        <div class="image-setting">
+          <strong>عکس پروفایل</strong>
+          <label class="file-label upload-box">
+            <input name="bot_tg_photo" id="ap-photo" type="file" accept=".jpg,.jpeg,image/jpeg" />
+            <span class="upload-box-plus" aria-hidden="true">+</span>
+            <span class="upload-box-title">انتخاب عکس پروفایل</span>
+            <span class="upload-box-hint muted">فقط JPG</span>
+            <span class="upload-box-name muted" data-upload-name>فایلی انتخاب نشده</span>
+            <span class="upload-box-progress" hidden aria-hidden="true"><i class="upload-box-progress-bar"></i></span>
+          </label>
+          <small class="muted">فقط JPG — از API تلگرام روی پروفایل ربات ست می‌شود</small>
+          {% if ap.get('bot_tg_photo') %}
+          <div class="ap-photo-row">
+            <img id="ap-photo-current" src="/media/{{ ap.bot_tg_photo }}" alt="عکس فعلی" class="ap-photo-thumb" />
+            <button type="submit" name="bot_tg_photo_clear" value="1" class="btn btn-danger btn-sm"
+                    data-confirm="عکس پروفایل ربات از تلگرام حذف شود؟" data-confirm-title="تأیید" data-confirm-danger="1" data-confirm-label="تأیید">
+              حذف فایل آپلودشده
+            </button>
+          </div>
+          {% endif %}
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="actions sticky-actions">
+    <button class="btn" type="submit">ذخیره و اعمال در تلگرام</button>
+  </div>
+</form>

@@ -1,0 +1,1103 @@
+from __future__ import annotations
+
+import html
+
+from aiogram import F, Router
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
+from aiogram.filters import Command
+from aiogram.types import Message
+from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.services.catalog_pricing import displayed_quote, price_html, quote_product, sale_price
+from app.bot import keyboards as kb
+from app.bot.chat_cleanup import keep_message
+from app.bot.list_pages import page_line, page_number
+from app.bot.tg_utils import safe_edit_text
+from app.config import get_settings
+from app.db.models import BotUser, Plan, UserService
+from app.services.formatting import format_message, format_toman, service_card
+from app.services.orders import get_catalog_plan, list_active_plans
+from app.services.pasarguard import absolutize_subscription_url, get_pg
+from app.services.service_import import is_external_service
+from app.services.service_scope import customer_may_use_service, list_customer_services
+from app.services.users import current_shop_reseller_id, get_all_settings
+from app.services.redact import user_safe_error
+from app.services.service_live_info import fetch_live_service_info, with_stored_quota
+from app.services.service_renewals import RENEWAL_CURRENT, RENEWAL_LABELS, renewal_relation
+from app.services.wireguard_delivery import REASON_DISABLED, REASON_UNAVAILABLE, fetch_wireguard, has_wireguard
+from app.services.wireguard_send import send_wireguard_files
+from app.services import bot_feedback_texts as feedback
+from app.services.screen_titles import screen_caption, screen_heading, with_caption
+import logging
+
+logger = logging.getLogger(__name__)
+
+router = Router(name="services")
+
+WIREGUARD_NONE = "این سرویس فایل WireGuard ندارد."
+WIREGUARD_SEND_FAILED = "ارسال فایل انجام نشد. دوباره امتحان کنید."
+WIREGUARD_NOT_READY = {
+    REASON_DISABLED: "دریافت فایل WireGuard فعلاً در پنل خاموش است. به پشتیبانی خبر دهید.",
+    REASON_UNAVAILABLE: "پنل الان پاسخ نداد. چند دقیقهٔ دیگر دوباره امتحان کنید.",
+}
+
+class CancellationStates(StatesGroup):
+    reason = State()
+
+
+def more_callback(service_id: int) -> str:
+    return f"svc:more:{int(service_id)}"
+
+
+def service_back_markup(service_id: int) -> InlineKeyboardMarkup:
+    """A result screen about one service backs up to that service's card."""
+    return InlineKeyboardMarkup(inline_keyboard=[[kb.back_button(None, f"svc:view:{int(service_id)}")]])
+
+
+@router.callback_query(F.data.startswith("svc:cancel:"))
+async def svc_cancel(callback: CallbackQuery, session: AsyncSession, db_user: BotUser):
+    from app.services.service_cancellations import cancellation_status
+    from app.services.users import current_shop_reseller_id
+    try:
+        service_id = int(callback.data.split(":")[-1])
+        status = await cancellation_status(session, db_user, service_id, shop_id=current_shop_reseller_id())
+    except ValueError as exc:
+        await callback.answer(str(exc), show_alert=True)
+        return
+    text = "📝 درخواست لغو سرویس\nاپراتور مبلغ اعتبار برگشتی را تعیین می‌کند. پس از تأیید، سرویس غیرفعال و اعتبار به کیف پول همین فروشگاه برمی‌گردد. ثبت درخواست به‌تنهایی سرویس را غیرفعال نمی‌کند."
+    buttons = []
+    if status:
+        text += f"\n\nدرخواست #{status['id']}: {html.escape(status['label'])}"
+        if status["operator_note"]:
+            text += "\n" + html.escape(status["operator_note"])
+        if status["refund_amount"] is not None:
+            text += "\nاعتبار برگشتی: " + format_toman(status["refund_amount"])
+    if not status or status["status"] in {"rejected", "withdrawn"}:
+        buttons.append([InlineKeyboardButton(text="ثبت درخواست و دلیل لغو", callback_data=f"svc:cancelnew:{service_id}")])
+    else:
+        buttons.append([InlineKeyboardButton(text="به‌روزرسانی درخواست", callback_data=f"svc:cancel:{service_id}")])
+    buttons.append([kb.back_button(None, more_callback(service_id))])
+    if callback.message:
+        await safe_edit_text(callback.message, text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+    await callback.answer()
+
+@router.callback_query(F.data.startswith("svc:cancelnew:"))
+async def svc_cancel_new(callback: CallbackQuery, session: AsyncSession, db_user: BotUser, state: FSMContext):
+    from app.bot.nav_input import ask_text
+    from app.services.service_cancellations import owned_cancellation_service
+    from app.services.users import current_shop_reseller_id
+    try:
+        service_id = int(callback.data.split(":")[-1])
+        await owned_cancellation_service(session, db_user, service_id, current_shop_reseller_id())
+    except ValueError as exc:
+        await callback.answer(str(exc), show_alert=True)
+        return
+    await state.update_data(cancellation_service_id=service_id)
+    await callback.answer()
+    await ask_text(
+        callback,
+        state,
+        prompt="دلیل درخواست لغو را بنویسید (حداکثر ۱۰۰۰ نویسه).",
+        cancel_code="svc_cnl",
+        fsm_state=CancellationStates.reason,
+        edit=True,
+    )
+
+@router.message(CancellationStates.reason, F.text)
+async def svc_cancel_reason(message: Message, session: AsyncSession, db_user: BotUser, state: FSMContext):
+    from app.bot.nav_input import finish_text_step, try_legacy_cancel
+    from app.services.service_cancellations import request_cancellation
+    from app.services.users import current_shop_reseller_id
+
+    if kb.is_cancel_text(message.text):
+        if await try_legacy_cancel(message, state, session, db_user):
+            return
+        await state.set_state(None)
+        await message.answer(feedback.CANCELLED)
+        return
+    data = await state.get_data()
+    try:
+        row = await request_cancellation(
+            session,
+            db_user,
+            int(data.get("cancellation_service_id") or 0),
+            shop_id=current_shop_reseller_id(),
+            reason=message.text,
+        )
+    except ValueError as exc:
+        await message.answer(str(exc))
+        return
+    await state.set_state(None)
+    await finish_text_step(
+        message,
+        state,
+        text=(
+            f"درخواست #{row['id']} ثبت شد. نتیجه و اعتبار برگشتی را "
+            "از «درخواست لغو سرویس» ببینید."
+        ),
+        inline=service_back_markup(int(data.get("cancellation_service_id") or 0)),
+    )
+
+@router.callback_query(F.data == "campaign:optout")
+async def campaign_optout(callback: CallbackQuery, session: AsyncSession, db_user: BotUser):
+    from app.services.campaigns import set_marketing_preference
+    from app.services.users import current_shop_reseller_id
+    await set_marketing_preference(session, db_user.id, shop_id=current_shop_reseller_id(), enabled=False)
+    await callback.answer("پیام‌های پیشنهادی این فروشگاه قطع شد. برای فعال‌سازی: /marketing", show_alert=True)
+
+@router.message(Command("marketing"))
+async def marketing_settings(message: Message, session: AsyncSession, db_user: BotUser):
+    await message.answer("دریافت پیام‌های پیشنهادی همین فروشگاه:", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="فعال", callback_data="campaign:optin"),
+        InlineKeyboardButton(text="غیرفعال", callback_data="campaign:optout"),
+    ]]))
+
+@router.callback_query(F.data == "campaign:optin")
+async def campaign_optin(callback: CallbackQuery, session: AsyncSession, db_user: BotUser):
+    from app.services.campaigns import set_marketing_preference
+    from app.services.users import current_shop_reseller_id
+    await set_marketing_preference(session, db_user.id, shop_id=current_shop_reseller_id(), enabled=True)
+    await callback.answer("دریافت پیام‌های پیشنهادی فعال شد.", show_alert=True)
+
+async def _show_automation(callback, session, db_user, service_id):
+    from app.services.service_automation import (
+        ACTIONS, CHOICE_FIELDS, LABELS, automation_choices,
+        get_automation, owned_automation_service, selected_choice,
+    )
+    service = await owned_automation_service(session, db_user, service_id)
+    row = await get_automation(session, service)
+    choices = await automation_choices(session)
+    await session.commit()
+    lines = [
+        f"سرویس: <b>{html.escape(service.pg_username)}</b>",
+        "هزینه با قیمت فعلی پلن یا بسته، فقط از کیف پول همین فروشگاه پرداخت می‌شود.",
+        "تمدید کامل پس از پایان زمان یا حجم انجام می‌شود. اگر افزایش خودکار همان مورد روشن باشد، بسته انتخاب‌شده اولویت دارد.",
+    ]
+    buttons = []
+    if row.needs_review:
+        lines.append(f"⚠️ سفارش #{row.pending_order_id} نیاز به بررسی پشتیبانی دارد؛ اجرای خودکار متوقف است.")
+    for action in ACTIONS:
+        enabled = getattr(row, f"{action}_enabled")
+        choice_id = getattr(row, CHOICE_FIELDS[action])
+        # Keep stale settings reachable even after the last pack is removed.
+        if action != "renew" and not (choices[action] or enabled or choice_id or getattr(row, f"{action}_notice")):
+            continue
+        choice = await selected_choice(session, row, action)
+        label = f"{html.escape(choice.name)} — {format_toman(sale_price(choice))}" if choice else "انتخاب نشده / در دسترس نیست"
+        lines.append(f"\n{'✅' if enabled else '▫️'} <b>{LABELS[action]}</b>\n{label}")
+        if enabled and not choice:
+            lines.append("⚠️ پلن یا بسته قبلی حذف یا غیرفعال شده؛ گزینه جدید انتخاب کنید.")
+        buttons.append([
+            InlineKeyboardButton(text=f"{'☑️' if enabled else '⬜️'} {LABELS[action]}", callback_data=f"svc:autotoggle:{service_id}:{action}"),
+            InlineKeyboardButton(text="انتخاب پلن" if action == "renew" else "انتخاب بسته", callback_data=f"svc:autopick:{service_id}:{action}"),
+        ])
+    lines.append("\nبا روشن کردن هر گزینه، خرید تکرارشونده از کیف پول را فعال می‌کنید. موجودی ناکافی باعث خرید نمی‌شود؛ پس از شارژ دوباره تلاش می‌شود.")
+    buttons.append([kb.back_button(None, more_callback(service_id))])
+    if callback.message:
+        await safe_edit_text(callback.message, format_message("⚙️ تنظیمات خودکار سرویس", "\n".join(lines)), reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+
+@router.callback_query(F.data.startswith("svc:auto:"))
+async def svc_auto(callback: CallbackQuery, session: AsyncSession, db_user: BotUser):
+    try:
+        service_id = int(callback.data.split(":")[-1])
+        await _show_automation(callback, session, db_user, service_id)
+    except ValueError as exc:
+        await callback.answer(str(exc), show_alert=True)
+        return
+    await callback.answer()
+
+@router.callback_query(F.data.startswith("svc:autopick:"))
+async def svc_auto_pick(callback: CallbackQuery, session: AsyncSession, db_user: BotUser):
+    from app.services.service_automation import ACTIONS, LABELS, automation_choices, owned_automation_service
+    try:
+        _, _, service_id, action = callback.data.split(":")
+        service_id = int(service_id)
+        if action not in ACTIONS:
+            raise ValueError("تنظیم نامعتبر است")
+        await owned_automation_service(session, db_user, service_id)
+        choices = (await automation_choices(session))[action]
+        if not choices:
+            raise ValueError("پلن یا بسته فعالی موجود نیست")
+    except ValueError as exc:
+        await callback.answer(str(exc), show_alert=True)
+        return
+    from app.services.plan_categories import shop_category_map
+    from app.services.service_addons import amount_label
+
+    categories = await shop_category_map(session)
+    buttons = [[InlineKeyboardButton(
+        text=f"{p.name}{' — +' + amount_label(p) if action != 'renew' else ''} — {format_toman(sale_price(p))}",
+        callback_data=f"svc:autoset:{service_id}:{action}:{p.id}",
+        icon_custom_emoji_id=kb.category_icon_for(p, categories),
+    )] for p in choices]
+    buttons.append([kb.back_button(None, f"svc:auto:{service_id}")])
+    await callback.answer()
+    if callback.message:
+        await safe_edit_text(callback.message, format_message(
+            f"⚙️ {LABELS[action]}",
+            "با انتخاب گزینه، این قابلیت روشن می‌شود و در هر بار پایان زمان یا حجم، هزینه از کیف پول پرداخت خواهد شد.",
+        ), reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+
+@router.callback_query(F.data.startswith("svc:autotoggle:"))
+async def svc_auto_toggle(callback: CallbackQuery, session: AsyncSession, db_user: BotUser):
+    from app.services.service_automation import (
+        ACTIONS, configure_automation, get_automation,
+        owned_automation_service, selected_choice,
+    )
+    try:
+        _, _, service_id, action = callback.data.split(":")
+        service_id = int(service_id)
+        if action not in ACTIONS:
+            raise ValueError("تنظیم نامعتبر است")
+        service = await owned_automation_service(session, db_user, service_id)
+        row = await get_automation(session, service)
+        enabled = not getattr(row, f"{action}_enabled")
+        if enabled and await selected_choice(session, row, action) is None:
+            await session.commit()
+            # Open selection without enabling an incomplete configuration.
+            from app.bot.handlers.reply_nav import _SoftCallback
+            await svc_auto_pick(_SoftCallback(callback.message, f"svc:autopick:{service_id}:{action}"), session, db_user)
+            await callback.answer()
+            return
+        await configure_automation(session, db_user, service_id, action, enabled=enabled)
+        await _show_automation(callback, session, db_user, service_id)
+    except ValueError as exc:
+        await callback.answer(str(exc), show_alert=True)
+        return
+    await callback.answer(feedback.SAVED)
+
+@router.callback_query(F.data.startswith("svc:autoset:"))
+async def svc_auto_set(callback: CallbackQuery, session: AsyncSession, db_user: BotUser):
+    from app.services.service_automation import configure_automation
+    try:
+        _, _, service_id, action, choice_id = callback.data.split(":")
+        service_id = int(service_id)
+        await configure_automation(session, db_user, service_id, action, enabled=True, choice_id=int(choice_id))
+        await _show_automation(callback, session, db_user, service_id)
+    except ValueError as exc:
+        await callback.answer(str(exc), show_alert=True)
+        return
+    await callback.answer("انتخاب شد و قابلیت روشن شد")
+
+async def _reseller_capacity_list_label(
+    session: AsyncSession,
+    db_user: BotUser,
+    *,
+    is_reseller_bot: bool = False,
+    reseller_owner_id: int | None = None,
+) -> str | None:
+    from app.services.reseller_access import load_reseller_my_service_profile
+    from app.services.resellers import reseller_my_service_list_label
+
+    profile = await load_reseller_my_service_profile(
+        session,
+        db_user,
+        is_reseller_bot=is_reseller_bot,
+        reseller_owner_id=reseller_owner_id,
+    )
+    if profile is None:
+        return None
+    return reseller_my_service_list_label(profile)
+
+
+@router.callback_query((F.data == "svc:list") | F.data.startswith("svc:list:p:"))
+async def svc_list(
+    callback: CallbackQuery,
+    session: AsyncSession,
+    db_user: BotUser,
+    is_reseller_bot: bool = False,
+    reseller_owner_id: int | None = None,
+):
+    await callback.answer()
+    ui = await get_all_settings(session)
+    services = await list_customer_services(session, db_user.id, current_shop_reseller_id())
+    reseller_label = await _reseller_capacity_list_label(
+        session,
+        db_user,
+        is_reseller_bot=is_reseller_bot,
+        reseller_owner_id=reseller_owner_id,
+    )
+    from app.bot.service_import_ui import EMPTY_LIST_HINT, empty_services_keyboard, import_enabled
+
+    allow_import = import_enabled(ui)
+    if not services and not reseller_label:
+        if callback.message:
+            from app.services.rich_text import outbound_setting_text
+
+            text, send_kw = outbound_setting_text(
+                ui.get("empty_services_text")
+                or feedback.NO_SERVICES_YET
+            )
+            await safe_edit_text(
+                callback.message,
+                f"{text}\n\n{EMPTY_LIST_HINT}" if allow_import else text,
+                reply_markup=empty_services_keyboard(ui) if allow_import else kb.back_home(ui),
+                **send_kw,
+            )
+        return
+    if callback.message:
+        from app.bot.nav_inline import services_list_keyboard, services_page
+
+        page_index = page_number(callback.data)
+        markup = services_list_keyboard(
+            services,
+            ui,
+            reseller_capacity_label=reseller_label,
+            allow_import=allow_import,
+            page_index=page_index,
+        )
+        await safe_edit_text(
+            callback.message,
+            with_caption(screen_heading(ui, "c.services"), screen_caption(ui, "c.services"))
+            + page_line(services_page(services, page_index)),
+            reply_markup=markup,
+        )
+
+
+@router.callback_query(F.data == "svc:reseller")
+async def svc_reseller_view(
+    callback: CallbackQuery,
+    session: AsyncSession,
+    db_user: BotUser,
+    is_reseller_bot: bool = False,
+    reseller_owner_id: int | None = None,
+):
+    """Show reseller PG capacity + remaining volume under My Services."""
+    from app.services.billing import is_payg
+    from app.services.pg_admin_subscription import is_subscription_plan
+    from app.services.reseller_access import load_reseller_my_service_profile
+    from app.services.reseller_capacity import load_reseller_plan
+    from app.services.resellers import format_reseller_my_service_card
+
+    profile = await load_reseller_my_service_profile(
+        session,
+        db_user,
+        is_reseller_bot=is_reseller_bot,
+        reseller_owner_id=reseller_owner_id,
+    )
+    if profile is None:
+        await callback.answer("سرویس نمایندگی شما پیدا نشد", show_alert=True)
+        return
+    await callback.answer()
+    text = await format_reseller_my_service_card(session, profile)
+    plan = await load_reseller_plan(session, profile)
+    rows: list[list[InlineKeyboardButton]] = [
+        [InlineKeyboardButton(text="🔄 به‌روزرسانی", callback_data="svc:reseller")],
+    ]
+    if plan is not None and is_subscription_plan(plan) and not is_payg(profile):
+        rows.append(
+            [InlineKeyboardButton(text="♻️ تمدید نمایندگی", callback_data="res:renew")]
+        )
+        rows.append(
+            [InlineKeyboardButton(text="📦 بسته افزونه", callback_data="res:addons")]
+        )
+    rows.append([kb.back_button(None, "svc:list")])
+    if callback.message:
+        await safe_edit_text(
+            callback.message,
+            text,
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),
+        )
+
+@router.callback_query(F.data.startswith("svc:view:"))
+async def svc_view(
+    callback: CallbackQuery,
+    session: AsyncSession,
+    db_user: BotUser,
+    state: FSMContext | None = None,
+):
+    ui = await get_all_settings(session)
+    svc_id = int(callback.data.split(":")[-1])
+    svc = await session.get(UserService, svc_id)
+    if not await customer_may_use_service(session, svc, db_user.id, current_shop_reseller_id()):
+        await callback.answer(feedback.NOT_FOUND, show_alert=True)
+        return
+    await callback.answer()
+    info = await fetch_live_service_info(svc, client_factory=get_pg)
+    if info.get("status") and "expire" in info:
+        from app.services.bot_user_admin import sync_service_quota_cache
+        sync_service_quota_cache(svc, info=info)
+        await session.commit()
+    # Display only, after the cache sync: saved values must never be written back as live.
+    info = with_stored_quota(info, svc)
+    info.setdefault("username", svc.pg_username)
+    text = format_message("📦 سرویس شما", service_card(info))
+    if callback.message:
+        from app.bot.nav_inline import service_card_keyboard
+
+        await safe_edit_text(
+            callback.message,
+            text,
+            reply_markup=service_card_keyboard(svc_id, ui),
+        )
+    if state is not None:
+        from app.bot import menu_nav as nav
+
+        await state.update_data(**{nav.SERVICE_ID: svc_id})
+        await nav.set_nav_level(state, nav.NAV_SERVICE, push=True)
+
+@router.callback_query(F.data.startswith("guide:svc:"))
+async def svc_guide(callback: CallbackQuery, session: AsyncSession, db_user: BotUser):
+    """Open per-platform guides when the catalog has entries; else plain guide_text."""
+    from app.bot.handlers.guides import _audience_for_user, show_guides_list
+    from app.services.connection_guides import get_connection_guides, guides_for_audience
+    from app.services.rich_text import outbound_setting_text, rich_plain_text
+
+    try:
+        svc_id = int((callback.data or "").split(":")[-1])
+    except (TypeError, ValueError):
+        await callback.answer(feedback.INVALID, show_alert=True)
+        return
+    svc = await session.get(UserService, svc_id)
+    if not await customer_may_use_service(session, svc, db_user.id, current_shop_reseller_id()):
+        await callback.answer(feedback.NOT_FOUND, show_alert=True)
+        return
+    aud = await _audience_for_user(session, db_user)
+    items = guides_for_audience(await get_connection_guides(session), aud)
+    if items:
+        await show_guides_list(callback, session, db_user, svc_id=svc_id, audience=aud)
+        return
+    ui = await get_all_settings(session)
+    raw = ui.get("guide_text")
+    if not rich_plain_text(raw).strip():
+        raw = (
+            feedback.GUIDE_TEXT_NOT_SET
+        )
+    text, send_kw = outbound_setting_text(raw, title="📘 آموزش اتصال")
+    back = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                kb.back_button(ui, f"svc:view:{svc_id}")
+            ]
+        ]
+    )
+    await callback.answer()
+    if callback.message:
+        await safe_edit_text(callback.message, text, reply_markup=back, **send_kw)
+
+@router.callback_query(F.data.startswith("svc:link:"))
+async def svc_link(callback: CallbackQuery, session: AsyncSession, db_user: BotUser):
+    from app.services.delivery import send_subscription_qr_photo
+    from app.services.users import on
+
+    ui = await get_all_settings(session)
+    svc_id = int(callback.data.split(":")[-1])
+    svc = await session.get(UserService, svc_id)
+    if not await customer_may_use_service(session, svc, db_user.id, current_shop_reseller_id()):
+        await callback.answer(feedback.NOT_FOUND, show_alert=True)
+        return
+    await callback.answer()
+    url = svc.subscription_url or ""
+    sub_info = await fetch_live_service_info(svc, client_factory=get_pg)
+    parts = ["🔗 لینک و QR اشتراک"]
+    if url and on(ui.get("show_sub_link_in_text", "1")):
+        from app.services.formatting import copyable
+
+        parts.append(copyable(url))
+    elif not url:
+        parts.append("لینک موجود نیست.")
+    sub_info.setdefault("username", svc.pg_username)
+    parts.append(service_card(sub_info))
+    text = format_message("📱 اشتراک", "\n\n".join(parts))
+    if callback.message:
+        markup = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [
+                    kb.back_button(ui, f"svc:view:{svc_id}")
+                ]
+            ]
+        )
+        try:
+            await safe_edit_text(callback.message, text, reply_markup=markup)
+        except Exception:
+            await callback.message.answer(text, reply_markup=markup)
+    if url:
+        await send_subscription_qr_photo(
+            callback.bot,
+            db_user.telegram_id,
+            url,
+            ui,
+            info=sub_info if not sub_info.get("error") else None,
+            username=svc.pg_username,
+        )
+
+@router.callback_query(F.data.startswith("svc:wg:"))
+async def svc_wireguard(callback: CallbackQuery, session: AsyncSession, db_user: BotUser) -> None:
+    try:
+        svc_id = int((callback.data or "").split(":")[-1])
+    except (TypeError, ValueError):
+        await callback.answer(feedback.INVALID, show_alert=True)
+        return
+    svc = await session.get(UserService, svc_id)
+    if not await customer_may_use_service(session, svc, db_user.id, current_shop_reseller_id()):
+        await callback.answer(feedback.NOT_FOUND, show_alert=True)
+        return
+    fetched = await fetch_wireguard(
+        absolutize_subscription_url(svc.subscription_url) or svc.subscription_url,
+        username=svc.pg_username,
+    )
+    if not fetched.files:
+        await callback.answer(WIREGUARD_NOT_READY.get(fetched.reason, WIREGUARD_NONE), show_alert=True)
+        return
+    if await send_wireguard_files(callback.bot, db_user.telegram_id, fetched):
+        await callback.answer()
+    else:
+        await callback.answer(WIREGUARD_SEND_FAILED, show_alert=True)
+
+def _renewal_button_text(plan: Plan, relation: str | None) -> str:
+    label = f"{RENEWAL_LABELS[relation]} · " if relation else ""
+    return f"{label}{plan.name} — {format_toman(sale_price(plan), get_settings().currency)}"
+
+
+@router.callback_query(F.data.startswith("svc:renew:"))
+async def svc_renew(callback: CallbackQuery, session: AsyncSession, db_user: BotUser):
+    ui = await get_all_settings(session)
+    svc_id = int(callback.data.split(":")[-1])
+    svc = await session.get(UserService, svc_id)
+    if not await customer_may_use_service(session, svc, db_user.id, current_shop_reseller_id()):
+        await callback.answer(feedback.NOT_FOUND, show_alert=True)
+        return
+    if (svc.remark or "").strip() == "linked":
+        await callback.answer(
+            "سرویس متصل‌شده فقط مشاهده است؛ تمدید از این مسیر ممکن نیست",
+            show_alert=True,
+        )
+        return
+    plans = await list_active_plans(session, include_trial=False)
+    if not plans:
+        await callback.answer(feedback.NO_PLANS, show_alert=True)
+        return
+    await callback.answer()
+    from app.services.plan_categories import shop_category_map
+
+    categories = await shop_category_map(session)
+    current_plan = next((p for p in plans if svc.plan_id is not None and int(p.id) == int(svc.plan_id)), None)
+    relations = {int(p.id): renewal_relation(current_plan, p) for p in plans}
+    plans = sorted(plans, key=lambda p: relations[int(p.id)] != RENEWAL_CURRENT)
+    rows = [
+        [
+            InlineKeyboardButton(
+                text=_renewal_button_text(p, relations[int(p.id)]),
+                callback_data=f"svc:renewpay:{svc_id}:{p.id}",
+                icon_custom_emoji_id=kb.category_icon_for(p, categories),
+            )
+        ]
+        for p in plans
+    ]
+
+    rows.append(
+        [
+            kb.back_button(ui, f"svc:view:{svc_id}")
+        ]
+    )
+    hint = "پلن تمدید را انتخاب کنید:"
+    if callback.message:
+        await safe_edit_text(
+            callback.message,
+            hint,
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),
+        )
+
+@router.callback_query(F.data.startswith("svc:renewpay:"))
+async def svc_renew_preview(
+    callback: CallbackQuery, session: AsyncSession, db_user: BotUser, state: FSMContext
+):
+    from app.services.service_renewals import preview_renewal
+
+    _, _, svc_id, plan_id = callback.data.split(":")
+    svc = await session.get(UserService, int(svc_id))
+    plan = await get_catalog_plan(session, int(plan_id))
+    if not plan or not await customer_may_use_service(session, svc, db_user.id, current_shop_reseller_id()):
+        await callback.answer(feedback.INVALID, show_alert=True)
+        return
+    try:
+        preview = await preview_renewal(session, user_id=db_user.id, service=svc, plan=plan)
+    except Exception as exc:
+        await callback.answer(user_safe_error(exc), show_alert=True)
+        return
+    await state.update_data(renewal_preview={
+        "service_id": svc.id, "plan_id": plan.id, "price": preview["price"], "terms": preview["terms"], "request_key": preview["request_key"],
+    })
+    lines = [f"پلن: {plan.name}", *preview["lines"], *preview["warnings"], "", preview["notice"]]
+    if callback.message:
+        await safe_edit_text(
+            callback.message, format_message("🔄 پیش‌نمایش تمدید", html.escape("\n".join(lines)) + "\nمبلغ: " + price_html(displayed_quote(plan), get_settings().currency)),
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="تأیید و ادامه", callback_data=f"svc:renewconfirm:{svc.id}:{plan.id}")],
+                [InlineKeyboardButton(text="انتخاب پلن دیگر", callback_data=f"svc:renew:{svc.id}")],
+            ]),
+        )
+    await callback.answer()
+
+@router.callback_query(F.data.startswith("svc:renewconfirm:"))
+async def svc_renew_pay(
+    callback: CallbackQuery,
+    session: AsyncSession,
+    db_user: BotUser,
+    state: FSMContext,
+    is_reseller_bot: bool = False,
+    reseller_owner_id: int | None = None,
+):
+    ui = await get_all_settings(session)
+    _, _, svc_id, plan_id = callback.data.split(":")
+    svc = await session.get(UserService, int(svc_id))
+    plan = await get_catalog_plan(session, int(plan_id))
+    if not plan or not await customer_may_use_service(session, svc, db_user.id, current_shop_reseller_id()):
+        await callback.answer(feedback.INVALID, show_alert=True)
+        return
+    if (svc.remark or "").strip() == "linked":
+        await callback.answer(
+            "سرویس متصل‌شده فقط مشاهده است؛ تمدید از این مسیر ممکن نیست",
+            show_alert=True,
+        )
+        return
+    if sale_price(plan) > 0 and not kb.any_checkout_method_enabled(ui):
+        await callback.answer(feedback.NO_PAYMENT_METHOD, show_alert=True)
+        return
+
+    from app.services.orders import renew_service_with_plan
+    from app.services.service_renewals import renewal_terms
+
+    try:
+        quote = (await state.get_data()).get("renewal_preview") or {}
+        expected = {"service_id": svc.id, "plan_id": plan.id, "price": sale_price(plan), "terms": renewal_terms(plan)}
+        if not quote.get("request_key") or any(quote.get(k) != v for k, v in expected.items()):
+            raise ValueError("پلن تغییر کرده یا پیش‌نمایش معتبر نیست؛ دوباره پلن تمدید را انتخاب کنید")
+        order = await renew_service_with_plan(
+            session,
+            user_id=db_user.id,
+            service=svc,
+            plan=plan,
+            request_key=quote["request_key"],
+            expected_price=quote["price"],
+        )
+        await state.update_data(renewal_preview=None)
+    except Exception as e:
+        await callback.answer(user_safe_error(e), show_alert=True)
+        return
+
+    await callback.answer()
+
+    if order.amount <= 0:
+        from app.services.orders import pay_with_wallet
+
+        try:
+            order = await pay_with_wallet(session, order, db_user)
+        except Exception as e:
+            if callback.message:
+                await safe_edit_text(
+                    callback.message,
+                    f"❌ {user_safe_error(e)}",
+                    reply_markup=service_back_markup(svc.id),
+                )
+            return
+        if callback.message:
+            await safe_edit_text(callback.message, 
+                format_message("✅ تمدید رایگان", f"سفارش #{order.id}"),
+                reply_markup=service_back_markup(svc.id),
+            )
+            keep_message(callback.message)
+        return
+
+    summary = format_message(
+        f"🔄 تمدید — سفارش #{order.id}",
+        f"مبلغ: <b>{format_toman(order.amount, get_settings().currency)}</b>",
+    )
+    if callback.message:
+        from app.bot.menu_nav import present_order_pay
+
+        await present_order_pay(
+            callback.message,
+            session,
+            db_user,
+            order.id,
+            state=state,
+            summary=summary,
+            is_reseller_bot=is_reseller_bot,
+            reseller_owner_id=reseller_owner_id,
+        )
+
+@router.callback_query(F.data.startswith("svc:addon:"))
+async def svc_addon(
+    callback: CallbackQuery, session: AsyncSession, db_user: BotUser
+):
+    """List shop-scoped volume/duration packs for an owned service.
+
+    Packs are filtered to the service's sales-plan category so multi-service
+    users only see prices that match that service.
+    """
+    from app.services.service_addons import (
+        amount_label,
+        kind_label,
+        list_packs_for_service,
+    )
+
+    ui = await get_all_settings(session)
+    parts = (callback.data or "").split(":")
+    # svc:addon:{svc_id} or svc:addon:{svc_id}:{kind}
+    if len(parts) < 3:
+        await callback.answer(feedback.INVALID, show_alert=True)
+        return
+    svc_id = int(parts[2])
+    kind_filter = parts[3] if len(parts) > 3 else None
+    svc = await session.get(UserService, svc_id)
+    if not await customer_may_use_service(session, svc, db_user.id, current_shop_reseller_id()):
+        await callback.answer(feedback.NOT_FOUND, show_alert=True)
+        return
+    if (svc.remark or "").strip() == "linked":
+        await callback.answer(
+            "سرویس متصل‌شده فقط مشاهده است؛ خرید افزونه ممکن نیست",
+            show_alert=True,
+        )
+        return
+    packs = await list_packs_for_service(
+        session, svc, active_only=True, kind=kind_filter
+    )
+    if not packs:
+        await callback.answer(
+            "بسته‌ای برای دستهٔ این سرویس فعال نیست — از کارت همین سرویس دوباره تلاش کنید",
+            show_alert=True,
+        )
+        return
+    await callback.answer()
+    from app.services.plan_categories import shop_category_map
+
+    categories = await shop_category_map(session)
+    rows = [
+        [
+            InlineKeyboardButton(
+                text=(
+                    f"{'📦' if p.kind == 'volume' else '⏱'} {p.name} "
+                    f"(+{amount_label(p)}) — {format_toman(sale_price(p), get_settings().currency)}"
+                ),
+                callback_data=f"svc:addonpay:{svc_id}:{p.id}",
+                icon_custom_emoji_id=kb.category_icon_for(p, categories),
+            )
+        ]
+        for p in packs
+    ]
+    if kind_filter is None:
+        has_vol = any(p.kind == "volume" for p in packs)
+        has_dur = any(p.kind == "duration" for p in packs)
+        filter_row = []
+        if has_vol:
+            filter_row.append(
+                InlineKeyboardButton(
+                    text="فقط حجم", callback_data=f"svc:addon:{svc_id}:volume"
+                )
+            )
+        if has_dur:
+            filter_row.append(
+                InlineKeyboardButton(
+                    text="فقط زمان", callback_data=f"svc:addon:{svc_id}:duration"
+                )
+            )
+        if filter_row:
+            rows.insert(0, filter_row)
+    else:
+        rows.insert(
+            0,
+            [
+                InlineKeyboardButton(
+                    text="همه بسته‌ها", callback_data=f"svc:addon:{svc_id}"
+                )
+            ],
+        )
+    title = "افزونه سرویس"
+    if kind_filter:
+        title = f"افزونه {kind_label(kind_filter)}"
+
+    rows.append(
+        [
+            kb.back_button(ui, f"svc:view:{svc_id}")
+        ]
+    )
+    body = "بسته را انتخاب کنید؛ پس از پرداخت به همین سرویس اضافه می‌شود."
+    if callback.message:
+        await safe_edit_text(
+            callback.message,
+            format_message(f"➕ {title}", body),
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),
+        )
+
+@router.callback_query(F.data.startswith("svc:addonpay:"))
+async def svc_addon_pay(
+    callback: CallbackQuery,
+    session: AsyncSession,
+    db_user: BotUser,
+    state: FSMContext,
+    is_reseller_bot: bool = False,
+    reseller_owner_id: int | None = None,
+):
+    ui = await get_all_settings(session)
+    parts = (callback.data or "").split(":")
+    if len(parts) < 4:
+        await callback.answer(feedback.INVALID, show_alert=True)
+        return
+    svc_id = int(parts[2])
+    pack_id = int(parts[3])
+    svc = await session.get(UserService, svc_id)
+    from app.db.models import ServiceAddonPack
+    from app.services.service_addons import (
+        amount_label,
+        create_addon_order,
+        kind_label,
+        pack_matches_shop,
+    )
+    from app.services.users import current_shop_reseller_id
+
+    pack = await session.get(ServiceAddonPack, pack_id)
+    if not pack or not await customer_may_use_service(session, svc, db_user.id, current_shop_reseller_id()):
+        await callback.answer(feedback.INVALID, show_alert=True)
+        return
+    if not pack_matches_shop(pack, current_shop_reseller_id()):
+        await callback.answer("این بسته در این فروشگاه نیست", show_alert=True)
+        return
+    await quote_product(session, pack, shop_id=current_shop_reseller_id())
+    if sale_price(pack) > 0 and not kb.any_checkout_method_enabled(ui):
+        await callback.answer(feedback.NO_PAYMENT_METHOD, show_alert=True)
+        return
+    try:
+        order = await create_addon_order(
+            session, user_id=db_user.id, service=svc, pack=pack
+        )
+    except Exception as e:
+        await callback.answer(user_safe_error(e), show_alert=True)
+        return
+    await callback.answer()
+
+    if order.amount <= 0:
+        from app.services.orders import mark_order_free_paid, revert_failed_free_delivery
+        from app.services.service_addons import apply_service_addon
+
+        await mark_order_free_paid(session, order, db_user.id)
+        try:
+            order = await apply_service_addon(session, order)
+        except Exception as e:
+            try:
+                await revert_failed_free_delivery(session, order)
+            except Exception:
+                logger.debug("svc_addon_pay: ignored failure", exc_info=True)
+            if callback.message:
+                await safe_edit_text(
+                    callback.message,
+                    f"❌ {user_safe_error(e)}",
+                    reply_markup=service_back_markup(svc.id),
+                )
+            return
+        if callback.message:
+            await safe_edit_text(
+                callback.message,
+                format_message(
+                    "✅ افزونه رایگان",
+                    f"سفارش #{order.id}\n{kind_label(pack.kind)}: +{amount_label(pack)}",
+                ),
+                reply_markup=service_back_markup(svc.id),
+            )
+            keep_message(callback.message)
+        return
+
+    summary = format_message(
+        f"➕ افزونه — سفارش #{order.id}",
+        f"{html.escape(pack.name)}\n"
+        f"{kind_label(pack.kind)}: +{amount_label(pack)}\n"
+        f"مبلغ: {price_html(displayed_quote(pack), get_settings().currency)}",
+    )
+    if callback.message:
+        from app.bot.menu_nav import present_order_pay
+
+        await present_order_pay(
+            callback.message,
+            session,
+            db_user,
+            order.id,
+            state=state,
+            summary=summary,
+            is_reseller_bot=is_reseller_bot,
+            reseller_owner_id=reseller_owner_id,
+        )
+
+@router.callback_query(F.data.startswith("svc:more:"))
+async def svc_more(callback: CallbackQuery, session: AsyncSession, db_user: BotUser) -> None:
+    from app.bot.nav_inline import service_more_keyboard
+
+    try:
+        svc_id = int((callback.data or "").rsplit(":", 1)[-1])
+    except ValueError:
+        await callback.answer(feedback.INVALID, show_alert=True)
+        return
+    svc = await session.get(UserService, svc_id)
+    if not await customer_may_use_service(session, svc, db_user.id, current_shop_reseller_id()):
+        await callback.answer(feedback.NOT_FOUND, show_alert=True)
+        return
+    await callback.answer()
+    ui = await get_all_settings(session)
+    # Same live read as the card: it tells whether the panel gave the service WireGuard.
+    info = await fetch_live_service_info(svc, client_factory=get_pg)
+    label = html.escape(svc.pg_username or f"#{svc_id}")
+    if callback.message:
+        await safe_edit_text(
+            callback.message,
+            format_message("⚙️ گزینه‌های بیشتر", f"سرویس <b>{label}</b>"),
+            reply_markup=service_more_keyboard(
+                svc_id, ui, external=is_external_service(svc), wireguard=has_wireguard(info)
+            ),
+        )
+
+
+@router.callback_query(F.data.startswith("svc:delask:"))
+async def svc_delete_ask(
+    callback: CallbackQuery, session: AsyncSession, db_user: BotUser
+):
+    svc_id = int(callback.data.split(":")[-1])
+    svc = await session.get(UserService, svc_id)
+    if not await customer_may_use_service(session, svc, db_user.id, current_shop_reseller_id()):
+        await callback.answer(feedback.NOT_FOUND, show_alert=True)
+        return
+    await callback.answer()
+    label = html.escape(svc.pg_username or f"#{svc_id}")
+    external = is_external_service(svc)
+    markup = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="بله، از لیست من حذف شود" if external else "🗑 بله، حذف شود",
+                    callback_data=f"svc:del:{svc_id}",
+                ),
+                InlineKeyboardButton(
+                    text="انصراف",
+                    callback_data=more_callback(svc_id),
+                ),
+            ]
+        ]
+    )
+    if callback.message:
+        await safe_edit_text(
+            callback.message,
+            format_message(
+                "⚠️ حذف سرویس",
+                (
+                    f"سرویس <b>{label}</b> از لیست شما حذف شود؟\n"
+                    "فقط از این ربات جدا می‌شود؛ سرویس و لینک اشتراک آن سر جایش می‌ماند "
+                    "و می‌توانید دوباره اضافه‌اش کنید."
+                    if external
+                    else f"سرویس <b>{label}</b> برای همیشه حذف شود؟\n"
+                    "لینک اشتراک از کار می‌افتد و برگشت‌ناپذیر است."
+                ),
+            ),
+            reply_markup=markup,
+        )
+
+@router.callback_query(F.data.startswith("svc:del:"))
+async def svc_delete(
+    callback: CallbackQuery,
+    session: AsyncSession,
+    db_user: BotUser,
+    state: FSMContext | None = None,
+    is_reseller_bot: bool = False,
+    reseller_owner_id: int | None = None,
+):
+    # Match svc:del:{id} only — not svc:delask:
+    parts = (callback.data or "").split(":")
+    if len(parts) != 3 or parts[1] != "del":
+        await callback.answer(feedback.INVALID, show_alert=True)
+        return
+    svc_id = int(parts[2])
+    svc = await session.get(UserService, svc_id)
+    if not await customer_may_use_service(session, svc, db_user.id, current_shop_reseller_id()):
+        await callback.answer(feedback.NOT_FOUND, show_alert=True)
+        return
+    from app.services.bot_user_admin import admin_delete_service
+
+    # Linked or imported services were not created by the bot: removing them only detaches
+    # them from the list and never deletes the underlying PasarGuard user.
+    delete_pg = not is_external_service(svc)
+    try:
+        await admin_delete_service(session, svc, delete_pg=delete_pg)
+    except Exception as e:
+        await callback.answer(user_safe_error(e, limit=160), show_alert=True)
+        return
+    await callback.answer(
+        feedback.CONNECTION_DELETED if not delete_pg else "سرویس حذف شد",
+        show_alert=True,
+    )
+    if state is not None:
+        from app.bot import menu_nav as nav
+
+        data = await state.get_data()
+        if int(data.get(nav.SERVICE_ID) or 0) == svc_id:
+            await state.update_data(**{nav.SERVICE_ID: None})
+    if callback.message:
+        done = format_message("✅ حذف شد", f"سرویس #{svc_id} حذف شد.")
+        await safe_edit_text(
+            callback.message,
+            done,
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[kb.back_button(None, "svc:list")]]),
+        )
+        _ = (is_reseller_bot, reseller_owner_id)
+
+
+def _register_services_cancel_codes() -> None:
+    from app.bot.nav_input import CancelEntry, register_cancel_code
+
+    async def _reopen_cancel_panel(message, session, db_user, state, **_kw):
+        from app.bot.nav_inline import present_inline_only
+        from app.services.service_cancellations import cancellation_status
+        from app.services.users import current_shop_reseller_id
+
+        data = await state.get_data()
+        service_id = int(data.get("cancellation_service_id") or 0)
+        if not service_id:
+            await present_inline_only(message, text="این سرویس پیدا نشد.", inline=InlineKeyboardMarkup(inline_keyboard=[[kb.back_button(None, "svc:list")]]))
+            return
+        try:
+            status = await cancellation_status(
+                session, db_user, service_id, shop_id=current_shop_reseller_id()
+            )
+        except ValueError as exc:
+            await present_inline_only(message, text=str(exc), inline=InlineKeyboardMarkup(inline_keyboard=[[kb.back_button(None, "svc:list")]]))
+            return
+        text = (
+            "📝 درخواست لغو سرویس\n"
+            "اپراتور مبلغ اعتبار برگشتی را تعیین می‌کند. پس از تأیید، سرویس غیرفعال "
+            "و اعتبار به کیف پول همین فروشگاه برمی‌گردد. ثبت درخواست به‌تنهایی "
+            "سرویس را غیرفعال نمی‌کند."
+        )
+        buttons: list[list[InlineKeyboardButton]] = []
+        if status:
+            text += f"\n\nدرخواست #{status['id']}: {html.escape(status['label'])}"
+            if status["operator_note"]:
+                text += "\n" + html.escape(status["operator_note"])
+            if status["refund_amount"] is not None:
+                text += "\nاعتبار برگشتی: " + format_toman(status["refund_amount"])
+        if not status or status["status"] in {"rejected", "withdrawn"}:
+            buttons.append(
+                [
+                    InlineKeyboardButton(
+                        text="ثبت درخواست و دلیل لغو",
+                        callback_data=f"svc:cancelnew:{service_id}",
+                    )
+                ]
+            )
+        else:
+            buttons.append(
+                [
+                    InlineKeyboardButton(
+                        text="به‌روزرسانی درخواست",
+                        callback_data=f"svc:cancel:{service_id}",
+                    )
+                ]
+            )
+        buttons.append([kb.back_button(None, more_callback(service_id))])
+        await present_inline_only(
+            message,
+            text=text,
+            inline=InlineKeyboardMarkup(inline_keyboard=buttons),
+        )
+
+    register_cancel_code("svc_cnl", CancelEntry(reopen=_reopen_cancel_panel))
+
+
+_register_services_cancel_codes()

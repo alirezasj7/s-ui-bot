@@ -1,0 +1,103 @@
+{# Progressive widget fill — shell already passed server authz.
+   Body URL re-runs the same Depends authz; shell permission does not grant body.
+   redirect:manual avoids injecting login HTML into #home-dash / #pg-dash.
+   Widget loading stays inside the dashboard; #panel-nav-clock is navigation-only. #}
+{% set body_url = widgets_body_url or '/home/body' %}
+<noscript>
+  <div class="flash warn home-update-banner">
+    <div class="home-update-copy">
+      <strong>جاوااسکریپت خاموش است</strong>
+      <span class="muted">برای آمار کامل، نسخهٔ یک‌مرحله‌ای را باز کنید.</span>
+    </div>
+    <a class="btn btn-sm btn-ghost" href="?full=1">نمایش کامل</a>
+  </div>
+</noscript>
+<div class="flash home-update-banner" id="panel-widget-status" role="status" aria-live="polite">
+  <span>در حال دریافت آمار؛ می‌توانید از سایر بخش‌های وب‌پنل استفاده کنید.</span>
+</div>
+<script{% if csp_nonce %} nonce="{{ csp_nonce }}"{% endif %}>
+(function () {
+  var url = {{ body_url|tojson }};
+  var fetchOpts = {
+    credentials: 'same-origin',
+    redirect: 'manual',
+    headers: {
+      'Accept': 'text/html',
+      'X-Requested-With': 'XMLHttpRequest'
+    }
+  };
+
+  function markPending(on) {
+    if (on) document.documentElement.setAttribute('data-panel-widgets-pending', '1');
+    else document.documentElement.removeAttribute('data-panel-widgets-pending');
+  }
+
+  function beginLoading() {
+    markPending(true);
+    document.dispatchEvent(new CustomEvent('panel-widgets-loading'));
+  }
+  function finishLoading() {
+    markPending(false);
+    document.dispatchEvent(new CustomEvent('panel-widgets-ready', { detail: { id: '' } }));
+  }
+
+  function swap(htmlText) {
+    if (!htmlText) throw new Error('widget-empty');
+    var root = document.getElementById('home-dash') || document.getElementById('pg-dash');
+    if (!root) { finishLoading(); return; }
+    var tmp = document.createElement('div');
+    tmp.innerHTML = String(htmlText).trim();
+    var next = tmp.firstElementChild;
+    if (next && next.id === root.id && !next.nextElementSibling && root.parentNode) {
+      root.parentNode.replaceChild(next, root);
+      var status = document.getElementById('panel-widget-status');
+      if (status) status.remove();
+      markPending(false);
+      document.dispatchEvent(new CustomEvent('panel-widgets-ready', {
+        detail: { id: next.id || '' }
+      }));
+    } else {
+      throw new Error('widget-invalid');
+    }
+  }
+
+  function showFailure(error) {
+    finishLoading();
+    var status = document.getElementById('panel-widget-status');
+    if (!status) return;
+    status.classList.add('warn');
+    status.replaceChildren();
+    var message = document.createElement('span');
+    var online = typeof navigator === 'undefined' ? true : navigator.onLine;
+    message.textContent = PGClockPanelWidgetRequest.failureMessage(error, online);
+    status.appendChild(message);
+    var retry = document.createElement(error.message === 'widget-auth' ? 'a' : 'button');
+    retry.className = 'btn btn-sm btn-ghost';
+    retry.textContent = error.message === 'widget-auth' ? 'ورود دوباره' : 'تلاش دوباره';
+    if (error.message === 'widget-auth') retry.href = '/login';
+    else {
+      retry.type = 'button';
+      retry.addEventListener('click', function () { retry.disabled = true; load(); });
+    }
+    status.appendChild(retry);
+  }
+
+  function afterReady(action) {
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', action, { once: true });
+    } else action();
+  }
+
+  function load() {
+    beginLoading();
+    Promise.resolve().then(function () {
+      return PGClockPanelWidgetRequest.fetchBody(url, fetchOpts);
+    }).then(function (htmlText) {
+      afterReady(function () {
+        try { swap(htmlText); } catch (error) { showFailure(error); }
+      });
+    }).catch(function (error) { afterReady(function () { showFailure(error); }); });
+  }
+  load();
+})();
+</script>

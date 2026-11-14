@@ -1,0 +1,539 @@
+{% extends "base.html" %}
+{% from "macros.html" import switch, oversell_create_switch, row_actions, page_title, modal_title %}
+{% block title %}ادمین{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div>
+    {{ page_title('admins', 'ادمین', 'pg', help='pg-admins') }}
+  </div>
+  <button type="button" class="btn" data-modal-open="modal-pg-admin-create">ساخت ادمین</button>
+</div>
+<div class="card card-flush">
+  <h2>لیست ادمین‌ها</h2>
+  {% if not admins %}
+  <p class="muted">ادمینی یافت نشد یا دسترسی کافی نیست.</p>
+  {% else %}
+  <div class="table-wrap">
+  <table class="table-compact table-list-sm">
+    <thead>
+      <tr>
+        <th class="col-id col-hide-sm">شناسه</th>
+        <th class="col-name">نام کاربری</th>
+        <th class="col-hide-sm">نقش / جزئیات</th>
+        <th>کاربران</th>
+        <th>حجم</th>
+        <th>دسترسی وب‌پنل</th>
+        <th class="col-actions"></th>
+        <th class="li-head" scope="col"><span class="li-count">{{ admins | length | num }} ادمین</span></th>
+      </tr>
+    </thead>
+    <tbody>
+    {% for a in admins %}
+      {% set uname = (a.get('username') or '')|string %}
+      {% set key = uname|lower %}
+      {% set st = (web_status or {}).get(key) or {} %}
+      {% set usage = (admin_usage or {}).get(key) or {} %}
+      {% set src = st.get('source') or 'none' %}
+      <tr>
+        <td class="mono col-hide-sm">{{ a.get('id') or '—' }}</td>
+        <td class="li-title" dir="ltr">{{ uname or '—' }}</td>
+        <td class="mono muted col-hide-sm li-sub">
+          {#- On phones line two: role and status, then users used. -#}
+          {% if a.get('role') and a.get('role').get('name') %}{{ a.get('role').get('name') }} · {% endif %}
+          {% if a.get('is_sudo') %}دسترسی کامل · {% endif %}
+          {% if a.get('status') %}{{ a.get('status') }}{% endif %}
+          {% if a.get('note') %}<br class="li-hide"><small class="muted li-hide">{{ a.get('note') }}</small>{% endif %}
+          <span class="li-only">· کاربران <bdi dir="ltr">{{ usage.get('users_text') or '—' }}</bdi></span>
+        </td>
+        <td class="mono" dir="ltr" title="مصرف / سقف کاربران">{{ usage.get('users_text') or '—' }}</td>
+        <td class="mono reseller-quota-cell li-value" title="مصرف / سقف حجم{% if usage.get('lifetime_text') %} · lifetime {{ usage.get('lifetime_text') }}{% endif %}">
+          <div class="reseller-quota byte-stack">
+            <span class="reseller-quota-line byte-size">{{ usage.get('traffic_text') or '—' }}</span>
+            {% if usage.get('lifetime_text') %}
+            <small class="muted reseller-quota-life byte-size li-hide">Σ {{ usage.get('lifetime_text') }}</small>
+            {% endif %}
+          </div>
+        </td>
+        <td>
+          {% if src == 'reseller' %}
+          <div class="web-access-cell">
+            <span class="badge approved">نماینده</span>
+            {% if st.get('web_username') %}
+            <span class="mono" dir="ltr">{{ st.get('web_username') }}</span>
+            {% else %}
+            <small class="muted">یوزر وب هنوز ساخته نشده</small>
+            {% endif %}
+            {% if not st.get('is_active') and st.get('web_username') %}
+            <span class="badge neutral">غیرفعال</span>
+            {% endif %}
+            {% if st.get('staff_id') %}
+            <span class="badge warn">ردیف ادمین فرعی یتیم</span>
+            {% else %}
+            <small class="muted">دسترسی جداگانه ساخته نمی‌شود</small>
+            {% endif %}
+          </div>
+          {% elif src == 'owner' %}
+          <div class="web-access-cell">
+            <span class="badge approved">ادمین اصلی</span>
+            <small class="muted">{{ st.get('detail') or 'دسترسی کامل وب‌پنل' }}</small>
+          </div>
+          {% elif src == 'pg_staff' %}
+          <div class="web-access-cell">
+            <span class="badge {% if st.get('is_active') %}approved{% else %}neutral{% endif %}">
+              {% if st.get('is_active') %}فعال{% else %}غیرفعال{% endif %}
+            </span>
+            <span class="mono" dir="ltr">{{ st.get('web_username') }}</span>
+            {% if st.get('credentials_ready') %}
+            <span class="badge approved">اعتبارنامه پاسارگارد ذخیره‌شده</span>
+            {% if st.get('api_key_ready') %}
+            <span class="badge approved">کلید API</span>
+            {% endif %}
+            {% else %}
+            <span class="badge warn">نیاز به ذخیره رمز یا کلید API</span>
+            {% endif %}
+            {% if st.get('username_aligned') is sameas false %}
+            <span class="badge danger">نام کاربری ناهماهنگ</span>
+            {% endif %}
+          </div>
+          {% else %}
+          <span class="muted">—</span>
+          {% endif %}
+        </td>
+        <td class="col-actions">
+          {% if src != 'owner' %}
+          {% call row_actions() %}
+            {% if src == 'reseller' and st.get('reseller_user_id') %}
+            <a class="btn btn-sm btn-ghost" href="/resellers/{{ st.get('reseller_user_id') }}/edit">مدیریت نماینده</a>
+            {% if st.get('staff_id') %}
+            <form method="post" action="/pg/admins/{{ uname }}/web-access/revoke"
+              data-confirm="ردیف ادمین فرعی یتیم حذف شود؟ (دسترسی نماینده باقی می‌ماند)"
+              data-confirm-title="حذف ردیف یتیم"
+              data-confirm-danger="1"
+              data-confirm-label="حذف ردیف">
+              <button class="btn btn-sm btn-danger" type="submit">حذف ردیف ادمین فرعی</button>
+            </form>
+            {% endif %}
+            {% elif src == 'pg_staff' %}
+            <button type="button" class="btn btn-sm btn-ghost"
+              data-modal-open="modal-staff-{{ loop.index }}">ویرایش دسترسی ادمین فرعی</button>
+            <button type="button" class="btn btn-sm"
+              data-modal-open="modal-convert-{{ loop.index }}">تبدیل به نماینده</button>
+            <form method="post" action="/pg/admins/{{ uname }}/web-access/toggle">
+              <button class="btn btn-sm btn-ghost" type="submit">
+                {% if st.get('is_active') %}غیرفعال کردن{% else %}فعال کردن{% endif %}
+              </button>
+            </form>
+            <form method="post" action="/pg/admins/{{ uname }}/web-access/revoke"
+              data-confirm="دسترسی وب ادمین فرعی حذف شود؟ ادمین پاسارگارد باقی می‌ماند." data-confirm-title="حذف دسترسی وب" data-confirm-danger="1" data-confirm-label="حذف دسترسی">
+              <button class="btn btn-sm btn-danger" type="submit">حذف دسترسی</button>
+            </form>
+            {% elif src == 'none' %}
+            <button type="button" class="btn btn-sm"
+              data-modal-open="modal-staff-{{ loop.index }}">اعطای ادمین فرعی</button>
+            <button type="button" class="btn btn-sm btn-ghost"
+              data-modal-open="modal-reseller-{{ loop.index }}">اعطای نماینده</button>
+            {% endif %}
+            {% if uname %}
+            <form method="post" action="/pg/admins/{{ uname }}/delete"
+              {% if src == 'reseller' %}
+              data-confirm="ادمین پاسارگارد «{{ uname }}» و نمایندگی/ربات فروشگاه متصل هم حذف شوند؟ این عمل برگشت‌ناپذیر است. علت برای شخص حذف‌شده ارسال می‌شود."
+              data-confirm-title="حذف ادمین + نماینده"
+              {% elif src == 'pg_staff' %}
+              data-confirm="ادمین پاسارگارد «{{ uname }}» و دسترسی وب ادمین فرعی حذف شوند؟"
+              data-confirm-title="حذف ادمین پاسارگارد"
+              {% else %}
+              data-confirm="ادمین پاسارگارد «{{ uname }}» حذف شود؟"
+              data-confirm-title="تأیید حذف"
+              {% endif %}
+              data-confirm-danger="1"
+              data-confirm-reason="1"
+              data-confirm-reason-label="علت حذف"
+              data-confirm-reason-name="reason"
+              data-confirm-label="حذف">
+              <input type="hidden" name="reason" value="" />
+              <button class="btn btn-sm btn-danger" type="submit">حذف ادمین</button>
+            </form>
+            {% endif %}
+          {% endcall %}
+          {% endif %}
+        </td>
+        <td class="li-only-cell li-badge">
+          {%- if src == 'reseller' %}<span class="badge approved">نماینده</span>
+          {%- elif src == 'owner' %}<span class="badge approved">ادمین اصلی</span>
+          {%- elif src == 'pg_staff' %}<span class="badge {{ 'approved' if st.get('is_active') else 'neutral' }}">{{ 'وب فعال' if st.get('is_active') else 'وب غیرفعال' }}</span>
+          {%- else %}<span class="badge neutral">بدون وب</span>{% endif -%}
+        </td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  </div>
+  {% endif %}
+</div>
+
+{% for a in admins or [] %}
+{% set uname = (a.get('username') or '')|string %}
+{% if uname %}
+{% set key = uname|lower %}
+{% set st = (web_status or {}).get(key) or {} %}
+{% set src = st.get('source') or 'none' %}
+{% if src == 'pg_staff' or src == 'none' %}
+{# Phase D2: PG-only pg_staff grant/edit — no reseller plan, no conversion #}
+<div class="ui-modal" id="modal-staff-{{ loop.index }}" hidden>
+  <div class="ui-modal-backdrop" data-modal-close></div>
+  <div class="ui-modal-panel" role="dialog" aria-modal="true">
+    <div class="ui-modal-head">
+      {{ modal_title('nodes', ('ویرایش ادمین فرعی' if src == 'pg_staff' else 'اعطای ادمین فرعی (فقط پاسارگارد)'), caption='مدیریت پاسارگارد', tone='pg') }}
+      <button type="button" class="icon-btn" data-modal-close aria-label="بستن"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
+    </div>
+    <form method="post" action="/pg/admins/{{ uname }}/web-access/staff" class="form-stack js-busy-form" data-busy-label="در حال ذخیره…">
+      <p class="muted">ادمین پاسارگارد: <strong dir="ltr">{{ uname }}</strong>
+        — فقط منوی پاسارگارد؛ فروشگاه/ربات ساخته نمی‌شود.</p>
+      {% if src == 'pg_staff' and st.get('username_aligned') is sameas false %}
+      <div class="flash warn">
+        نام کاربری وب فعلی (<span class="mono" dir="ltr">{{ st.get('web_username') }}</span>)
+        با پاسارگارد (<span class="mono" dir="ltr">{{ uname|lower }}</span>) یکی نیست.
+        برای ادامه، هم‌ترازسازی را صریحاً تأیید کنید.
+      </div>
+      {% endif %}
+      <label class="form-field">نام کاربری وب‌پنل
+        <input name="web_username" required autocomplete="off" dir="ltr" readonly
+          value="{{ uname|lower }}" />
+        <small class="muted">باید دقیقاً همان نام ادمین پاسارگارد باشد (ورود یکپارچه)</small>
+      </label>
+      {% if src == 'pg_staff' and st.get('username_aligned') is sameas false %}
+      <label class="form-field">
+        <span class="ui-check">
+          <input type="checkbox" name="confirm_align" value="1" required />
+          هم‌ترازسازی نام کاربری با پاسارگارد
+        </span>
+        <small class="muted">بدون این تأیید، نام کاربری تغییر نمی‌کند</small>
+      </label>
+      {% endif %}
+      <label class="form-field">رمز عبور وب‌پنل
+        <input name="web_password" type="password" {% if src == 'none' %}required{% endif %} autocomplete="new-password" dir="ltr"
+          placeholder="{% if src == 'pg_staff' %}خالی = حفظ رمز فعلی (اگر اعتبارنامه ذخیره شده){% else %}رمز قوی{% endif %}" />
+        <small class="muted">{% if src == 'pg_staff' %}اگر اعتبارنامه پاسارگارد ذخیره نشده، رمز الزامی است — {% endif %}طبق پاسارگارد: حداقل ۱۲ کاراکتر، دو رقم، دو حرف بزرگ/کوچک و کاراکتر خاص</small>
+      </label>
+      {% if src == 'pg_staff' or src == 'none' %}
+      <label class="form-field">کلید API پاسارگارد
+        <input name="pg_api_key" type="password" autocomplete="new-password" dir="ltr"
+          placeholder="{% if st.get('api_key_ready') %}خالی بماند تا کلید فعلی حفظ شود{% else %}اختیاری — کلید API پاسارگارد{% endif %}" />
+        <small class="muted">ترجیح بر رمز برای API (<code dir="ltr">X-Api-Key</code>){% if st.get('api_key_ready') %} · <span class="badge approved">ذخیره‌شده</span>{% endif %}</small>
+      </label>
+      {% if st.get('api_key_ready') %}
+      <label class="form-field">
+        <span class="ui-check">
+          <input type="checkbox" name="clear_pg_api_key" value="1" />
+          حذف کلید API
+        </span>
+      </label>
+      {% endif %}
+      {% endif %}
+      <label class="form-field">یادداشت
+        <input name="note" value="{{ st.get('note') if src == 'pg_staff' and st.get('note') else '' }}" placeholder="ادمین فرعی محدود" />
+        <small class="muted">اختیاری</small>
+      </label>
+      {% set sub_plans = (reseller_plans or [])|selectattr('plan_kind', 'equalto', 'subscription')|list %}
+      {% if not sub_plans %}
+      {% set sub_plans = reseller_plans or [] %}
+      {% endif %}
+      <label class="form-field">پلن اشتراک زمانی (اختیاری)
+        <select name="plan_id">
+          <option value="">— بدون محدودیت زمان —</option>
+          {% for p in sub_plans %}
+          {% if (p.plan_kind or 'subscription') == 'subscription' %}
+          <option value="{{ p.id }}">{{ p.name }}{% if p.duration_days %} — {{ p.duration_days }} روز{% endif %}</option>
+          {% endif %}
+          {% endfor %}
+        </select>
+        <small class="muted">با انقضا، ادمین و کاربرانش موقتاً غیرفعال می‌شوند</small>
+      </label>
+      <div class="actions">
+        <button class="btn" type="submit">{% if src == 'pg_staff' %}ذخیره{% else %}اعطای دسترسی ادمین فرعی{% endif %}</button>
+        <button type="button" class="btn btn-ghost" data-modal-close>انصراف</button>
+      </div>
+    </form>
+    {% if src == 'pg_staff' %}
+    <form method="post" action="/pg/admins/{{ uname }}/subscription/renew" class="form-stack" style="margin-top:var(--space-2)">
+      <input type="hidden" name="plan_id" value="" />
+      <div class="actions">
+        <button class="btn btn-ghost" type="submit">تمدید اشتراک زمانی (بدون کسر کیف پول)</button>
+      </div>
+    </form>
+    {% endif %}
+  </div>
+</div>
+{% endif %}
+{% if src == 'pg_staff' %}
+<div class="ui-modal" id="modal-convert-{{ loop.index }}" hidden>
+  <div class="ui-modal-backdrop" data-modal-close></div>
+  <div class="ui-modal-panel" role="dialog" aria-modal="true">
+    <div class="ui-modal-head">
+      {{ modal_title('resellers', 'تبدیل به نماینده', caption='مدیریت نمایندگی', tone='brand') }}
+      <button type="button" class="icon-btn" data-modal-close aria-label="بستن"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
+    </div>
+    <form method="post" action="/pg/admins/{{ uname }}/convert-to-reseller" class="form-stack js-busy-form" data-busy-label="در حال تبدیل…">
+      <p class="muted">ادمین پاسارگارد: <strong dir="ltr">{{ uname }}</strong>
+        — دسترسی «ادمین فرعی» حذف می‌شود و مسیر «نماینده» (پنل ربات + فروشگاه) جایگزین می‌شود.
+        هر ادمین فقط یکی از این دو مسیر را می‌تواند داشته باشد. محدودیت‌های نقش پاسارگارد و پلن نمایندگی همچنان اعمال می‌شوند.</p>
+      {% set live_usage = (admin_usage or {}).get(uname|lower) or {} %}
+      <p class="muted">سقف فعلی این ادمین در پاسارگارد (مصرف/سقف): کاربران <strong dir="ltr">{{ live_usage.get('users_text') or '—' }}</strong> · حجم <strong dir="ltr">{{ live_usage.get('traffic_text') or '—' }}</strong>. با پلن «ظرفیت فعلی» همین سقف ثبت می‌شود؛ اگر خوانده نشود، اعطا انجام نمی‌شود.</p>
+      {% set grant_plans = (reseller_plans or [])|selectattr('plan_kind', 'in', ['subscription', 'current_capacity'])|list %}
+      {% if not grant_plans %}
+      {% set grant_plans = (reseller_plans or [])|rejectattr('plan_kind', 'in', ['addon_volume', 'addon_users'])|list %}
+      {% endif %}
+      {% set cc_default = (grant_plans|selectattr('plan_kind', 'equalto', 'current_capacity')|list) %}
+      {% set default_plan_id = cc_default[0].id if cc_default else none %}
+      {% if not grant_plans %}
+      <div class="flash warn">هنوز پلن نمایندگی فعالی ندارید — ابتدا از بخش نمایندگان یک پلن بسازید.</div>
+      {% endif %}
+      <label class="form-field">پلن نمایندگی
+        <select name="plan_id" required {% if not grant_plans %}disabled{% endif %}>
+          <option value="">— انتخاب پلن —</option>
+          {% for p in grant_plans %}
+          <option value="{{ p.id }}" {% if default_plan_id and p.id == default_plan_id %}selected{% endif %}>{% if (p.plan_kind or '') == 'current_capacity' %}[ظرفیت فعلی] {% elif (p.billing_mode or 'fixed') == 'payg' %}[PAYG] {% else %}[ثابت] {% endif %}{{ p.name }}{% if (p.billing_mode or 'fixed') == 'payg' and p.price_per_gb %} · {{ "\u200e" }}{{ p.price_per_gb | money }} / گیگ{% elif p.duration_days %} — {{ p.duration_days }} روز{% endif %}</option>
+          {% endfor %}
+        </select>
+        <small class="muted">دسترسی‌های داشبورد، پلن، سفارش، تنظیمات ربات و… از این پلن می‌آید</small>
+      </label>
+      <div class="ui-switch-list">
+        {{ switch('confirm_billing_mode_change', 'تأیید تغییر نوع پرداخت', checked=false, help='فقط اگر این ادمین از قبل نماینده است و نوع پلن جدید فرق دارد') }}
+        {% if owner_can_toggle_oversell %}{{ oversell_create_switch() }}{% endif %}
+      </div>
+      <div class="flash warn">پلن پیش‌فرض «ظرفیت فعلی» سقف حجم/کاربر همین ادمین در پاسارگارد را حفظ می‌کند و صفر نمی‌کند. برای سقف ثابت پلن دیگری انتخاب کنید.</div>
+      <label class="form-field">رمز عبور مشترک
+        <input name="web_password" type="password" autocomplete="new-password" dir="ltr"
+          placeholder="{% if st.get('password_ready') %}خالی = استفاده از رمز ذخیره‌شده{% else %}رمز الزامی است{% endif %}"
+          {% if not st.get('password_ready') %}required{% endif %} />
+        <small class="muted">رمز وب و پاسارگارد یکی است. اگر رمز ذخیره‌شده دارید، خالی بگذارید (کلید API به‌تنهایی کافی نیست).</small>
+      </label>
+      <label class="form-field">یادداشت
+        <input name="note" placeholder="تبدیل از ادمین فرعی" />
+      </label>
+      <div class="actions">
+        <button class="btn" type="submit" {% if not grant_plans %}disabled{% endif %}>تبدیل به نماینده</button>
+        <button type="button" class="btn btn-ghost" data-modal-close>انصراف</button>
+      </div>
+    </form>
+  </div>
+</div>
+{% endif %}
+{% if src == 'none' %}
+{# Phase D2: separate shop/reseller grant #}
+<div class="ui-modal" id="modal-reseller-{{ loop.index }}" hidden>
+  <div class="ui-modal-backdrop" data-modal-close></div>
+  <div class="ui-modal-panel" role="dialog" aria-modal="true">
+    <div class="ui-modal-head">
+      {{ modal_title('resellers', 'اعطای دسترسی نماینده (فروشگاه)', caption='مدیریت نمایندگی', tone='brand') }}
+      <button type="button" class="icon-btn" data-modal-close aria-label="بستن"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
+    </div>
+    <form method="post" action="/pg/admins/{{ uname }}/web-access/reseller" class="form-stack js-busy-form" data-busy-label="در حال ذخیره…">
+      <p class="muted">ادمین پاسارگارد: <strong dir="ltr">{{ uname }}</strong>
+        — منوی پاسارگارد از نقش ادمین؛ فروشگاه/ربات از پلن نمایندگی.
+        اگر این ادمین قبلاً ادمین فرعی باشد، ابتدا آن دسترسی را حذف کنید.</p>
+      {% set live_usage = (admin_usage or {}).get(uname|lower) or {} %}
+      <p class="muted">سقف فعلی این ادمین در پاسارگارد (مصرف/سقف): کاربران <strong dir="ltr">{{ live_usage.get('users_text') or '—' }}</strong> · حجم <strong dir="ltr">{{ live_usage.get('traffic_text') or '—' }}</strong>. با پلن «ظرفیت فعلی» همین سقف ثبت می‌شود؛ اگر خوانده نشود، اعطا انجام نمی‌شود.</p>
+      {% set grant_plans = (reseller_plans or [])|selectattr('plan_kind', 'in', ['subscription', 'current_capacity'])|list %}
+      {% if not grant_plans %}
+      {% set grant_plans = (reseller_plans or [])|rejectattr('plan_kind', 'in', ['addon_volume', 'addon_users'])|list %}
+      {% endif %}
+      {% set cc_default = (grant_plans|selectattr('plan_kind', 'equalto', 'current_capacity')|list) %}
+      {% set default_plan_id = cc_default[0].id if cc_default else none %}
+      {% if not grant_plans %}
+      <div class="flash warn">هنوز پلن نمایندگی فعالی ندارید — ابتدا از بخش نمایندگان یک پلن بسازید.</div>
+      {% endif %}
+      <label class="form-field">پلن نمایندگی
+        <select name="plan_id" required {% if not grant_plans %}disabled{% endif %}>
+          <option value="">— انتخاب پلن —</option>
+          {% for p in grant_plans %}
+          <option value="{{ p.id }}" {% if default_plan_id and p.id == default_plan_id %}selected{% endif %}>{% if (p.plan_kind or '') == 'current_capacity' %}[ظرفیت فعلی] {% elif (p.billing_mode or 'fixed') == 'payg' %}[PAYG] {% else %}[ثابت] {% endif %}{{ p.name }}{% if (p.billing_mode or 'fixed') == 'payg' and p.price_per_gb %} · {{ "\u200e" }}{{ p.price_per_gb | money }} / گیگ{% elif p.duration_days %} — {{ p.duration_days }} روز{% endif %}</option>
+          {% endfor %}
+        </select>
+        <small class="muted">دسترسی‌های داشبورد، پلن، سفارش، تنظیمات ربات و… از این پلن کپی می‌شود</small>
+      </label>
+      <div class="flash warn">پلن پیش‌فرض «ظرفیت فعلی» سقف حجم/کاربر همین ادمین در پاسارگارد را حفظ می‌کند و صفر نمی‌کند. برای سقف ثابت پلن دیگری انتخاب کنید.</div>
+      <label class="form-field">نام کاربری وب‌پنل
+        <input name="web_username" required autocomplete="off" dir="ltr" readonly
+          value="{{ uname|lower }}" />
+        <small class="muted">باید دقیقاً همان نام ادمین پاسارگارد باشد</small>
+      </label>
+      <label class="form-field">رمز عبور وب‌پنل
+        <input name="web_password" type="password" required autocomplete="new-password" dir="ltr" placeholder="رمز قوی" />
+        <small class="muted">طبق پاسارگارد: حداقل ۱۲ کاراکتر، دو رقم، دو حرف بزرگ/کوچک و کاراکتر خاص</small>
+      </label>
+      <label class="form-field">یادداشت
+        <input name="note" placeholder="نماینده فروش" />
+        <small class="muted">اختیاری</small>
+      </label>
+      {% if owner_can_toggle_oversell %}<div class="ui-switch-list">{{ oversell_create_switch() }}</div>{% endif %}
+      <div class="actions">
+        <button class="btn" type="submit" {% if not grant_plans %}disabled{% endif %}>اعطای دسترسی نماینده</button>
+        <button type="button" class="btn btn-ghost" data-modal-close>انصراف</button>
+      </div>
+    </form>
+  </div>
+</div>
+{% endif %}
+{% endif %}
+{% endfor %}
+
+<div class="ui-modal" id="modal-pg-admin-create" hidden>
+  <div class="ui-modal-backdrop" data-modal-close></div>
+  <div class="ui-modal-panel ui-modal-panel-lg" role="dialog" aria-modal="true">
+    <div class="ui-modal-head">
+      {{ modal_title('admins', 'ساخت ادمین پنل', caption='ادمین پاسارگارد جدید', tone='pg') }}
+      <button type="button" class="icon-btn" data-modal-close aria-label="بستن"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
+    </div>
+    <form method="post" action="/pg/admins" class="form-stack js-busy-form" data-busy-label="در حال ساخت…">
+      <div class="form-row">
+        <div>
+          <label class="form-field">نام کاربری
+            <input name="username" required autocomplete="off" placeholder="admin_name" dir="ltr" minlength="3" maxlength="128" pattern="[a-zA-Z0-9\-_@.]+" title="۳ تا ۱۲۸ کاراکتر؛ فقط حروف انگلیسی، عدد و - _ @ ." />
+            <small class="muted">۳ تا ۱۲۸ کاراکتر از a-z، 0-9 و - _ @ . بدون دو نماد پشت‌سرهم. همین نام برای ورود به وب هم استفاده می‌شود.</small>
+          </label>
+        </div>
+        <div>
+          <label class="form-field">رمز عبور
+            <input name="password" type="password" required autocomplete="new-password" dir="ltr" placeholder="رمز قوی" minlength="12" />
+            <small class="muted">حداقل ۱۲ کاراکتر شامل دو رقم، دو حرف بزرگ، دو حرف کوچک و یک نماد. برای پاسارگارد و وب یکی است.</small>
+          </label>
+        </div>
+        <div>
+          <label class="form-field">نقش پاسارگارد
+            <select name="role_id">
+              <option value="">— بدون نقش (سازگاری قدیم) —</option>
+              {% for r in pg_roles or [] %}
+              {% if not r.get('is_owner') %}
+              <option value="{{ r.get('id') }}">{{ r.get('name') or r.get('id') }}</option>
+              {% endif %}
+              {% endfor %}
+            </select>
+            <small class="muted">سطح دسترسی منو/عملیات از این نقش می‌آید</small>
+          </label>
+        </div>
+      </div>
+      <div class="form-row">
+        <div>
+          <label class="form-field">سقف حجم ادمین (گیگ)
+            <input name="data_limit_gb" type="number" step="0.1" min="0" dir="ltr" placeholder="خالی = بدون سقف" />
+            <small class="muted">محدودیت ترافیک کل کاربران این ادمین</small>
+          </label>
+        </div>
+        <div>
+          <label class="form-field">سقف تعداد کاربر
+            <input name="max_users" type="number" min="0" dir="ltr" placeholder="خالی = از نقش" />
+            <small class="muted">بازنویسی محدودیت نقش (اختیاری)</small>
+          </label>
+        </div>
+        <div>
+          <label class="form-field">سقف HWID هر کاربر
+            <input name="max_hwid_per_user" type="number" min="0" dir="ltr" placeholder="خالی = از نقش" />
+            <small class="muted">بازنویسی محدودیت نقش (اختیاری)</small>
+          </label>
+        </div>
+      </div>
+      <label class="form-field">یادداشت
+        <input name="note" placeholder="نماینده فروش" />
+        <small class="muted">اختیاری — در پاسارگارد ذخیره می‌شود</small>
+      </label>
+      <div class="ui-switch-list">
+        {{ switch('as_reseller', 'این ادمین نماینده شود (ربات شخصی + پنل فروشگاه)', checked=false, help='با روشن کردن، پلن و دسترسی‌های پنل نماینده نمایش داده می‌شود', id='create-as-reseller') }}
+      </div>
+      <div id="create-reseller-fields" class="create-reseller-fields" hidden>
+        {% if not reseller_plans %}
+        <div class="flash warn">برای ساخت نماینده ابتدا از بخش پلن‌ها یک پلن فعال بسازید — یا سوییچ بالا را خاموش بگذارید.</div>
+        {% endif %}
+        <label class="form-field">پلن نمایندگی
+          <select name="plan_id" id="create-plan-id" disabled {% if not reseller_plans %}data-no-plans="1"{% endif %}>
+            <option value="">— انتخاب پلن —</option>
+            {% for p in reseller_plans or [] %}
+            {% if (p.plan_kind or 'subscription') == 'subscription' %}
+            <option value="{{ p.id }}">{% if (p.billing_mode or 'fixed') == 'payg' %}[PAYG] {% else %}[ثابت] {% endif %}{{ p.name }}{% if (p.billing_mode or 'fixed') == 'payg' and p.price_per_gb %} · {{ "\u200e" }}{{ p.price_per_gb | money }} / گیگ{% endif %}</option>
+            {% endif %}
+            {% endfor %}
+          </select>
+          <small class="muted">ثابت یا PAYG — پلن «ظرفیت فعلی» اینجا نیست (فقط برای ادمین موجود)</small>
+        </label>
+        <div class="ui-switch-section">
+          <span class="ui-switch-section-title">سطح دسترسی پنل ربات (وب = بات)</span>
+          <p class="ui-switch-section-hint">هر سوییچ هم‌زمان برای وب‌پنل و ربات اعمال می‌شود — مثل مودال افزودن نماینده.</p>
+          <div class="ui-switch-list" id="create-reseller-perms">
+            {% for key, label in feature_perms or [] %}
+            {{ switch('perm_' ~ key, label, checked=true) }}
+            {% endfor %}
+          </div>
+        </div>
+        <div class="ui-switch-list">
+          {{ switch('share_pg_panel_url', 'ارسال لینک و یوزر/رمز پنل پاسارگارد', checked=false, help='اگر خاموش باشد، نماینده فقط از وب‌پنل ربات مدیریت می‌کند', id='create-share-pg') }}
+          {% if owner_can_toggle_oversell %}{{ oversell_create_switch() }}{% endif %}
+        </div>
+      </div>
+      <div class="ui-switch-list" id="create-staff-web-wrap">
+        {{ switch('grant_web', 'دسترسی وب ادمین فرعی (فقط پاسارگارد)', checked=true, help='بدون فروشگاه/ربات — فقط منوی پاسارگارد مطابق نقش', id='create-grant-web') }}
+      </div>
+      <div class="ui-switch-list">
+        {{ switch('is_sudo', 'دسترسی کامل (قدیمی)', help='فقط پنل‌های قدیمی؛ در نسخه‌های جدید از نقش استفاده کنید') }}
+      </div>
+      <div class="actions">
+        <button class="btn" type="submit">ساخت ادمین</button>
+        <button type="button" class="btn btn-ghost" data-modal-close>انصراف</button>
+      </div>
+    </form>
+  </div>
+</div>
+<script>
+(function () {
+  function setDisabledDeep(root, disabled) {
+    if (!root) return;
+    root.querySelectorAll('input, select, textarea, button').forEach(function (el) {
+      if (el.id === 'create-as-reseller') return;
+      if (disabled) el.setAttribute('disabled', 'disabled');
+      else el.removeAttribute('disabled');
+    });
+  }
+  function syncCreateAdminMode() {
+    var asRes = document.getElementById('create-as-reseller');
+    var planWrap = document.getElementById('create-reseller-fields');
+    var staffWrap = document.getElementById('create-staff-web-wrap');
+    var planSel = document.getElementById('create-plan-id');
+    if (!asRes || !planWrap || !staffWrap) return;
+    var on = !!asRes.checked;
+    planWrap.hidden = !on;
+    staffWrap.hidden = on;
+    setDisabledDeep(planWrap, !on);
+    setDisabledDeep(staffWrap, on);
+    if (planSel) {
+      var noPlans = planSel.getAttribute('data-no-plans') === '1';
+      if (on && !noPlans) {
+        planSel.removeAttribute('disabled');
+        planSel.setAttribute('required', 'required');
+      } else {
+        planSel.removeAttribute('required');
+        planSel.setAttribute('disabled', 'disabled');
+      }
+    }
+    if (on && typeof window.enhanceAllSelects === 'function') {
+      window.enhanceAllSelects(planWrap);
+    }
+  }
+  var asRes = document.getElementById('create-as-reseller');
+  if (asRes) {
+    asRes.addEventListener('change', syncCreateAdminMode);
+    syncCreateAdminMode();
+  }
+  document.querySelectorAll('form.js-busy-form').forEach(function (form) {
+    form.addEventListener('submit', function () {
+      const btn = form.querySelector('button[type="submit"]');
+      if (!btn || btn.disabled) return;
+      btn.disabled = true;
+      const label = form.getAttribute('data-busy-label');
+      if (label) {
+        btn.dataset.idleLabel = btn.textContent;
+        btn.textContent = label;
+      }
+    });
+  });
+})();
+</script>
+{% endblock %}

@@ -1,0 +1,63 @@
+{# Live PG account limits as panel stat boxes — never a top-of-page warning flash. #}
+{% from "macros.html" import card_title %}
+{% macro pg_limit_stat(label, value, caption='') -%}
+<div class="stat">
+  <div class="stat-top">
+    <span class="stat-ico" aria-hidden="true">
+      <svg viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="2"/><path d="M8 9h8M8 12h8M8 15h5"/></svg>
+    </span>
+    <span>{{ label }}</span>
+  </div>
+  <strong>{{ value }}</strong>
+  {% if caption %}<small class="muted">{{ caption }}</small>{% endif %}
+</div>
+{%- endmacro %}
+
+{% macro pg_snapshot_limit_board(cards, heading='سقف حساب پاسارگارد', caption='محدودیت زنده همین نقش', box_captions=true) -%}
+{% if cards %}
+<section class="card pg-limit-board" aria-label="{{ heading }}">
+  <header class="home-periods-head">
+    {{ card_title('limits', heading) }}
+    {% if caption %}<p class="muted">{{ caption }}</p>{% endif %}
+  </header>
+  <div class="home-panel-grid">
+    {% for c in cards %}
+    {{ pg_limit_stat(c.label, c.value, (c.caption or '') if box_captions else '') }}
+    {% endfor %}
+  </div>
+</section>
+{% endif %}
+{%- endmacro %}
+
+{% macro pg_overview_limit_board(ov) -%}
+{% if ov and ov.ready and (ov.users or ov.traffic or ov.constraints) %}
+{% from "_pg_quota_gauges.html" import pg_quota_gauge %}
+<section class="card pg-limit-board pg-quota-top home-quota-card" aria-label="سقف حساب پاسارگارد">
+  <header class="home-periods-head">
+    {{ card_title('limits', 'سقف حساب پاسارگارد') }}
+    <p class="muted">
+      {% if ov.username %}<span dir="ltr">{{ ov.username }}</span>{% endif %}
+      {% if ov.status_label %}
+      <span class="badge {{ ov.status_badge or 'neutral' }}">{{ ov.status_label }}</span>
+      {% endif %}
+    </p>
+  </header>
+  {% if ov.users or ov.traffic %}
+  <div class="home-gauges pg-quota-gauges pg-quota-gauges-embed">
+    {% if ov.users %}{{ pg_quota_gauge(ov.users, 'کاربران', 'Users', 'pg-users') }}{% endif %}
+    {% if ov.traffic %}{{ pg_quota_gauge(ov.traffic, 'حجم', 'Traffic', 'pg-traffic') }}{% endif %}
+  </div>
+  {% endif %}
+  {% if ov.constraints %}
+  <div class="home-panel-grid pg-limit-constraints">
+    {% for c in ov.constraints %}
+    {{ pg_limit_stat(c.label, c.value_text) }}
+    {% endfor %}
+  </div>
+  {% endif %}
+  {% if ov.lifetime_text %}
+  <p class="muted stack-mt">مصرف lifetime: <b dir="ltr">{{ ov.lifetime_text }}</b></p>
+  {% endif %}
+</section>
+{% endif %}
+{%- endmacro %}

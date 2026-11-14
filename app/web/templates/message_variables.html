@@ -1,0 +1,66 @@
+{% extends "base.html" %}
+{% from "macros.html" import page_title %}
+{% from "_settings_tab_nav.html" import grouped_settings_tabs %}
+{% block title %}متغیرهای پیام{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div>
+    {{ page_title('bot-settings', 'تنظیمات ربات' if settings_base|default('/settings') == '/settings' else 'تنظیمات فروشگاه', help='message-variables') }}
+  </div>
+</div>
+
+{{ grouped_settings_tabs(tab_nav, 'variables', settings_base|default('/settings'), 'تب‌های تنظیمات ربات' if settings_base|default('/settings') == '/settings' else 'تب‌های تنظیمات فروشگاه') }}
+
+<nav class="msg-vars-jump" aria-label="گروه‌های متغیر">
+  {% for g in groups %}
+  <a href="#mv-{{ g.domain }}">{{ g.label }}</a>
+  {% endfor %}
+</nav>
+
+<div class="msg-vars-stack">
+  {% for g in groups %}
+  <section class="card card-flush" id="mv-{{ g.domain }}">
+    <div class="card-flush-head">
+      <h2>{{ g.label }}</h2>
+      <div class="actions">
+        <a class="btn btn-sm" href="{{ g.settings_href }}">تنظیمات</a>
+      </div>
+    </div>
+    <div class="table-wrap">
+      <table class="table-compact">
+        <thead>
+          <tr>
+            <th>متغیر</th>
+            <th>عنوان</th>
+            <th class="col-hide-sm">مثال</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for v in g.vars %}
+          <tr title="{{ v.description_fa }}">
+            <td>
+              <div class="msg-vars-token-cell">
+                <code class="msg-vars-token-box mono" dir="ltr">{{ v.token }}</code>
+                <button type="button" class="btn btn-ghost btn-sm"
+                        data-copy="{{ v.token }}"
+                        data-copy-idle="کپی">کپی</button>
+              </div>
+            </td>
+            <td>
+              {{ v.title_fa }}
+              {% if v.aliases %}
+              <span class="muted msg-vars-alias">
+                {% for a in v.aliases %}<code class="mono" dir="ltr">{{ a }}</code>{% if not loop.last %}، {% endif %}{% endfor %}
+              </span>
+              {% endif %}
+            </td>
+            <td class="mono muted col-hide-sm" dir="auto">{{ v.example or '—' }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </section>
+  {% endfor %}
+</div>
+{% endblock %}

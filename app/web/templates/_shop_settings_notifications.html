@@ -1,0 +1,59 @@
+{# Shop Telegram prefs (ResellerSetting) + user low-usage alerts #}
+{% if notify_items %}
+<form method="post" action="/shop-notifications" class="settings-form notify-form">
+  <div class="card settings-card">
+    <h2>نوتیفیکیشن تلگرام فروشگاه</h2>
+    <p class="muted update-card-caption">
+      اعلان‌های مربوط به فروشگاه شما — مستقل از ادمین اصلی.
+      فقط رویدادهایی که با دسترسی‌های شما هم‌خوان است نمایش داده می‌شود.
+    </p>
+    <div class="notify-list ui-switch-list">
+      {% for key, title, help, default in notify_items %}
+      <label class="notify-row ui-switch-row">
+        <span class="notify-meta ui-switch-copy">
+          <strong>{{ title }}</strong>
+          <small>{{ help }}</small>
+        </span>
+        <span class="ui-switch">
+          <input type="checkbox" name="s_{{ key }}" value="1" {% if notify_prefs.get(key) %}checked{% endif %} />
+          <span class="ui-switch-track" aria-hidden="true"></span>
+        </span>
+      </label>
+      {% endfor %}
+    </div>
+  </div>
+  <div class="actions sticky-actions">
+    <button class="btn" type="submit">ذخیره نوتیفیکیشن‌های فروشگاه</button>
+  </div>
+</form>
+{% else %}
+<div class="card settings-card">
+  <h2>نوتیفیکیشن تلگرام فروشگاه</h2>
+  <p class="muted">با دسترسی‌های فعلی، اعلان قابل شخصی‌سازی ندارید (سفارش/پرداخت/تیکت).</p>
+</div>
+{% endif %}
+
+<form method="post" action="/shop-settings?tab=notifications" enctype="multipart/form-data" class="settings-form" id="settings-form-user-alerts">
+  {% for group_name in tab_groups %}
+  {% set fields = groups[group_name] %}
+  <div class="card settings-card">
+    <h2>{{ group_name }}</h2>
+    <p class="muted update-card-caption">
+      هشدار خودکار برای مشتری‌های فروشگاه شما وقتی حجم یا زمان سرویس رو به اتمام است.
+    </p>
+    <div class="settings-grid">
+    {% for field in fields %}
+      {% include "_settings_field.html" %}
+    {% endfor %}
+    </div>
+  </div>
+  {% else %}
+  <div class="card settings-card">
+    <h2>هشدار سرویس کاربر</h2>
+    <p class="muted">گروه تنظیمات یافت نشد.</p>
+  </div>
+  {% endfor %}
+  <div class="actions sticky-actions">
+    <button class="btn" type="submit">ذخیره هشدار کمبود</button>
+  </div>
+</form>

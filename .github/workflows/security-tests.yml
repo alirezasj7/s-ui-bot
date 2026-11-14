@@ -1,0 +1,59 @@
+name: Security regression tests
+
+# Runs the curated security/tenant-isolation/authz/secret-handling regression
+# suite on every push and pull request, so a future patch can never silently
+# reintroduce one of the issues fixed in the 2026-08 security audit.
+#
+# The full test suite (tests/) is intentionally NOT run here — it also
+# contains a long tail of pre-existing, unrelated UI/version-pin tests that
+# would make this signal noisy. See scripts/security_test_manifest.txt for
+# the curated file list and scripts/run_security_tests.sh for the runner.
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+jobs:
+  security-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
+
+      - name: Run curated security regression suite
+        run: bash scripts/run_security_tests.sh
+
+  # The installer runs the panel on Python 3.10–3.12: newer-only code must not ship.
+  oldest-python:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.10", "3.11"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install dependencies
+        run: pip install -r requirements-dev.txt
+
+      - name: Compile every module and import the app
+        env:
+          DATABASE_URL: "sqlite+aiosqlite:///:memory:"
+        run: |
+          python -m compileall -q app alembic scripts run.py
+          python -c "import app.main, app.bot, app.api.app"
+
+      - name: Python compatibility tests
+        run: python -m pytest tests/test_py_compat.py -q -p no:cacheprovider

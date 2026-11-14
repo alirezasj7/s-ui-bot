@@ -1,0 +1,133 @@
+{% from "macros.html" import flash_warn_icon %}
+{% set available = update_info.update_available %}
+{% set running = status.state == 'running' %}
+{% set has_error = status.state == 'error' or status.restart_required %}
+{% set awaiting = status.awaiting_restart %}
+{% set show_ops = show_ops if show_ops is defined else (running or has_error or awaiting) %}
+{% set update_channels = update_channels if update_channels is defined else [{'id': 'main', 'label': 'پایدار'}, {'id': 'dev', 'label': 'توسعه'}] %}
+{% set update_channel = update_channel if update_channel is defined else 'main' %}
+{% set preflight = migration_preflight if migration_preflight is defined else {} %}
+{% set migration_blocked = preflight.get('blocked') if preflight else false %}
+{% set can_start = (can_start_update if can_start_update is defined else available) and not migration_blocked %}
+
+<div class="card settings-card" id="upd-root"
+     data-remote="{{ update_info.remote_version or '' }}"
+     data-can-start="{{ '1' if can_start else '0' }}"
+     data-running="{{ '1' if running else '0' }}"
+     data-awaiting-restart="{{ '1' if awaiting else '0' }}"
+     data-pre-boot="{{ status.pre_boot_id or '' }}"
+     data-show-ops="{{ '1' if show_ops else '0' }}"
+     data-channel="{{ update_channel }}"
+     data-migration-blocked="{{ '1' if migration_blocked else '0' }}">
+  <h2>آپدیت پنل</h2>
+  <p class="muted update-card-caption">
+    کانال را انتخاب کنید، نسخه را با گیت‌هاب مقایسه کنید و در صورت نیاز آپدیت را از همین‌جا اعمال کنید.
+  </p>
+
+  <div class="update-field-row update-channel-row" id="upd-channel-row">
+    <label class="update-field">کانال آپدیت
+      <select id="upd-channel" {% if running or awaiting %}disabled{% endif %}>
+        {% for ch in update_channels %}
+        <option value="{{ ch.id }}" {% if ch.id == update_channel %}selected{% endif %}>{{ ch.label }} ({{ ch.id }})</option>
+        {% endfor %}
+      </select>
+    </label>
+  </div>
+  <p class="muted update-channel-hint" id="upd-channel-hint">
+    پایدار از شاخه main؛ توسعه از شاخه dev. برچسب هدر کانال نصب‌شدهٔ فعلی را نشان می‌دهد و فقط بعد از اعمال آپدیت عوض می‌شود.
+  </p>
+
+  {% if migration_blocked and not show_ops %}
+  <div class="flash err" id="upd-migration-flash">{{ preflight.get('message') or preflight.get('label') }}</div>
+  {% elif preflight.get('tone') == 'warn' and preflight.get('message') and not show_ops %}
+  <div class="flash warn" id="upd-migration-flash">{{ preflight.get('message') }}</div>
+  {% else %}
+  <div class="flash warn" id="upd-migration-flash" hidden></div>
+  {% endif %}
+
+  {% set ch_label = update_channel_label if update_channel_label is defined else (update_info.channel_label if update_info.channel_label is defined else 'پایدار') %}
+  {# Version flash stays hidden while migration is blocked — same text must not appear twice. #}
+  {% if migration_blocked or show_ops %}
+  <div class="flash warn" id="upd-version-flash" role="status" hidden></div>
+  {% elif available %}
+  <div class="flash warn" id="upd-version-flash" role="status">برای کانال {{ ch_label }} آپدیت جدید هست: {{ local_version }} → {{ update_info.remote_version }}</div>
+  {% elif update_info.checked and not available %}
+  <div class="flash ok" id="upd-version-flash" role="status">برای کانال {{ ch_label }} آپدیت جدیدی نیست — روی آخرین نسخه هستید.</div>
+  {% elif not update_info.checked %}
+  <div class="flash warn" id="upd-version-flash" role="status">{{ update_info.label }}</div>
+  {% else %}
+  <div class="flash warn" id="upd-version-flash" role="status" hidden></div>
+  {% endif %}
+
+  <div class="update-meta">
+    <div class="update-meta-versions">
+      <div id="upd-local-box" class="update-meta-box {% if available and not migration_blocked %}update-meta-err{% elif not available and update_info.checked %}update-meta-ok{% endif %}">
+        <span class="muted">نسخه فعلی</span>
+        <strong dir="ltr" id="upd-local-ver">v{{ local_version }}</strong>
+      </div>
+      <div id="upd-remote-box" class="update-meta-box {% if available and not migration_blocked %}update-meta-ok{% endif %}">
+        <span class="muted">آخرین نسخه کانال</span>
+        <strong dir="ltr" id="upd-remote-ver">{% if update_info.remote_version %}v{{ update_info.remote_version }}{% else %}—{% endif %}</strong>
+      </div>
+    </div>
+    <div class="update-meta-box">
+      <span class="muted">وضعیت</span>
+      <strong id="upd-state-label">
+        {% if show_ops %}{{ status.message or 'در حال اجرا…' }}
+        {% elif migration_blocked %}{{ preflight.get('label') or 'مایگریشن ناسازگار' }}
+        {% elif available %}آپدیت کانال {{ ch_label }} آماده است
+        {% elif update_info.checked %}آخرین نسخه کانال {{ ch_label }}
+        {% else %}{{ update_info.label }}{% endif %}
+      </strong>
+    </div>
+  </div>
+
+  {% set cl = changelog if changelog is defined else none %}
+  <div class="update-changelog" id="upd-changelog" {% if not cl or not cl.get('has_notes') %}hidden{% endif %}>
+    <h3 class="update-changelog-title" id="upd-changelog-title">{{ (cl.get('title') if cl else none) or 'تغییرات نسخه جدید' }}</h3>
+    <div id="upd-changelog-blocks">
+      {% if cl and cl.get('has_notes') %}
+      {% for block in cl.get('blocks') or [] %}
+      <div class="update-changelog-block">
+        <strong class="update-changelog-ver" dir="ltr">v{{ block.version }}</strong>
+        <ul class="update-changelog-list">
+          {% for note in block.notes %}
+          <li>{{ note }}</li>
+          {% endfor %}
+        </ul>
+      </div>
+      {% endfor %}
+      {% endif %}
+    </div>
+  </div>
+
+  <div id="upd-ops" class="update-ops" {% if not show_ops %}hidden{% endif %}>
+    <div class="flash warn update-stay-warn flash-has-ico" id="upd-stay-warn" role="status">
+      {{ flash_warn_icon() }}
+      <span class="flash-copy">تا پایان عملیات از این صفحه خارج نشوید و رفرش نکنید؛ ممکن است چند دقیقه طول بکشد.</span>
+    </div>
+    <div class="progress-wrap" aria-label="نوار پیشرفت">
+      <div class="progress-bar">
+        <div class="progress-fill" id="upd-fill" style="width: {{ (status.percent or 0) if show_ops else 0 }}%"></div>
+      </div>
+      <div class="progress-meta">
+        <span id="upd-step">{% if show_ops %}در حال اعمال…{% else %}آماده{% endif %}</span>
+        <strong id="upd-percent">{{ (status.percent or 0) if show_ops else 0 }}٪</strong>
+      </div>
+    </div>
+    <span id="upd-from" hidden dir="ltr">{{ status.from_version or local_version }}</span>
+    <span id="upd-to" hidden dir="ltr">{{ status.to_version or update_info.remote_version or '—' }}</span>
+  </div>
+</div>
+
+<div class="actions sticky-actions update-actions">
+  <button type="button" class="btn btn-ok" id="upd-start"
+    {% if (not can_start and not has_error) or running or awaiting or migration_blocked %}disabled{% endif %}>
+    {% if running or awaiting %}در حال اجرا…
+    {% elif migration_blocked %}آپدیت بلاک شد
+    {% elif has_error %}تلاش دوباره
+    {% elif can_start %}شروع آپدیت
+    {% else %}آپدیتی نیست{% endif %}
+  </button>
+  <button type="button" class="btn btn-ghost" id="upd-refresh">بررسی دوباره</button>
+</div>

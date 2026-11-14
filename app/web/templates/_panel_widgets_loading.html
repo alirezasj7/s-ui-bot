@@ -1,0 +1,18 @@
+{# Centered shell-first loading — clock mark; design tokens only. #}
+{% set loading_title = loading_title or 'در حال بارگذاری' %}
+{% set loading_cap = loading_cap or '' %}
+<div class="panel-widgets-loading" role="status" aria-live="polite">
+  <div class="panel-widgets-loading-inner">
+    <span class="panel-widgets-loading-mark panel-load-clock" aria-hidden="true">
+      <span class="panel-load-clock-face">
+        <span class="panel-load-clock-hand panel-load-clock-hour"></span>
+        <span class="panel-load-clock-hand panel-load-clock-minute"></span>
+        <span class="panel-load-clock-hub"></span>
+      </span>
+    </span>
+    <p class="panel-widgets-loading-title">{{ loading_title }}</p>
+    {% if loading_cap %}
+    <p class="panel-widgets-loading-cap muted">{{ loading_cap }}</p>
+    {% endif %}
+  </div>
+</div>

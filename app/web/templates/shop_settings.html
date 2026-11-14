@@ -1,0 +1,261 @@
+{% extends "base.html" %}
+{% from "macros.html" import page_title %}
+{% from "_shop_settings_tabs.html" import shop_settings_tabs %}
+{% block title %}تنظیمات فروشگاه{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div>
+    {{ page_title('bot-settings', 'تنظیمات فروشگاه', help='settings-bot') }}
+  </div>
+</div>
+
+{{ shop_settings_tabs(tab, tabs, "/shop-settings", request.url.path, tab_nav|default(none)) }}
+
+<div class="settings-layout {% if tab in ['menu','welcome','messages','buttons','qr','appearance','daily_report'] %}can-preview{% endif %}" id="settings-layout">
+  <div class="settings-main">
+
+  {% if tab == 'notifications' %}
+    {% include "_shop_settings_notifications.html" %}
+
+  {% elif tab == 'daily_report' %}
+    {% set settings_action = '/shop-settings?tab=daily_report' %}
+    {% include "_settings_daily_report.html" %}
+
+  {% elif tab == 'bot' %}
+    <form method="post" action="/shop-settings?tab=bot" class="settings-form">
+      <div class="card settings-card">
+        <h2>ربات اختصاصی شما</h2>
+        <p class="muted update-card-caption">
+          توکن را از @BotFather بگیرید. پس از ذخیره، ربات شما بدون ری‌استارت کل سرور وصل می‌شود.
+        </p>
+        <div class="settings-grid">
+          <div class="setting-item full">
+            <label>توکن ربات
+              
+              <input name="BOT_TOKEN" type="text" value="" dir="ltr" autocomplete="off" required placeholder="123456:ABC..." />
+        <small class="muted">فعلی: {{ bot_token_masked or '—' }} · یوزرنیم: <span dir="ltr">@{{ bot_username or '—' }}</span></small>
+            </label>
+          </div>
+        </div>
+        {% if bot_status %}
+        <div class="flash {{ 'ok' if bot_status.ok else 'err' }}">
+          وضعیت ربات:
+          {% if bot_status.ok %}
+            آنلاین · <span dir="ltr">@{{ bot_status.username or '—' }}</span> (id=<span dir="ltr">{{ bot_status.id or '—' }}</span>)
+          {% else %}
+            {{ bot_status.error }}
+          {% endif %}
+        </div>
+        {% endif %}
+      </div>
+      <div class="actions sticky-actions">
+        <button class="btn" type="submit">ذخیره و اتصال ربات</button>
+      </div>
+    </form>
+
+  {% elif tab == 'links' %}
+    {% include "_settings_links.html" %}
+
+  {% elif tab == 'appearance' %}
+    {% set settings_action = '/shop-settings?tab=appearance' %}
+    {% include "_settings_appearance.html" %}
+
+  {% elif tab == 'brand' %}
+    {% include "_panel_brand_card.html" %}
+
+  {% elif tab == 'miniapp' %}
+    {% set miniapp_brand_action = '/shop-settings/miniapp-brand' %}
+    {% set settings_base = '/shop-settings' %}
+    {% include "_settings_miniapp.html" %}
+
+  {% elif tab == 'menu' %}
+    <div class="card menu-layout-intro">
+      <h2>چیدمان و دکمه‌های کیبورد ربات</h2>
+      <p class="muted update-card-caption">
+        اینجا منوی ربات فروشگاه خودتان را کامل کنترل می‌کنید: حالت جفتی/تکی، افزودن/حذف دکمه‌ها و ترتیب نمایش.
+        تغییرات فقط روی ربات شما اعمال می‌شود و روی ربات ادمین اصلی اثر ندارد.
+      </p>
+      <div class="settings-grid menu-layout-mode">
+        <label class="setting-item">
+          <span>حالت چیدمان کیبورد</span>
+          <select name="menu_layout_ui" id="menu_layout_ui" form="menu-form">
+            <option value="classic" {% if values.get('menu_layout','compact')=='classic' %}selected{% endif %}>کلاسیک (تکی — هر دکمه یک ردیف)</option>
+            <option value="compact" {% if values.get('menu_layout','compact')=='compact' %}selected{% endif %}>فشرده (جفتی — پیشنهادی)</option>
+          </select>
+        </label>
+        {% include "_settings_chat_cleanup.html" %}
+      </div>
+    </div>
+    <form method="post" action="/shop-settings/menu-layout" id="menu-form" class="menu-layout-form">
+      <input type="hidden" name="menu_order" id="menu_order" value="{{ order_csv }}" />
+      <input type="hidden" name="menu_layout" id="menu_layout" value="{{ values.get('menu_layout', 'compact') }}" />
+      <div class="dnd-cols">
+        <div class="card dnd-card">
+          <h2>منوی فعال</h2>
+          <ul class="dnd-list" id="active-list" data-zone="active">
+            {% for item in items %}
+            <li class="dnd-item" data-key="{{ item.key }}" data-required="{{ '1' if item.required else '0' }}">
+              <div class="meta">
+                <strong>{{ item.label }}</strong>
+              </div>
+              <div class="dnd-actions">
+                <button type="button" class="icon-btn icon-move btn-up" title="بالا" aria-label="بالا"><svg class="ico" viewBox="0 0 16 16" aria-hidden="true"><path d="M4 10l4-4 4 4"/></svg></button>
+                <button type="button" class="icon-btn icon-move btn-down" title="پایین" aria-label="پایین"><svg class="ico" viewBox="0 0 16 16" aria-hidden="true"><path d="M4 6l4 4 4-4"/></svg></button>
+                {% if not item.required %}
+                <button type="button" class="icon-btn icon-remove btn-remove" title="حذف" aria-label="حذف"><svg class="ico" viewBox="0 0 16 16" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8"/></svg></button>
+                {% else %}
+                <span class="icon-btn icon-move icon-fixed" title="همیشه در منو است — با ▲▼ جابه‌جا می‌شود" aria-label="قابل جابه‌جایی، غیرقابل حذف" role="img"><svg class="ico" viewBox="0 0 16 16" aria-hidden="true"><path d="M3.5 8h9"/></svg></span>
+                {% endif %}
+              </div>
+            </li>
+            {% endfor %}
+          </ul>
+        </div>
+        <div class="card dnd-card">
+          <h2>مخزن</h2>
+          <ul class="dnd-list" id="pool-list" data-zone="pool">
+            {% for item in pool %}
+            <li class="dnd-item" data-key="{{ item.key }}" data-required="0">
+              <div class="meta">
+                <strong>{{ item.label }}</strong>
+              </div>
+              <div class="dnd-actions">
+                <button type="button" class="icon-btn icon-add btn-add" title="افزودن" aria-label="افزودن"><svg class="ico" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 3v10M3 8h10"/></svg></button>
+              </div>
+            </li>
+            {% endfor %}
+          </ul>
+        </div>
+      </div>
+      <div class="actions sticky-actions">
+        <button class="btn" type="submit">ذخیره منو</button>
+      </div>
+    </form>
+    {% set reset_action = '/shop-settings?tab=menu' %}
+    {% set reset_confirm = 'ترتیب و چیدمان دکمه‌های منو به حالت اولیهٔ ربات برمی‌گردد. ادامه می‌دهید؟' %}
+    {% include "_settings_reset_defaults.html" %}
+
+  {% elif tab == 'colors' %}
+    {% set settings_action = '/shop-settings?tab=colors' %}
+    {% include "_settings_colors.html" %}
+    {% set reset_action = '/shop-settings?tab=colors' %}
+    {% include "_settings_reset_defaults.html" %}
+
+  {% else %}
+    {% if tab == 'service_import' %}
+      {% include "_settings_service_import.html" %}
+    {% endif %}
+    <form method="post" action="/shop-settings?tab={{ tab }}" enctype="multipart/form-data" class="settings-form" id="settings-form">
+      {% for group_name in tab_groups %}
+      {% set fields = groups[group_name] %}
+      <div class="card settings-card">
+        <h2>{{ group_name }}</h2>
+        {% include "_settings_group_notice.html" %}
+        <div class="settings-grid">
+        {% for field in fields %}
+          {% include "_settings_field.html" %}
+        {% endfor %}
+        </div>
+      </div>
+      {% endfor %}
+      <div class="actions sticky-actions">
+        <button class="btn" type="submit">ذخیره تنظیمات</button>
+      </div>
+    </form>
+    {% set reset_action = '/shop-settings?tab=' ~ tab %}
+    {% include "_settings_reset_defaults.html" %}
+  {% endif %}
+
+  </div>
+
+  {% if tab == 'appearance' %}
+  {% include "_tg_preview_appearance.html" %}
+  {% elif tab in ['menu','welcome','messages','buttons','qr','daily_report'] %}
+  {% include "_tg_preview_chat.html" %}
+  {% endif %}
+</div>
+
+{% if tab == 'appearance' %}
+{% include "_tg_preview_appearance_js.html" %}
+{% endif %}
+{% if tab in ['menu','welcome','messages','buttons','qr','daily_report'] %}
+{% include "_tg_preview_chat_js.html" %}
+{% endif %}
+{% if tab == 'menu' %}
+<script>
+(function(){
+  const orderInput = document.getElementById('menu_order');
+  const layoutInput = document.getElementById('menu_layout');
+  const layoutUi = document.getElementById('menu_layout_ui');
+  const active = document.getElementById('active-list');
+  const pool = document.getElementById('pool-list');
+  if (!active || !pool || !orderInput) return;
+  function sync(){
+    const keys = [...active.querySelectorAll('.dnd-item')].map(li => li.dataset.key);
+    orderInput.value = keys.join(',');
+  }
+  function move(li, dir){
+    if (dir < 0 && li.previousElementSibling) active.insertBefore(li, li.previousElementSibling);
+    if (dir > 0 && li.nextElementSibling) active.insertBefore(li.nextElementSibling, li);
+    sync();
+  }
+  function activeControlsHtml(required){
+    return '<button type="button" class="icon-btn icon-move btn-up" title="بالا"><svg class="ico" viewBox="0 0 16 16"><path d="M4 10l4-4 4 4"/></svg></button>' +
+      '<button type="button" class="icon-btn icon-move btn-down" title="پایین"><svg class="ico" viewBox="0 0 16 16"><path d="M4 6l4 4 4-4"/></svg></button>' +
+      (required
+        ? '<span class="icon-btn icon-move icon-fixed" title="همیشه در منو است — با ▲▼ جابه‌جا می‌شود" aria-label="قابل جابه‌جایی، غیرقابل حذف" role="img"><svg class="ico" viewBox="0 0 16 16"><path d="M3.5 8h9"/></svg></span>'
+        : '<button type="button" class="icon-btn icon-remove btn-remove" title="حذف"><svg class="ico" viewBox="0 0 16 16"><path d="M4 4l8 8M12 4l-8 8"/></svg></button>');
+  }
+  active.addEventListener('click', (e) => {
+    const li = e.target.closest('.dnd-item');
+    if (!li) return;
+    if (e.target.closest('.btn-up')) move(li, -1);
+    if (e.target.closest('.btn-down')) move(li, 1);
+    if (e.target.closest('.btn-remove') && li.dataset.required !== '1') {
+      pool.appendChild(li);
+      li.draggable = false;
+      const actions = li.querySelector('.dnd-actions');
+      if (actions) actions.innerHTML = '<button type="button" class="icon-btn icon-add btn-add" title="افزودن" aria-label="افزودن"><svg class="ico" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 3v10M3 8h10"/></svg></button>';
+      sync();
+    }
+  });
+  pool.addEventListener('click', (e) => {
+    const li = e.target.closest('.dnd-item');
+    if (!li || !e.target.closest('.btn-add')) return;
+    active.appendChild(li);
+    li.draggable = true;
+    const actions = li.querySelector('.dnd-actions');
+    if (actions) actions.innerHTML = activeControlsHtml(li.dataset.required === '1');
+    sync();
+  });
+  let dragEl = null;
+  active.querySelectorAll('.dnd-item').forEach((li) => { li.draggable = true; });
+  active.addEventListener('dragstart', (e) => {
+    const li = e.target.closest('.dnd-item');
+    if (!li || !active.contains(li)) return;
+    dragEl = li;
+    li.classList.add('is-dragging');
+    try { e.dataTransfer.setData('text/plain', li.dataset.key || ''); e.dataTransfer.effectAllowed = 'move'; } catch (_) {}
+  });
+  active.addEventListener('dragend', () => {
+    if (dragEl) dragEl.classList.remove('is-dragging');
+    dragEl = null;
+    sync();
+  });
+  active.addEventListener('dragover', (e) => {
+    if (!dragEl) return;
+    e.preventDefault();
+    const over = e.target.closest('.dnd-item');
+    if (!over || over === dragEl || !active.contains(over)) return;
+    const rect = over.getBoundingClientRect();
+    const before = (e.clientY - rect.top) < rect.height / 2;
+    active.insertBefore(dragEl, before ? over : over.nextSibling);
+  });
+  if (layoutUi && layoutInput) {
+    layoutUi.addEventListener('change', () => { layoutInput.value = layoutUi.value; });
+  }
+  sync();
+})();
+</script>
+{% endif %}
+{% endblock %}

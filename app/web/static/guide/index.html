@@ -1,0 +1,678 @@
+<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="color-scheme" content="dark" />
+  <meta name="theme-color" content="#09090b" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="راهنمای PGClockBot" />
+  <title>راهنمای PGClockBot</title>
+  <meta name="description" content="آموزش ساده وب‌پنل و ربات PGClockBot برای همه نقش‌ها" />
+  <link rel="stylesheet" href="./fonts.css" />
+  <link rel="stylesheet" href="./guide.css" />
+  <link rel="icon" href="./logo-64.png" type="image/png" />
+</head>
+<body>
+  <div class="guide-shell" id="guide-shell">
+    <div class="guide-atmosphere" aria-hidden="true">
+      <span class="guide-orb guide-orb-a"></span>
+      <span class="guide-orb guide-orb-b"></span>
+      <span class="guide-grid"></span>
+    </div>
+
+    <header class="guide-topbar">
+      <a class="guide-brand" href="./index.html">
+        <span class="guide-brand-mark" aria-hidden="true">PG</span>
+        <span class="guide-brand-text">
+          <span class="guide-brand-name">راهنمای PGClockBot</span>
+          <span class="guide-brand-sub">آموزش وب‌پنل و ربات</span>
+        </span>
+      </a>
+      <div class="guide-topbar-actions">
+        <a class="guide-panel-link" href="/home">بازگشت به پنل</a>
+        <button type="button" class="guide-icon-btn guide-menu-btn" id="guide-menu-toggle" aria-label="باز کردن فهرست" aria-expanded="false" aria-controls="guide-sidebar">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
+        </button>
+      </div>
+    </header>
+
+    <div class="guide-scrim" id="guide-scrim" hidden></div>
+
+    <div class="guide-layout">
+      <aside class="guide-sidebar" id="guide-sidebar" aria-label="فهرست راهنما">
+        <div class="guide-sidebar-head">
+          <span class="guide-sidebar-title">فهرست راهنما</span>
+          <button type="button" class="guide-icon-btn" id="guide-side-close" aria-label="بستن فهرست">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg>
+          </button>
+        </div>
+
+        <div class="guide-search">
+          <label class="guide-search-label" for="guide-search-input">جستجو</label>
+          <input type="search" id="guide-search-input" placeholder="مثلاً رسید، پلن، نود…" autocomplete="off" aria-label="جستجو در راهنما" />
+          <div class="guide-search-panel" id="guide-search-panel" role="listbox" aria-label="نتایج جستجو"></div>
+        </div>
+
+        <nav class="guide-nav" aria-label="بخش‌ها">
+          
+          <div class="guide-nav-group">
+            <div class="guide-nav-group-title">
+              <svg class="guide-ico" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M5 15c1.5 2 4 4 7 4"/><path d="M9 19c0-3 2-5 4-6"/><path d="M14 13c3-1 5-4 6-8-3 1-6 3-8 6"/><path d="M9 15l-3 3"/><path d="M12 9l1.5-1.5"/></svg>
+              <span>شروع</span>
+            </div>
+            
+            <a class="guide-nav-link" href="./start/index.html">
+              <span class="guide-nav-icon" aria-hidden="true"><svg class="guide-ico" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M5 15c1.5 2 4 4 7 4"/><path d="M9 19c0-3 2-5 4-6"/><path d="M14 13c3-1 5-4 6-8-3 1-6 3-8 6"/><path d="M9 15l-3 3"/><path d="M12 9l1.5-1.5"/></svg></span>
+              <span class="guide-nav-text">شروع سریع</span>
+            </a>
+            
+            <a class="guide-nav-link" href="./roles/index.html">
+              <span class="guide-nav-icon" aria-hidden="true"><svg class="guide-ico" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3 5 6v5c0 4.2 2.8 7.2 7 8.5 4.2-1.3 7-4.3 7-8.5V6l-7-3z"/></svg></span>
+              <span class="guide-nav-text">نقش‌ها و دسترسی‌ها</span>
+            </a>
+            
+          </div>
+          
+          <div class="guide-nav-group">
+            <div class="guide-nav-group-title">
+              <svg class="guide-ico" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M4 12h16M4 17h10"/><path d="M18 15v4M16 17h4"/></svg>
+              <span>وب پنل</span>
+            </div>
+            
+            <a class="guide-nav-link" href="./home/index.html">
+              <span class="guide-nav-icon" aria-hidden="true"><svg class="guide-ico" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 10.5 12 4l8 6.5V20a1 1 0 0 1-1 1h-5v-6H10v6H5a1 1 0 0 1-1-1v-9.5z"/></svg></span>
+              <span class="guide-nav-text">داشبورد وب پنل</span>
+            </a>
+            
+            <a class="guide-nav-link" href="./inbox/index.html">
+              <span class="guide-nav-icon" aria-hidden="true"><svg class="guide-ico" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4a5 5 0 0 1 5 5v2.2l1.8 3.3H5.2L7 11.2V9a5 5 0 0 1 5-5z"/><path d="M10 18a2 2 0 0 0 4 0"/></svg></span>
+              <span class="guide-nav-text">اعلان‌ها و مرکز اقدام</span>
+            </a>
+            
+            <a class="guide-nav-link" href="./settings-panel/index.html">
+              <span class="guide-nav-icon" aria-hidden="true"><svg class="guide-ico" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h9M17 5v4M19 7h1"/><path d="M4 12h3M11 10v4M13 12h7"/><path d="M4 17h11M19 15v4M21 17h-1"/></svg></span>
+              <span class="guide-nav-text">تنظیمات وب پنل</span>
+            </a>
+            
+            <a class="guide-nav-link" href="./telegram-alerts/index.html">
+              <span class="guide-nav-icon" aria-hidden="true"><svg class="guide-ico" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4a5 5 0 0 1 5 5v2.2l1.8 3.3H5.2L7 11.2V9a5 5 0 0 1 5-5z"/><path d="M10 18a2 2 0 0 0 4 0"/></svg></span>
+              <span class="guide-nav-text">هشدارهای پنل در تلگرام</span>
+            </a>
+            
+          </div>
+          
+          <div class="guide-nav-group guide-nav-group--bot">
+            <div class="guide-nav-group-title">
+              <svg class="guide-ico" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="8" width="16" height="11" rx="2.5"/><path d="M12 8V5H9"/><path d="M2 14h2M20 14h2"/><circle cx="9.5" cy="13.5" r="1.1"/><circle cx="14.5" cy="13.5" r="1.1"/><path d="M9.5 17h5"/></svg>
+              <span>پنل ربات</span>
+            </div>
+            
+            <a class="guide-nav-link" href="./bot-dashboard/index.html">
+              <span class="guide-nav-icon" aria-hidden="true"><svg class="guide-ico" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3 4.5 6.5v5.2c0 4.7 3.2 8 7.5 9.3 4.3-1.3 7.5-4.6 7.5-9.3V6.5L12 3z"/><path d="M9 12l2 2 4-4"/></svg></span>
+              <span class="guide-nav-text">نمای کلی ربات</span>
+            </a>
+            
+            <a class="guide-nav-link" href="./users/index.html">
+              <span class="guide-nav-icon" aria-hidden="true"><svg class="guide-ico" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="8" r="3.2"/><path d="M3.5 19a5.5 5.5 0 0 1 11 0"/><circle cx="17" cy="9" r="2.4"/><path d="M15.2 19c.4-2.2 2-3.8 4.3-4.2"/></svg></span>
+              <span class="guide-nav-text">کاربران ربات</span>
+            </a>
+            
+            <a class="guide-nav-link" href="./finance/index.html">
+              <span class="guide-nav-icon" aria-hidden="true"><svg class="guide-ico" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M7 7h13l-1.2 9.2a2 2 0 0 1-2 1.8H9.4a2 2 0 0 1-2-1.7L6 4H3"/><circle cx="10" cy="20" r="1.2"/><circle cx="17" cy="20" r="1.2"/></svg></span>
+              <span class="guide-nav-text">مدیریت مالی</span>
+            </a>
+            
+            <a class="guide-nav-link" href="./plans/index.html">
+              <span class="guide-nav-icon" aria-hidden="true"><svg class="guide-ico" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M4 12h16M4 17h10"/><path d="M18 15v4M16 17h4"/></svg></span>
+              <span class="guide-nav-text">پلن‌ها</span>
+            </a>
+            
+            <a class="guide-nav-link" href="./tickets/index.html">
+              <span class="guide-nav-icon" aria-hidden="true"><svg class="guide-ico" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M5 6h14a2 2 0 0 1 2 2v3a2 2 0 0 0 0 4v3a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-3a2 2 0 0 0 0-4V8a2 2 0 0 1 2-2z"/><path d="M12 9v6"/></svg></span>
+              <span class="guide-nav-text">پشتیبانی</span>
+            </a>
+            
+            <a class="guide-nav-link" href="./broadcast/index.html">
+              <span class="guide-nav-icon" aria-hidden="true"><svg class="guide-ico" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 10v4h3l5 4V6L7 10H4z"/><path d="M16.5 8.5a5 5 0 0 1 0 7M18.8 6.2a8.5 8.5 0 0 1 0 11.6"/></svg></span>
+              <span class="guide-nav-text">پیام گروهی</span>
+            </a>
+            
+            <a class="guide-nav-link" href="./loyalty/index.html">
+              <span class="guide-nav-icon" aria-hidden="true"><svg class="guide-ico" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l2.2 4.5 5 .7-3.6 3.5.9 5L12 14.8 7.5 16.7l.9-5L4.8 8.2l5-.7L12 3z"/></svg></span>
+              <span class="guide-nav-text">باشگاه مشتریان</span>
+            </a>
+            
+            <a class="guide-nav-link" href="./message-variables/index.html">
+              <span class="guide-nav-icon" aria-hidden="true"><svg class="guide-ico" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M7 7h10v10H7z"/><path d="M10 10h4M10 14h2"/><path d="M4 12h2M18 12h2"/></svg></span>
+              <span class="guide-nav-text">متغیرهای پیام</span>
+            </a>
+            
+            <a class="guide-nav-link" href="./settings-bot/index.html">
+              <span class="guide-nav-icon" aria-hidden="true"><svg class="guide-ico" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="8" width="16" height="11" rx="2.5"/><path d="M12 8V5H9"/><path d="M2 14h2M20 14h2"/><circle cx="9.5" cy="13.5" r="1.1"/><circle cx="14.5" cy="13.5" r="1.1"/><path d="M9.5 17h5"/></svg></span>
+              <span class="guide-nav-text">تنظیمات ربات و فروشگاه</span>
+            </a>
+            
+            <a class="guide-nav-link" href="./resellers/index.html">
+              <span class="guide-nav-icon" aria-hidden="true"><svg class="guide-ico" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="9" r="3"/><circle cx="16" cy="9" r="3"/><path d="M2.8 19a5.2 5.2 0 0 1 10.4 0M10.8 19a5.2 5.2 0 0 1 10.4 0"/></svg></span>
+              <span class="guide-nav-text">نمایندگان</span>
+            </a>
+            
+            <a class="guide-nav-link" href="./reseller-applications/index.html">
+              <span class="guide-nav-icon" aria-hidden="true"><svg class="guide-ico" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 8h16l-1.2 10.2A2 2 0 0 1 16.8 21H7.2a2 2 0 0 1-2-1.8L4 8z"/><path d="M8 8V6a4 4 0 0 1 8 0v2"/></svg></span>
+              <span class="guide-nav-text">درخواست‌های نمایندگی</span>
+            </a>
+            
+            <a class="guide-nav-link" href="./funnel/index.html">
+              <span class="guide-nav-icon" aria-hidden="true"><svg class="guide-ico" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h16l-5.5 7v5l-5 2v-7L4 6z"/></svg></span>
+              <span class="guide-nav-text">رفتار کاربر</span>
+            </a>
+            
+            <a class="guide-nav-link" href="./shop-isolation/index.html">
+              <span class="guide-nav-icon" aria-hidden="true"><svg class="guide-ico" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3 5 6v5c0 4.2 2.8 7.2 7 8.5 4.2-1.3 7-4.3 7-8.5V6l-7-3z"/></svg></span>
+              <span class="guide-nav-text">جداسازی فروشگاه‌ها</span>
+            </a>
+            
+            <a class="guide-nav-link" href="./discounts/index.html">
+              <span class="guide-nav-icon" aria-hidden="true"><svg class="guide-ico" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M7 7h13l-1.2 9.2a2 2 0 0 1-2 1.8H9.4a2 2 0 0 1-2-1.7L6 4H3"/><circle cx="10" cy="20" r="1.2"/><circle cx="17" cy="20" r="1.2"/></svg></span>
+              <span class="guide-nav-text">تخفیف‌ها</span>
+            </a>
+            
+            <a class="guide-nav-link" href="./gift-codes/index.html">
+              <span class="guide-nav-icon" aria-hidden="true"><svg class="guide-ico" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l2.2 4.5 5 .7-3.6 3.5.9 5L12 14.8 7.5 16.7l.9-5L4.8 8.2l5-.7L12 3z"/></svg></span>
+              <span class="guide-nav-text">کد هدیه</span>
+            </a>
+            
+            <a class="guide-nav-link" href="./service-import/index.html">
+              <span class="guide-nav-icon" aria-hidden="true"><svg class="guide-ico" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 16V6M8.5 9.5 12 6l3.5 3.5"/><path d="M5 18h14"/></svg></span>
+              <span class="guide-nav-text">افزودن سرویس قبلی</span>
+            </a>
+            
+          </div>
+          
+          <div class="guide-nav-group guide-nav-group--pg">
+            <div class="guide-nav-group-title">
+              <svg class="guide-ico" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="7" height="7" rx="1.5"/><rect x="14" y="4" width="7" height="7" rx="1.5"/><rect x="8.5" y="13" width="7" height="7" rx="1.5"/></svg>
+              <span>پاسارگارد</span>
+            </div>
+            
+            <a class="guide-nav-link" href="./connection-status/index.html">
+              <span class="guide-nav-icon" aria-hidden="true"><svg class="guide-ico" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3 4.5 6.5v5.2c0 4.7 3.2 8 7.5 9.3 4.3-1.3 7.5-4.6 7.5-9.3V6.5L12 3z"/><path d="M9 12l2 2 4-4"/></svg></span>
+              <span class="guide-nav-text">وضعیت اتصال</span>
+            </a>
+            
+            <a class="guide-nav-link" href="./pg-overview/index.html">
+              <span class="guide-nav-icon" aria-hidden="true"><svg class="guide-ico" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="7" height="7" rx="1.5"/><rect x="14" y="4" width="7" height="7" rx="1.5"/><rect x="8.5" y="13" width="7" height="7" rx="1.5"/></svg></span>
+              <span class="guide-nav-text">نمای کلی پاسارگارد</span>
+            </a>
+            
+            <a class="guide-nav-link" href="./pg-users/index.html">
+              <span class="guide-nav-icon" aria-hidden="true"><svg class="guide-ico" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="3.2"/><path d="M5 19a7 7 0 0 1 14 0"/></svg></span>
+              <span class="guide-nav-text">کاربران پاسارگارد</span>
+            </a>
+            
+            <a class="guide-nav-link" href="./pg-admins/index.html">
+              <span class="guide-nav-icon" aria-hidden="true"><svg class="guide-ico" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3 5 6v5c0 4.2 2.8 7.2 7 8.5 4.2-1.3 7-4.3 7-8.5V6l-7-3z"/></svg></span>
+              <span class="guide-nav-text">ادمین پاسارگارد</span>
+            </a>
+            
+            <a class="guide-nav-link" href="./pg-nodes/index.html">
+              <span class="guide-nav-icon" aria-hidden="true"><svg class="guide-ico" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="7" height="7" rx="1.5"/><rect x="14" y="4" width="7" height="7" rx="1.5"/><rect x="8.5" y="13" width="7" height="7" rx="1.5"/></svg></span>
+              <span class="guide-nav-text">نودها</span>
+            </a>
+            
+            <a class="guide-nav-link" href="./pg-groups/index.html">
+              <span class="guide-nav-icon" aria-hidden="true"><svg class="guide-ico" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3 4.5 6.5v5.2c0 4.7 3.2 8 7.5 9.3 4.3-1.3 7.5-4.6 7.5-9.3V6.5L12 3z"/></svg></span>
+              <span class="guide-nav-text">گروه‌ها</span>
+            </a>
+            
+            <a class="guide-nav-link" href="./pg-inbounds/index.html">
+              <span class="guide-nav-icon" aria-hidden="true"><svg class="guide-ico" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12h16M12 4v16"/><circle cx="12" cy="12" r="3"/></svg></span>
+              <span class="guide-nav-text">اینباندها</span>
+            </a>
+            
+            <a class="guide-nav-link" href="./pg-hosts/index.html">
+              <span class="guide-nav-icon" aria-hidden="true"><svg class="guide-ico" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c3 3.5 3 14.5 0 18M12 3c-3 3.5-3 14.5 0 18"/></svg></span>
+              <span class="guide-nav-text">هاست‌ها</span>
+            </a>
+            
+            <a class="guide-nav-link" href="./pg-templates/index.html">
+              <span class="guide-nav-icon" aria-hidden="true"><svg class="guide-ico" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M4 12h16M4 17h10"/><path d="M18 15v4M16 17h4"/></svg></span>
+              <span class="guide-nav-text">تمپلیت‌های کاربر</span>
+            </a>
+            
+          </div>
+          
+          <div class="guide-nav-group">
+            <div class="guide-nav-group-title">
+              <svg class="guide-ico" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M5 6h14a2 2 0 0 1 2 2v3a2 2 0 0 0 0 4v3a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-3a2 2 0 0 0 0-4V8a2 2 0 0 1 2-2z"/><path d="M12 9v6"/></svg>
+              <span>کمک</span>
+            </div>
+            
+            <a class="guide-nav-link" href="./troubleshooting/index.html">
+              <span class="guide-nav-icon" aria-hidden="true"><svg class="guide-ico" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M14.5 5.5a4 4 0 0 1 4 4L12 16l-3-3 6.5-6.5z"/><path d="M9 13 5 17l2 2 4-4"/></svg></span>
+              <span class="guide-nav-text">عیب‌یابی سریع</span>
+            </a>
+            
+            <a class="guide-nav-link" href="./deploy-docs/index.html">
+              <span class="guide-nav-icon" aria-hidden="true"><svg class="guide-ico" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 16V6M8.5 9.5 12 6l3.5 3.5"/><path d="M5 18h14"/></svg></span>
+              <span class="guide-nav-text">انتشار راهنما روی دامنه خودتان</span>
+            </a>
+            
+          </div>
+          
+        </nav>
+      </aside>
+
+      <main class="guide-main">
+        <div class="guide-home">
+          <header class="guide-hero guide-home-hero">
+            <div class="guide-hero-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M5 5.5A2.5 2.5 0 0 1 7.5 3H19v16H7.5A2.5 2.5 0 0 0 5 21.5z"/><path d="M5 5.5V21.5"/></svg>
+            </div>
+            <p class="guide-home-kicker">مستندات رسمی</p>
+            <h1 class="guide-home-title">راهنمای PGClockBot</h1>
+            <p class="guide-home-lead">آموزش ساده و مرتب برای مالک، نماینده، ادمین پاسارگارد و بقیه نقش‌ها. از جستجو یا فهرست کناری موضوع را پیدا کنید.</p>
+          </header>
+
+          
+          <div class="guide-content" style="margin-bottom: 1.5rem;">
+            <h2 id="راهنمای-pgclockbot-چیست؟">راهنمای PGClockBot چیست؟</h2>
+<p>این مجموعه آموزش‌های کوتاه برای <strong>ربات فروشگاهی تلگرام</strong> و <strong>وب‌پنل</strong> متصل به پاسارگارد است. هدف این است که بدون حدس زدن، همان صفحه‌ای را که در پنل می‌بینید، اینجا هم قدم‌به‌قدم یاد بگیرید.</p>
+<h2 id="این-راهنما-برای-چه-کسانی-است؟">این راهنما برای چه کسانی است؟</h2>
+<div class="guide-table-wrap" role="region" aria-label="جدول" tabindex="0"><table><thead><tr><th>نقش نشست / هویت</th><th>برچسب رایج در پاورقی منو</th><th>چه کمکی می‌گیرد؟</th></tr></thead><tbody><tr><td><code>admin</code> (هویت عمق ۰ → «مالک»)</td><td>مالک / ادمین</td><td>نصب، فروشگاه، مالی، نمایندگان، پاسارگارد، بکاپ و آپدیت</td></tr><tr><td><code>reseller</code></td><td>نماینده / زیرنماینده</td><td>فروشگاه خودش، مشتریان، پلن، تیکت و <code>/shop-settings</code></td></tr><tr><td><code>pg_staff</code></td><td>ادمین پاسارگارد</td><td>بخش‌های PG و تیکت داخلی با مالک</td></tr><tr><td><code>principal</code> (سلسله‌مراتب)</td><td>نماینده / زیرنماینده (بر اساس سطح)</td><td>پاسارگارد و در صورت اجازه «نمایندگان من» — معمولاً بدون منوی CRM فروشگاه</td></tr></tbody></table></div>
+<div class="guide-callout guide-callout--info"><strong class="guide-callout-label">راهنما</strong><p>«مالک» برچسب هویتی است، نه نقش جدا در کوکی. ورود وب مالک معمولاً با <code>role=admin</code> است. «نماینده ارشد» برچسب واقعی منو نیست؛ در پاورقی معمولاً «نماینده» یا «زیرنماینده» می‌بینید.</p></div>
+<p>هر صفحه فقط موضوع‌هایی را پوشش می‌دهد که در کاتالوگ راهنما برای همان نقش تعریف شده است. اگر بخشی را در منوی کناری نمی‌بینید، معمولاً <strong>دسترسی ندارید</strong> — نه اینکه صفحه خراب باشد.</p>
+<h2 id="چطور-شروع-کنید؟">چطور شروع کنید؟</h2>
+<ol><li>از <strong>جستجو</strong> بالای فهرست، کلمه‌ای ساده مثل «رسید»، «پلن»، «نماینده» یا «پاسارگارد» را بزنید.</li><li>یا از کارت‌های صفحهٔ اصلی و فهرست کناری، گروه موردنظر را باز کنید: شروع، وب پنل، پنل ربات، پاسارگارد، کمک.</li><li>داخل هر صفحه، لینک <strong>مسیر پنل</strong> را می‌بینید تا همان صفحه را مستقیم در وب‌پنل باز کنید.</li></ol>
+<h3 id="ترتیب-پیشنهادی-برای-تازهواردها">ترتیب پیشنهادی برای تازه‌واردها</h3>
+<ol><li><a href="../start/index.html">شروع سریع</a> — نصب و اولین ورود</li><li><a href="../roles/index.html">نقش‌ها و دسترسی‌ها</a> — بفهمید منوی شما چرا این‌شکلی است</li><li><a href="../plans/index.html">پلن‌ها</a> و <a href="../settings-bot/index.html">تنظیمات ربات</a> — فروشگاه را زنده کنید</li><li><a href="../finance/index.html">مدیریت مالی</a> — رسید و سفارش را بلد شوید</li><li><a href="../troubleshooting/index.html">عیب‌یابی سریع</a> — اگر چیزی جواب نداد</li></ol>
+<h3 id="مسیرهای-تنظیمات-را-قاطی-نکنید">مسیرهای تنظیمات را قاطی نکنید</h3>
+<div class="guide-table-wrap" role="region" aria-label="جدول" tabindex="0"><table><thead><tr><th>مسیر</th><th>معمولاً برای کی؟</th></tr></thead><tbody><tr><td><code>/settings</code> (تب‌های فروشگاه + تب‌های بکاپ/SSL/آپدیت)</td><td>مالک / ادمین</td></tr><tr><td><code>/shop-settings</code></td><td>نماینده فروشگاه</td></tr><tr><td><code>/security</code></td><td>نقش‌های غیرمالک برای امنیت حساب</td></tr></tbody></table></div>
+<div class="guide-callout guide-callout--tip"><strong class="guide-callout-label">نکته</strong><p>آیکون دایره‌ای <strong>؟</strong> کنار تیتر صفحات وب‌پنل، خلاصهٔ همان بخش را نشان می‌دهد و به همین آموزش کامل وصل است. اگر <code>DOCS_BASE_URL</code> تنظیم شده باشد، لینک‌ها به دامنهٔ راهنمای شما می‌روند؛ وگرنه همان <code>/help</code> روی سرور استفاده می‌شود.</p></div>
+<div class="guide-callout guide-callout--info"><strong class="guide-callout-label">راهنما</strong><p>متن‌های کوتاه داخل پنل فقط «یادآوری» هستند. جزئیات، مثال و عیب‌یابی در همین صفحات مارک‌داون نوشته شده‌اند.</p></div>
+          </div>
+          
+
+          <section aria-label="موضوعات پیشنهادی">
+            <div class="guide-section-head">
+              <h2>شروع از اینجا</h2>
+              <span class="guide-section-note">پرکاربردترین بخش‌ها</span>
+            </div>
+            <div class="guide-feature-grid">
+              
+              <a class="guide-feature-card" href="./start/index.html">
+                <span class="guide-feature-icon" aria-hidden="true"><svg class="guide-ico" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M5 15c1.5 2 4 4 7 4"/><path d="M9 19c0-3 2-5 4-6"/><path d="M14 13c3-1 5-4 6-8-3 1-6 3-8 6"/><path d="M9 15l-3 3"/><path d="M12 9l1.5-1.5"/></svg></span>
+                <h3>شروع سریع</h3>
+                <p>نصب، ویزارد اولیه و اولین ورود به وب‌پنل را قدم‌به‌قدم یاد بگیرید.</p>
+                <span class="guide-feature-cta">مطالعه ←</span>
+              </a>
+              
+              <a class="guide-feature-card" href="./users/index.html">
+                <span class="guide-feature-icon" aria-hidden="true"><svg class="guide-ico" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="8" r="3.2"/><path d="M3.5 19a5.5 5.5 0 0 1 11 0"/><circle cx="17" cy="9" r="2.4"/><path d="M15.2 19c.4-2.2 2-3.8 4.3-4.2"/></svg></span>
+                <h3>کاربران ربات</h3>
+                <p>مشتریان تلگرام، موجودی کیف پول، سرویس‌ها و فیلترهای انقضا/حجم کم.</p>
+                <span class="guide-feature-cta">مطالعه ←</span>
+              </a>
+              
+              <a class="guide-feature-card" href="./finance/index.html">
+                <span class="guide-feature-icon" aria-hidden="true"><svg class="guide-ico" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M7 7h13l-1.2 9.2a2 2 0 0 1-2 1.8H9.4a2 2 0 0 1-2-1.7L6 4H3"/><circle cx="10" cy="20" r="1.2"/><circle cx="17" cy="20" r="1.2"/></svg></span>
+                <h3>مدیریت مالی</h3>
+                <p>سفارش‌ها، رسید کارت‌به‌کارت، درگاه و تأیید/رد پرداخت‌ها.</p>
+                <span class="guide-feature-cta">مطالعه ←</span>
+              </a>
+              
+              <a class="guide-feature-card" href="./plans/index.html">
+                <span class="guide-feature-icon" aria-hidden="true"><svg class="guide-ico" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M4 12h16M4 17h10"/><path d="M18 15v4M16 17h4"/></svg></span>
+                <h3>پلن‌ها</h3>
+                <p>ساخت و ویرایش پلن فروش، اتصال به تمپلیت پاسارگارد و بسته‌های حجم و زمان.</p>
+                <span class="guide-feature-cta">مطالعه ←</span>
+              </a>
+              
+              <a class="guide-feature-card" href="./resellers/index.html">
+                <span class="guide-feature-icon" aria-hidden="true"><svg class="guide-ico" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="9" r="3"/><circle cx="16" cy="9" r="3"/><path d="M2.8 19a5.2 5.2 0 0 1 10.4 0M10.8 19a5.2 5.2 0 0 1 10.4 0"/></svg></span>
+                <h3>نمایندگان</h3>
+                <p>ساخت نماینده، پلن نمایندگی، دسترسی وب و ربات شخصی نماینده.</p>
+                <span class="guide-feature-cta">مطالعه ←</span>
+              </a>
+              
+              <a class="guide-feature-card" href="./troubleshooting/index.html">
+                <span class="guide-feature-icon" aria-hidden="true"><svg class="guide-ico" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M14.5 5.5a4 4 0 0 1 4 4L12 16l-3-3 6.5-6.5z"/><path d="M9 13 5 17l2 2 4-4"/></svg></span>
+                <h3>عیب‌یابی سریع</h3>
+                <p>ربات جواب نمی‌دهد، لاگین وب، پورت ۹۰۰۰، پاسارگارد و خطاهای رایج دیگر.</p>
+                <span class="guide-feature-cta">مطالعه ←</span>
+              </a>
+              
+            </div>
+          </section>
+
+          <section aria-label="همه موضوعات">
+            <div class="guide-section-head">
+              <h2>همه موضوعات</h2>
+              <span class="guide-section-note">دسته‌بندی‌شده</span>
+            </div>
+            
+            <div class="guide-group-block">
+              <h3 class="guide-group-title">
+                <svg class="guide-ico" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M5 15c1.5 2 4 4 7 4"/><path d="M9 19c0-3 2-5 4-6"/><path d="M14 13c3-1 5-4 6-8-3 1-6 3-8 6"/><path d="M9 15l-3 3"/><path d="M12 9l1.5-1.5"/></svg>
+                <span>شروع</span>
+              </h3>
+              <div class="guide-topic-list">
+                
+                <a class="guide-topic-link" href="./start/index.html">
+                  <span class="guide-topic-icon" aria-hidden="true"><svg class="guide-ico" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M5 15c1.5 2 4 4 7 4"/><path d="M9 19c0-3 2-5 4-6"/><path d="M14 13c3-1 5-4 6-8-3 1-6 3-8 6"/><path d="M9 15l-3 3"/><path d="M12 9l1.5-1.5"/></svg></span>
+                  <span>
+                    <strong>شروع سریع</strong>
+                    <span>نصب، ویزارد اولیه و اولین ورود به وب‌پنل را قدم‌به‌قدم یاد بگیرید.</span>
+                  </span>
+                </a>
+                
+                <a class="guide-topic-link" href="./roles/index.html">
+                  <span class="guide-topic-icon" aria-hidden="true"><svg class="guide-ico" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3 5 6v5c0 4.2 2.8 7.2 7 8.5 4.2-1.3 7-4.3 7-8.5V6l-7-3z"/></svg></span>
+                  <span>
+                    <strong>نقش‌ها و دسترسی‌ها</strong>
+                    <span>مالک، نماینده، ادمین پاسارگارد و نمایندهٔ زیرمجموعه چه چیزی می‌بینند.</span>
+                  </span>
+                </a>
+                
+              </div>
+            </div>
+            
+            <div class="guide-group-block">
+              <h3 class="guide-group-title">
+                <svg class="guide-ico" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M4 12h16M4 17h10"/><path d="M18 15v4M16 17h4"/></svg>
+                <span>وب پنل</span>
+              </h3>
+              <div class="guide-topic-list">
+                
+                <a class="guide-topic-link" href="./home/index.html">
+                  <span class="guide-topic-icon" aria-hidden="true"><svg class="guide-ico" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 10.5 12 4l8 6.5V20a1 1 0 0 1-1 1h-5v-6H10v6H5a1 1 0 0 1-1-1v-9.5z"/></svg></span>
+                  <span>
+                    <strong>داشبورد وب پنل</strong>
+                    <span>نمای کلی وضعیت سرور، اعلان‌های مهم و میانبرهای روزمره از صفحهٔ داشبورد.</span>
+                  </span>
+                </a>
+                
+                <a class="guide-topic-link" href="./inbox/index.html">
+                  <span class="guide-topic-icon" aria-hidden="true"><svg class="guide-ico" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4a5 5 0 0 1 5 5v2.2l1.8 3.3H5.2L7 11.2V9a5 5 0 0 1 5-5z"/><path d="M10 18a2 2 0 0 0 4 0"/></svg></span>
+                  <span>
+                    <strong>اعلان‌ها و مرکز اقدام</strong>
+                    <span>رسیدهای منتظر، تیکت‌ها و هشدارهای انقضا/حجم را از یک جا ببینید و جمع کنید.</span>
+                  </span>
+                </a>
+                
+                <a class="guide-topic-link" href="./settings-panel/index.html">
+                  <span class="guide-topic-icon" aria-hidden="true"><svg class="guide-ico" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h9M17 5v4M19 7h1"/><path d="M4 12h3M11 10v4M13 12h7"/><path d="M4 17h11M19 15v4M21 17h-1"/></svg></span>
+                  <span>
+                    <strong>تنظیمات وب پنل</strong>
+                    <span>بکاپ، امنیت ورود، PWA، SSL و آپدیت نسخه — تنظیمات خودِ پنل، نه ربات فروشگاه.</span>
+                  </span>
+                </a>
+                
+                <a class="guide-topic-link" href="./telegram-alerts/index.html">
+                  <span class="guide-topic-icon" aria-hidden="true"><svg class="guide-ico" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4a5 5 0 0 1 5 5v2.2l1.8 3.3H5.2L7 11.2V9a5 5 0 0 1 5-5z"/><path d="M10 18a2 2 0 0 0 4 0"/></svg></span>
+                  <span>
+                    <strong>هشدارهای پنل در تلگرام</strong>
+                    <span>اعلان نسخهٔ جدید، پر شدن ظرفیت و تحویل ناموفق؛ هر کدام جدا قابل خاموش‌کردن است.</span>
+                  </span>
+                </a>
+                
+              </div>
+            </div>
+            
+            <div class="guide-group-block">
+              <h3 class="guide-group-title">
+                <svg class="guide-ico" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="8" width="16" height="11" rx="2.5"/><path d="M12 8V5H9"/><path d="M2 14h2M20 14h2"/><circle cx="9.5" cy="13.5" r="1.1"/><circle cx="14.5" cy="13.5" r="1.1"/><path d="M9.5 17h5"/></svg>
+                <span>پنل ربات</span>
+              </h3>
+              <div class="guide-topic-list">
+                
+                <a class="guide-topic-link" href="./bot-dashboard/index.html">
+                  <span class="guide-topic-icon" aria-hidden="true"><svg class="guide-ico" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3 4.5 6.5v5.2c0 4.7 3.2 8 7.5 9.3 4.3-1.3 7.5-4.6 7.5-9.3V6.5L12 3z"/><path d="M9 12l2 2 4-4"/></svg></span>
+                  <span>
+                    <strong>نمای کلی ربات</strong>
+                    <span>آمار فروشگاه، سفارش‌ها و سلامت ربات تلگرام را یک‌جا ببینید.</span>
+                  </span>
+                </a>
+                
+                <a class="guide-topic-link" href="./users/index.html">
+                  <span class="guide-topic-icon" aria-hidden="true"><svg class="guide-ico" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="8" r="3.2"/><path d="M3.5 19a5.5 5.5 0 0 1 11 0"/><circle cx="17" cy="9" r="2.4"/><path d="M15.2 19c.4-2.2 2-3.8 4.3-4.2"/></svg></span>
+                  <span>
+                    <strong>کاربران ربات</strong>
+                    <span>مشتریان تلگرام، موجودی کیف پول، سرویس‌ها و فیلترهای انقضا/حجم کم.</span>
+                  </span>
+                </a>
+                
+                <a class="guide-topic-link" href="./finance/index.html">
+                  <span class="guide-topic-icon" aria-hidden="true"><svg class="guide-ico" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M7 7h13l-1.2 9.2a2 2 0 0 1-2 1.8H9.4a2 2 0 0 1-2-1.7L6 4H3"/><circle cx="10" cy="20" r="1.2"/><circle cx="17" cy="20" r="1.2"/></svg></span>
+                  <span>
+                    <strong>مدیریت مالی</strong>
+                    <span>سفارش‌ها، رسید کارت‌به‌کارت، درگاه و تأیید/رد پرداخت‌ها.</span>
+                  </span>
+                </a>
+                
+                <a class="guide-topic-link" href="./plans/index.html">
+                  <span class="guide-topic-icon" aria-hidden="true"><svg class="guide-ico" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M4 12h16M4 17h10"/><path d="M18 15v4M16 17h4"/></svg></span>
+                  <span>
+                    <strong>پلن‌ها</strong>
+                    <span>ساخت و ویرایش پلن فروش، اتصال به تمپلیت پاسارگارد و بسته‌های حجم و زمان.</span>
+                  </span>
+                </a>
+                
+                <a class="guide-topic-link" href="./tickets/index.html">
+                  <span class="guide-topic-icon" aria-hidden="true"><svg class="guide-ico" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M5 6h14a2 2 0 0 1 2 2v3a2 2 0 0 0 0 4v3a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-3a2 2 0 0 0 0-4V8a2 2 0 0 1 2-2z"/><path d="M12 9v6"/></svg></span>
+                  <span>
+                    <strong>پشتیبانی</strong>
+                    <span>تیکت‌های کاربران ربات و گفتگوی داخلی نماینده با مالک.</span>
+                  </span>
+                </a>
+                
+                <a class="guide-topic-link" href="./broadcast/index.html">
+                  <span class="guide-topic-icon" aria-hidden="true"><svg class="guide-ico" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 10v4h3l5 4V6L7 10H4z"/><path d="M16.5 8.5a5 5 0 0 1 0 7M18.8 6.2a8.5 8.5 0 0 1 0 11.6"/></svg></span>
+                  <span>
+                    <strong>پیام گروهی</strong>
+                    <span>ارسال پیام همگانی به کاربران ربات با فیلتر مخاطب.</span>
+                  </span>
+                </a>
+                
+                <a class="guide-topic-link" href="./loyalty/index.html">
+                  <span class="guide-topic-icon" aria-hidden="true"><svg class="guide-ico" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l2.2 4.5 5 .7-3.6 3.5.9 5L12 14.8 7.5 16.7l.9-5L4.8 8.2l5-.7L12 3z"/></svg></span>
+                  <span>
+                    <strong>باشگاه مشتریان</strong>
+                    <span>امتیاز، سطح، پاداش و گردونه — و بخش بازاریابی (تخفیف‌ها، کد هدیه، کمپین) که کنار آن است.</span>
+                  </span>
+                </a>
+                
+                <a class="guide-topic-link" href="./message-variables/index.html">
+                  <span class="guide-topic-icon" aria-hidden="true"><svg class="guide-ico" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M7 7h10v10H7z"/><path d="M10 10h4M10 14h2"/><path d="M4 12h2M18 12h2"/></svg></span>
+                  <span>
+                    <strong>متغیرهای پیام</strong>
+                    <span>جایگزین‌هایی مثل {name} و {amount} که در متن‌های ربات پر می‌شوند.</span>
+                  </span>
+                </a>
+                
+                <a class="guide-topic-link" href="./settings-bot/index.html">
+                  <span class="guide-topic-icon" aria-hidden="true"><svg class="guide-ico" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="8" width="16" height="11" rx="2.5"/><path d="M12 8V5H9"/><path d="M2 14h2M20 14h2"/><circle cx="9.5" cy="13.5" r="1.1"/><circle cx="14.5" cy="13.5" r="1.1"/><path d="M9.5 17h5"/></svg></span>
+                  <span>
+                    <strong>تنظیمات ربات و فروشگاه</strong>
+                    <span>متن‌ها، دکمه‌ها، پرداخت، منو، ظاهر و اعلان‌های ربات تلگرام.</span>
+                  </span>
+                </a>
+                
+                <a class="guide-topic-link" href="./resellers/index.html">
+                  <span class="guide-topic-icon" aria-hidden="true"><svg class="guide-ico" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="9" r="3"/><circle cx="16" cy="9" r="3"/><path d="M2.8 19a5.2 5.2 0 0 1 10.4 0M10.8 19a5.2 5.2 0 0 1 10.4 0"/></svg></span>
+                  <span>
+                    <strong>نمایندگان</strong>
+                    <span>ساخت نماینده، پلن نمایندگی، دسترسی وب و ربات شخصی نماینده.</span>
+                  </span>
+                </a>
+                
+                <a class="guide-topic-link" href="./reseller-applications/index.html">
+                  <span class="guide-topic-icon" aria-hidden="true"><svg class="guide-ico" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 8h16l-1.2 10.2A2 2 0 0 1 16.8 21H7.2a2 2 0 0 1-2-1.8L4 8z"/><path d="M8 8V6a4 4 0 0 1 8 0v2"/></svg></span>
+                  <span>
+                    <strong>درخواست‌های نمایندگی</strong>
+                    <span>بررسی و تأیید درخواست‌هایی که کاربر از داخل ربات فرستاده است.</span>
+                  </span>
+                </a>
+                
+                <a class="guide-topic-link" href="./funnel/index.html">
+                  <span class="guide-topic-icon" aria-hidden="true"><svg class="guide-ico" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h16l-5.5 7v5l-5 2v-7L4 6z"/></svg></span>
+                  <span>
+                    <strong>رفتار کاربر</strong>
+                    <span>مسیر کاربر از ورود تا خرید را ببینید و نقاط ریزش را پیدا کنید.</span>
+                  </span>
+                </a>
+                
+                <a class="guide-topic-link" href="./shop-isolation/index.html">
+                  <span class="guide-topic-icon" aria-hidden="true"><svg class="guide-ico" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3 5 6v5c0 4.2 2.8 7.2 7 8.5 4.2-1.3 7-4.3 7-8.5V6l-7-3z"/></svg></span>
+                  <span>
+                    <strong>جداسازی فروشگاه‌ها</strong>
+                    <span>هر فروشگاه ایزوله است: سرویس، تیکت، پرداخت و امتیاز هر ربات فقط در همان ربات دیده می‌شود.</span>
+                  </span>
+                </a>
+                
+                <a class="guide-topic-link" href="./discounts/index.html">
+                  <span class="guide-topic-icon" aria-hidden="true"><svg class="guide-ico" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M7 7h13l-1.2 9.2a2 2 0 0 1-2 1.8H9.4a2 2 0 0 1-2-1.7L6 4H3"/><circle cx="10" cy="20" r="1.2"/><circle cx="17" cy="20" r="1.2"/></svg></span>
+                  <span>
+                    <strong>تخفیف‌ها</strong>
+                    <span>تخفیف زمان‌دار یا کاهش دائمی قیمت برای همهٔ پلن‌ها، یک پلن یا یک دسته.</span>
+                  </span>
+                </a>
+                
+                <a class="guide-topic-link" href="./gift-codes/index.html">
+                  <span class="guide-topic-icon" aria-hidden="true"><svg class="guide-ico" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l2.2 4.5 5 .7-3.6 3.5.9 5L12 14.8 7.5 16.7l.9-5L4.8 8.2l5-.7L12 3z"/></svg></span>
+                  <span>
+                    <strong>کد هدیه</strong>
+                    <span>کد شارژ کیف پول یا تخفیف درصدی با سقف مصرف و تاریخ انقضا برای مشتریان فروشگاه.</span>
+                  </span>
+                </a>
+                
+                <a class="guide-topic-link" href="./service-import/index.html">
+                  <span class="guide-topic-icon" aria-hidden="true"><svg class="guide-ico" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 16V6M8.5 9.5 12 6l3.5 3.5"/><path d="M5 18h14"/></svg></span>
+                  <span>
+                    <strong>افزودن سرویس قبلی</strong>
+                    <span>اتصال سرویس موجود مشتری با لینک اشتراک، فوری یا با تأیید ادمین.</span>
+                  </span>
+                </a>
+                
+              </div>
+            </div>
+            
+            <div class="guide-group-block">
+              <h3 class="guide-group-title">
+                <svg class="guide-ico" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="7" height="7" rx="1.5"/><rect x="14" y="4" width="7" height="7" rx="1.5"/><rect x="8.5" y="13" width="7" height="7" rx="1.5"/></svg>
+                <span>پاسارگارد</span>
+              </h3>
+              <div class="guide-topic-list">
+                
+                <a class="guide-topic-link" href="./connection-status/index.html">
+                  <span class="guide-topic-icon" aria-hidden="true"><svg class="guide-ico" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3 4.5 6.5v5.2c0 4.7 3.2 8 7.5 9.3 4.3-1.3 7.5-4.6 7.5-9.3V6.5L12 3z"/><path d="M9 12l2 2 4-4"/></svg></span>
+                  <span>
+                    <strong>وضعیت اتصال</strong>
+                    <span>تست خودکار کانفیگ‌ها از سمت سرور و نمایش وضعیت آن‌ها به ادمین و مشتریان.</span>
+                  </span>
+                </a>
+                
+                <a class="guide-topic-link" href="./pg-overview/index.html">
+                  <span class="guide-topic-icon" aria-hidden="true"><svg class="guide-ico" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="7" height="7" rx="1.5"/><rect x="14" y="4" width="7" height="7" rx="1.5"/><rect x="8.5" y="13" width="7" height="7" rx="1.5"/></svg></span>
+                  <span>
+                    <strong>نمای کلی پاسارگارد</strong>
+                    <span>وضعیت اتصال به پنل پاسارگارد و میانبر بخش‌های زیرمجموعه.</span>
+                  </span>
+                </a>
+                
+                <a class="guide-topic-link" href="./pg-users/index.html">
+                  <span class="guide-topic-icon" aria-hidden="true"><svg class="guide-ico" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="3.2"/><path d="M5 19a7 7 0 0 1 14 0"/></svg></span>
+                  <span>
+                    <strong>کاربران پاسارگارد</strong>
+                    <span>مدیریت یوزرهای VPN روی پاسارگارد از داخل وب‌پنل ربات.</span>
+                  </span>
+                </a>
+                
+                <a class="guide-topic-link" href="./pg-admins/index.html">
+                  <span class="guide-topic-icon" aria-hidden="true"><svg class="guide-ico" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3 5 6v5c0 4.2 2.8 7.2 7 8.5 4.2-1.3 7-4.3 7-8.5V6l-7-3z"/></svg></span>
+                  <span>
+                    <strong>ادمین پاسارگارد</strong>
+                    <span>ساخت ادمین فرعی، اعطای وب‌پنل و تبدیل به نماینده فروشگاه.</span>
+                  </span>
+                </a>
+                
+                <a class="guide-topic-link" href="./pg-nodes/index.html">
+                  <span class="guide-topic-icon" aria-hidden="true"><svg class="guide-ico" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="7" height="7" rx="1.5"/><rect x="14" y="4" width="7" height="7" rx="1.5"/><rect x="8.5" y="13" width="7" height="7" rx="1.5"/></svg></span>
+                  <span>
+                    <strong>نودها</strong>
+                    <span>مشاهده و مدیریت نودهای پاسارگارد و وضعیت سلامت آن‌ها.</span>
+                  </span>
+                </a>
+                
+                <a class="guide-topic-link" href="./pg-groups/index.html">
+                  <span class="guide-topic-icon" aria-hidden="true"><svg class="guide-ico" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3 4.5 6.5v5.2c0 4.7 3.2 8 7.5 9.3 4.3-1.3 7.5-4.6 7.5-9.3V6.5L12 3z"/></svg></span>
+                  <span>
+                    <strong>گروه‌ها</strong>
+                    <span>گروه‌های اینباند پاسارگارد برای اتصال پلن‌ها و محدودیت دسترسی.</span>
+                  </span>
+                </a>
+                
+                <a class="guide-topic-link" href="./pg-inbounds/index.html">
+                  <span class="guide-topic-icon" aria-hidden="true"><svg class="guide-ico" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12h16M12 4v16"/><circle cx="12" cy="12" r="3"/></svg></span>
+                  <span>
+                    <strong>اینباندها</strong>
+                    <span>فهرست اینباندها و ارتباطشان با گروه‌ها و تمپلیت‌ها.</span>
+                  </span>
+                </a>
+                
+                <a class="guide-topic-link" href="./pg-hosts/index.html">
+                  <span class="guide-topic-icon" aria-hidden="true"><svg class="guide-ico" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c3 3.5 3 14.5 0 18M12 3c-3 3.5-3 14.5 0 18"/></svg></span>
+                  <span>
+                    <strong>هاست‌ها</strong>
+                    <span>هاست‌های نمایشی اشتراک و تنظیمات مرتبط در پاسارگارد.</span>
+                  </span>
+                </a>
+                
+                <a class="guide-topic-link" href="./pg-templates/index.html">
+                  <span class="guide-topic-icon" aria-hidden="true"><svg class="guide-ico" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M4 12h16M4 17h10"/><path d="M18 15v4M16 17h4"/></svg></span>
+                  <span>
+                    <strong>تمپلیت‌های کاربر</strong>
+                    <span>تمپلیت‌های آماده پاسارگارد که پلن‌های فروشگاه به آن‌ها وصل می‌شوند.</span>
+                  </span>
+                </a>
+                
+              </div>
+            </div>
+            
+            <div class="guide-group-block">
+              <h3 class="guide-group-title">
+                <svg class="guide-ico" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M5 6h14a2 2 0 0 1 2 2v3a2 2 0 0 0 0 4v3a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-3a2 2 0 0 0 0-4V8a2 2 0 0 1 2-2z"/><path d="M12 9v6"/></svg>
+                <span>کمک</span>
+              </h3>
+              <div class="guide-topic-list">
+                
+                <a class="guide-topic-link" href="./troubleshooting/index.html">
+                  <span class="guide-topic-icon" aria-hidden="true"><svg class="guide-ico" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M14.5 5.5a4 4 0 0 1 4 4L12 16l-3-3 6.5-6.5z"/><path d="M9 13 5 17l2 2 4-4"/></svg></span>
+                  <span>
+                    <strong>عیب‌یابی سریع</strong>
+                    <span>ربات جواب نمی‌دهد، لاگین وب، پورت ۹۰۰۰، پاسارگارد و خطاهای رایج دیگر.</span>
+                  </span>
+                </a>
+                
+                <a class="guide-topic-link" href="./deploy-docs/index.html">
+                  <span class="guide-topic-icon" aria-hidden="true"><svg class="guide-ico" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 16V6M8.5 9.5 12 6l3.5 3.5"/><path d="M5 18h14"/></svg></span>
+                  <span>
+                    <strong>انتشار راهنما روی دامنه خودتان</strong>
+                    <span>چطور خروجی راهنما را روی سرور و دامنه شخصی بالا بیاورید.</span>
+                  </span>
+                </a>
+                
+              </div>
+            </div>
+            
+          </section>
+        </div>
+      </main>
+    </div>
+  </div>
+  <script src="./guide.js" defer></script>
+</body>
+</html>

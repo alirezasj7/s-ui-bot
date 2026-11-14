@@ -1,0 +1,1347 @@
+"""Reply-keyboard builders and label→action maps.
+
+Extracted from ``app.bot.keyboards`` so that module can stay focused on shared
+primitives and inline keyboards. Public names are re-exported from
+``app.bot.keyboards`` for backward-compatible imports.
+"""
+
+from __future__ import annotations
+
+from aiogram.types import KeyboardButton, ReplyKeyboardMarkup
+
+from app.db.models import Role
+from app.services.chat_cleanup_config import is_menu_keyboard_persistent
+from app.services.users import on
+from app.services.connection_status_texts import CONNECTION_STATUS_MENU_KEY
+
+# Bind helpers/constants from keyboards after that module has defined them
+# (keyboards imports this module mid-file, once primitives exist).
+from app.bot.keyboard_guard import register_main_keyboard
+from app.bot import keyboards as _k
+import logging
+
+logger = logging.getLogger(__name__)
+
+BTN_CANCEL = "انصراف"
+BTN_RESTART = "🏠 شروع مجدد"  # legacy alias only
+
+REPLY_ACTION_SHOP_CUSTOM = "shop_custom"
+REPLY_ACTION_SHOP_WHOLESALE = "shop_wholesale"
+REPLY_ACTION_SVC_LINK = "svc_link"
+REPLY_ACTION_SVC_RENEW = "svc_renew"
+REPLY_ACTION_SVC_ADDON = "svc_addon"
+REPLY_ACTION_SVC_AUTO = "svc_auto"
+REPLY_ACTION_SVC_REFRESH = "svc_refresh"
+REPLY_ACTION_SVC_DELETE = "svc_delete"
+REPLY_ACTION_SVC_GUIDE = "svc_guide"
+REPLY_ACTION_SVC_CANCEL = "svc_cancel"
+REPLY_ACTION_REV_OK = "rev_ok"
+REPLY_ACTION_REV_NO = "rev_no"
+BTN_REV_OK = "🟢✅ تأیید"
+BTN_REV_NO = "🔴❌ رد"
+
+BTN_BACK = _k.BTN_BACK
+REPLY_ACTION_ADMIN = _k.REPLY_ACTION_ADMIN
+REPLY_ACTION_ADMIN_BACKUP = _k.REPLY_ACTION_ADMIN_BACKUP
+REPLY_ACTION_ADMIN_BROADCAST = _k.REPLY_ACTION_ADMIN_BROADCAST
+REPLY_ACTION_ADMIN_DASH = _k.REPLY_ACTION_ADMIN_DASH
+REPLY_ACTION_ADMIN_LOYALTY = _k.REPLY_ACTION_ADMIN_LOYALTY
+REPLY_ACTION_ADMIN_ORDERS = _k.REPLY_ACTION_ADMIN_ORDERS
+REPLY_ACTION_ADMIN_PAYMENTS = _k.REPLY_ACTION_ADMIN_PAYMENTS
+REPLY_ACTION_ADMIN_PG = _k.REPLY_ACTION_ADMIN_PG
+REPLY_ACTION_ADMIN_PLANS = _k.REPLY_ACTION_ADMIN_PLANS
+REPLY_ACTION_ADMIN_PREVIEW = _k.REPLY_ACTION_ADMIN_PREVIEW
+REPLY_ACTION_ADMIN_REPORTS = _k.REPLY_ACTION_ADMIN_REPORTS
+REPLY_ACTION_ADMIN_RESELLERS = _k.REPLY_ACTION_ADMIN_RESELLERS
+REPLY_ACTION_ADMIN_SETTINGS = _k.REPLY_ACTION_ADMIN_SETTINGS
+REPLY_ACTION_ADMIN_TICKETS = _k.REPLY_ACTION_ADMIN_TICKETS
+REPLY_ACTION_ADMIN_USERS = _k.REPLY_ACTION_ADMIN_USERS
+REPLY_ACTION_ADM_HUB_OPS = _k.REPLY_ACTION_ADM_HUB_OPS
+REPLY_ACTION_ADM_HUB_PEOPLE = _k.REPLY_ACTION_ADM_HUB_PEOPLE
+REPLY_ACTION_ADM_HUB_PRODUCT = _k.REPLY_ACTION_ADM_HUB_PRODUCT
+REPLY_ACTION_ADM_HUB_MARKETING = _k.REPLY_ACTION_ADM_HUB_MARKETING
+REPLY_ACTION_ADM_HUB_SYSTEM = _k.REPLY_ACTION_ADM_HUB_SYSTEM
+REPLY_ACTION_ADM_LOY_OVERVIEW = _k.REPLY_ACTION_ADM_LOY_OVERVIEW
+REPLY_ACTION_ADM_LOY_REF_TEXT = _k.REPLY_ACTION_ADM_LOY_REF_TEXT
+REPLY_ACTION_ADM_LOY_REWARDS = _k.REPLY_ACTION_ADM_LOY_REWARDS
+REPLY_ACTION_ADM_LOY_RULES = _k.REPLY_ACTION_ADM_LOY_RULES
+REPLY_ACTION_ADM_LOY_SETTINGS = _k.REPLY_ACTION_ADM_LOY_SETTINGS
+REPLY_ACTION_ADM_LOY_TIERS = _k.REPLY_ACTION_ADM_LOY_TIERS
+REPLY_ACTION_ADM_RES_ADD = _k.REPLY_ACTION_ADM_RES_ADD
+REPLY_ACTION_ADM_RES_APPS = _k.REPLY_ACTION_ADM_RES_APPS
+REPLY_ACTION_ADM_RES_LIST = _k.REPLY_ACTION_ADM_RES_LIST
+REPLY_ACTION_ADM_RES_SEARCH = _k.REPLY_ACTION_ADM_RES_SEARCH
+REPLY_ACTION_ADM_ST_PANEL = _k.REPLY_ACTION_ADM_ST_PANEL
+REPLY_ACTION_ADM_USERS_LIST = _k.REPLY_ACTION_ADM_USERS_LIST
+REPLY_ACTION_ADM_USERS_SEARCH = _k.REPLY_ACTION_ADM_USERS_SEARCH
+REPLY_ACTION_ADM_USERS_WEB = _k.REPLY_ACTION_ADM_USERS_WEB
+REPLY_ACTION_BACK = _k.REPLY_ACTION_BACK
+REPLY_ACTION_CREDS = _k.REPLY_ACTION_CREDS
+REPLY_ACTION_HOME = _k.REPLY_ACTION_HOME
+REPLY_ACTION_LOYALTY = _k.REPLY_ACTION_LOYALTY
+REPLY_ACTION_MINIAPP = _k.REPLY_ACTION_MINIAPP
+REPLY_ACTION_LOY_HISTORY = _k.REPLY_ACTION_LOY_HISTORY
+REPLY_ACTION_LOY_POINTS = _k.REPLY_ACTION_LOY_POINTS
+REPLY_ACTION_LOY_REFERRAL = _k.REPLY_ACTION_LOY_REFERRAL
+REPLY_ACTION_LOY_REWARDS = _k.REPLY_ACTION_LOY_REWARDS
+REPLY_ACTION_LOY_WHEEL = _k.REPLY_ACTION_LOY_WHEEL
+REPLY_ACTION_PAY_CARD = _k.REPLY_ACTION_PAY_CARD
+REPLY_ACTION_PAY_CRYPTO = _k.REPLY_ACTION_PAY_CRYPTO
+REPLY_ACTION_PAY_DISCOUNT = _k.REPLY_ACTION_PAY_DISCOUNT
+REPLY_ACTION_PAY_GATEWAY = _k.REPLY_ACTION_PAY_GATEWAY
+REPLY_ACTION_PAY_PSP = _k.REPLY_ACTION_PAY_PSP
+REPLY_ACTION_PAY_BBC = _k.REPLY_ACTION_PAY_BBC
+REPLY_ACTION_PAY_STARS = _k.REPLY_ACTION_PAY_STARS
+REPLY_ACTION_PAY_WALLET = _k.REPLY_ACTION_PAY_WALLET
+REPLY_ACTION_PG_CREATE = _k.REPLY_ACTION_PG_CREATE
+REPLY_ACTION_PG_GROUP = _k.REPLY_ACTION_PG_GROUP
+REPLY_ACTION_PG_NODES = _k.REPLY_ACTION_PG_NODES
+REPLY_ACTION_PG_SEARCH = _k.REPLY_ACTION_PG_SEARCH
+REPLY_ACTION_PG_STATS = _k.REPLY_ACTION_PG_STATS
+REPLY_ACTION_PG_TEMPLATE = _k.REPLY_ACTION_PG_TEMPLATE
+REPLY_ACTION_PG_USERS = _k.REPLY_ACTION_PG_USERS
+REPLY_ACTION_RESELLER = _k.REPLY_ACTION_RESELLER
+REPLY_ACTION_RESELLER_APPLY = _k.REPLY_ACTION_RESELLER_APPLY
+REPLY_ACTION_RES_ADD_REP = _k.REPLY_ACTION_RES_ADD_REP
+REPLY_ACTION_RES_PREVIEW = _k.REPLY_ACTION_RES_PREVIEW
+REPLY_ACTION_RES_ST_PANEL = _k.REPLY_ACTION_RES_ST_PANEL
+REPLY_ACTION_SERVICES = _k.REPLY_ACTION_SERVICES
+REPLY_ACTION_SHOP = _k.REPLY_ACTION_SHOP
+REPLY_ACTION_SUPPORT = _k.REPLY_ACTION_SUPPORT
+REPLY_ACTION_SUPPORT_LIST = _k.REPLY_ACTION_SUPPORT_LIST
+REPLY_ACTION_SUPPORT_NEW = _k.REPLY_ACTION_SUPPORT_NEW
+REPLY_ACTION_TOPUP_CARD = _k.REPLY_ACTION_TOPUP_CARD
+REPLY_ACTION_TOPUP_CRYPTO = _k.REPLY_ACTION_TOPUP_CRYPTO
+REPLY_ACTION_TOPUP_GATEWAY = _k.REPLY_ACTION_TOPUP_GATEWAY
+REPLY_ACTION_TOPUP_PSP = _k.REPLY_ACTION_TOPUP_PSP
+REPLY_ACTION_TOPUP_BBC = _k.REPLY_ACTION_TOPUP_BBC
+REPLY_ACTION_WALLET = _k.REPLY_ACTION_WALLET
+REPLY_ACTION_WALLET_TOPUP = _k.REPLY_ACTION_WALLET_TOPUP
+REPLY_ACTION_WALLET_TX = _k.REPLY_ACTION_WALLET_TX
+_back_label = _k._back_label
+_home_label = _k._home_label
+_kb = _k._kb
+_menu_layout = _k._menu_layout
+_menu_order = _k._menu_order
+_style = _k._style
+_t = _k._t
+
+def _reply_markup(
+    rows: list[list[KeyboardButton]],
+    *,
+    placeholder: str = "از منوی پایین انتخاب کنید…",
+    persistent: bool = False,
+) -> ReplyKeyboardMarkup:
+    """Standard reply keyboard for bot menus.
+
+    ``persistent`` (the bot's «کیبورد همیشه باز» setting, off by default): Telegram shows the
+    menu again as soon as the person closes the phone keyboard after typing. Off, they reopen it
+    with the four-square icon; it was off because on some Android versions the back key then
+    never leaves the chat. The bot never sends a message just to unfold the menu.
+
+    The message carrying the keyboard is never deleted while it is the newest one; deleting it
+    drops the menu on iOS (see ``app.bot.chat_screen``).
+    """
+    return ReplyKeyboardMarkup(
+        keyboard=rows or [[_kb(_home_label(), action=REPLY_ACTION_HOME)]],
+        resize_keyboard=True,
+        one_time_keyboard=False,
+        is_persistent=persistent,
+        input_field_placeholder=placeholder,
+    )
+
+
+def _restart_footer(ui: dict | None) -> list[tuple[str, str, str]]:
+    """Own-row «شروع مجدد» at the bottom of level-0 menus (admin-toggleable)."""
+    if not on(_t(ui, "show_restart_button")):
+        return []
+    label = (_t(ui, "btn_restart") or "").strip()
+    return [(REPLY_ACTION_HOME, label, "btn_restart")] if label else []
+
+
+def _connection_status_entries(key: str, ui: dict | None, role: str) -> list[tuple[str, str]]:
+    # Admins reach the same data from «وضعیت اتصال»; the customer view stays in user preview.
+    if key != CONNECTION_STATUS_MENU_KEY or role == Role.ADMIN.value:
+        return []
+    return [(CONNECTION_STATUS_MENU_KEY, _t(ui, "btn_connection_status"))]
+
+
+def _reply_user_entries(
+    role: str,
+    *,
+    has_services: bool,
+    ui: dict | None,
+    show_reseller_creds: bool = False,
+    profile=None,
+    show_reseller_apply: bool = False,
+) -> list[tuple[str, str]]:
+    """Ordered (action_key, button_text) for the customer/reseller reply keyboard.
+
+    ``reseller_apply`` appears on the main KB when enabled (platform bot only;
+    callers pass ``show_reseller_apply=False`` on shop bots). Also still on
+    support inline. Mini App is welcome-inline only (not on ReplyKeyboard).
+    """
+    entries: list[tuple[str, str]] = []
+    for key in _menu_order(ui):
+        entries.extend(_connection_status_entries(key, ui, role))
+        if key == "shop":
+            entries.append((REPLY_ACTION_SHOP, _t(ui, "btn_shop")))
+        elif key == "services" and has_services:
+            entries.append((REPLY_ACTION_SERVICES, _t(ui, "btn_services")))
+        elif key == "wallet":
+            entries.append((REPLY_ACTION_WALLET, _t(ui, "btn_wallet")))
+        elif key == "support":
+            entries.append((REPLY_ACTION_SUPPORT, _t(ui, "btn_support")))
+        elif key == "loyalty":
+            # Feature toggle wins over menu_order presence.
+            if on(_t(ui, "loyalty_enabled")):
+                entries.append((REPLY_ACTION_LOYALTY, _t(ui, "btn_loyalty")))
+        elif key == "reseller_apply":
+            if show_reseller_apply:
+                entries.append(
+                    (
+                        REPLY_ACTION_RESELLER_APPLY,
+                        _t(ui, "btn_reseller_apply") or "🤝 درخواست نمایندگی",
+                    )
+                )
+        elif key == "services" and not has_services:
+            continue
+    if role == Role.RESELLER.value:
+        entries.append((REPLY_ACTION_RESELLER, _t(ui, "btn_reseller")))
+        if show_reseller_creds:
+            entries.append((REPLY_ACTION_ADMIN_PG, _t(ui, "btn_adm_pg")))
+    elif show_reseller_creds:
+        # Platform bot: access card, renew/capacity and PasarGuard live on the
+        # inline reseller hub behind this single entry.
+        entries.append(
+            (REPLY_ACTION_RESELLER, _t(ui, "btn_reseller") or "🤝 پنل نماینده")
+        )
+    if role == Role.ADMIN.value:
+        entries.append((REPLY_ACTION_ADMIN, _t(ui, "btn_admin")))
+    return entries
+
+
+def _reply_admin_hub_entries(ui: dict | None = None) -> list[tuple[str, str]]:
+    """Top-level admin groups — labels from web-panel settings."""
+    return [
+        (REPLY_ACTION_ADM_HUB_OPS, _t(ui, "btn_adm_hub_ops")),
+        (REPLY_ACTION_ADM_HUB_PEOPLE, _t(ui, "btn_adm_hub_people")),
+        (REPLY_ACTION_ADM_HUB_PRODUCT, _t(ui, "btn_adm_hub_product")),
+        (REPLY_ACTION_ADM_HUB_MARKETING, _t(ui, "btn_adm_hub_marketing")),
+        (REPLY_ACTION_ADM_HUB_SYSTEM, _t(ui, "btn_adm_hub_system")),
+        ("connection_status_admin", _t(ui, "btn_connection_status_admin")),
+    ]
+
+
+def _reply_admin_ops_entries(ui: dict | None = None) -> list[tuple[str, str]]:
+    return [
+        (REPLY_ACTION_ADMIN_DASH, _t(ui, "btn_adm_dash")),
+        (REPLY_ACTION_ADMIN_REPORTS, _t(ui, "btn_adm_reports")),
+        (REPLY_ACTION_ADMIN_ORDERS, _t(ui, "btn_adm_orders")),
+        (REPLY_ACTION_ADMIN_PAYMENTS, _t(ui, "btn_adm_payments")),
+        (REPLY_ACTION_ADMIN_TICKETS, _t(ui, "btn_adm_tickets")),
+    ]
+
+
+def _reply_admin_people_entries(
+    ui: dict | None = None,
+    *,
+    can_manage_representatives: bool = True,
+) -> list[tuple[str, str]]:
+    entries = [
+        (REPLY_ACTION_ADMIN_USERS, _t(ui, "btn_adm_users")),
+        (REPLY_ACTION_ADMIN_RESELLERS, _t(ui, "btn_adm_resellers")),
+    ]
+    if not can_manage_representatives:
+        entries = [e for e in entries if e[0] != REPLY_ACTION_ADMIN_RESELLERS]
+    return entries
+
+
+def _reply_admin_product_entries(
+    ui: dict | None = None,
+    *,
+    pg_features: frozenset[str] | set[str] | None = None,
+) -> list[tuple[str, str]]:
+    entries = [
+        (REPLY_ACTION_ADMIN_PLANS, _t(ui, "btn_adm_plans")),
+        (REPLY_ACTION_ADMIN_PG, _t(ui, "btn_adm_pg")),
+    ]
+    if pg_features is not None and not pg_features:
+        entries = [e for e in entries if e[0] != REPLY_ACTION_ADMIN_PG]
+    return entries
+
+
+def _reply_admin_marketing_entries(ui: dict | None = None) -> list[tuple[str, str]]:
+    return [
+        (REPLY_ACTION_ADMIN_LOYALTY, _t(ui, "btn_adm_loyalty")),
+        (REPLY_ACTION_ADMIN_BROADCAST, _t(ui, "btn_adm_broadcast")),
+    ]
+
+
+def _reply_admin_system_entries(ui: dict | None = None) -> list[tuple[str, str]]:
+    return [
+        (REPLY_ACTION_ADMIN_SETTINGS, _t(ui, "btn_adm_settings")),
+        (REPLY_ACTION_ADMIN_BACKUP, _t(ui, "btn_adm_backup")),
+        (REPLY_ACTION_ADMIN_PREVIEW, _t(ui, "btn_adm_preview")),
+    ]
+
+
+def _reply_admin_entries(
+    ui: dict | None = None,
+    *,
+    pg_features: frozenset[str] | set[str] | None = None,
+    can_manage_representatives: bool = True,
+) -> list[tuple[str, str]]:
+    """All admin leaf buttons (for action-map registration / ACL filtering)."""
+    return [
+        *_reply_admin_ops_entries(ui),
+        *_reply_admin_people_entries(
+            ui, can_manage_representatives=can_manage_representatives
+        ),
+        *_reply_admin_product_entries(ui, pg_features=pg_features),
+        *_reply_admin_marketing_entries(ui),
+        *_reply_admin_system_entries(ui),
+    ]
+
+
+def _pg_submenu_entries(
+    ui: dict | None = None,
+    *,
+    features: frozenset[str] | set[str] | None = None,
+    can_create_user: bool = True,
+) -> list[tuple[str, str]]:
+    """PasarGuard reply submenu — filtered by Hybrid PG feature keys when given."""
+    feats = features
+    all_entries = [
+        (REPLY_ACTION_PG_STATS, _t(ui, "btn_pg_stats"), "pg_overview"),
+        (REPLY_ACTION_PG_USERS, _t(ui, "btn_pg_users"), "pg_users"),
+        (REPLY_ACTION_PG_CREATE, _t(ui, "btn_pg_create"), "pg_users"),
+        (REPLY_ACTION_PG_SEARCH, _t(ui, "btn_pg_search"), "pg_users"),
+        (REPLY_ACTION_PG_NODES, _t(ui, "btn_pg_nodes"), "pg_nodes"),
+        (REPLY_ACTION_PG_GROUP, _t(ui, "btn_pg_group"), "pg_groups"),
+        (REPLY_ACTION_PG_TEMPLATE, _t(ui, "btn_pg_template"), "pg_templates"),
+    ]
+    out: list[tuple[str, str]] = []
+    for key, label, feat in all_entries:
+        if feats is not None and feat not in feats:
+            continue
+        if key == REPLY_ACTION_PG_CREATE and not can_create_user:
+            continue
+        out.append((key, label))
+    return out
+
+
+def _admin_users_submenu_entries(ui: dict | None = None) -> list[tuple[str, str]]:
+    return [
+        (REPLY_ACTION_ADM_USERS_LIST, _t(ui, "btn_adm_users_list")),
+        (REPLY_ACTION_ADM_USERS_SEARCH, _t(ui, "btn_adm_users_search")),
+        (REPLY_ACTION_ADM_USERS_WEB, _t(ui, "btn_adm_users_web")),
+    ]
+
+
+def _admin_resellers_submenu_entries(ui: dict | None = None) -> list[tuple[str, str]]:
+    return [
+        (REPLY_ACTION_ADM_RES_LIST, _t(ui, "btn_adm_res_list")),
+        (REPLY_ACTION_ADM_RES_SEARCH, _t(ui, "btn_adm_res_search")),
+        (REPLY_ACTION_ADM_RES_APPS, _t(ui, "btn_adm_res_apps")),
+        (REPLY_ACTION_ADM_RES_ADD, _t(ui, "btn_adm_res_add")),
+    ]
+
+
+def _admin_settings_submenu_entries(ui: dict | None = None) -> list[tuple[str, str]]:
+    # Labels MUST match admin_settings.SECTIONS[*]["title"] for HUB_ORDER keys
+    return [
+        ("adm_st_shop", _t(ui, "btn_adm_st_shop")),
+        ("adm_st_menu", _t(ui, "btn_adm_st_menu")),
+        ("adm_st_labels", _t(ui, "btn_adm_st_labels")),
+        ("adm_st_pay", _t(ui, "btn_adm_st_pay")),
+        ("adm_st_access", _t(ui, "btn_adm_st_access")),
+        ("adm_st_limits", _t(ui, "btn_adm_st_limits")),
+        ("adm_st_buy", _t(ui, "btn_adm_st_buy")),
+        ("adm_st_support", _t(ui, "btn_adm_st_support")),
+        ("adm_st_guides", _t(ui, "btn_adm_st_guides")),
+        ("adm_st_notify", _t(ui, "btn_adm_st_notify")),
+        (REPLY_ACTION_ADM_ST_PANEL, _t(ui, "btn_adm_st_panel")),
+    ]
+
+
+def _admin_backup_submenu_entries(ui: dict | None = None) -> list[tuple[str, str]]:
+    # Phase 2: default create is without .env; with-.env is a separate confirm path.
+    return [
+        ("backup_create", _t(ui, "btn_backup_create")),
+        ("backup_create_env", _t(ui, "btn_backup_create_env")),
+        ("backup_upload", _t(ui, "btn_backup_upload")),
+        ("backup_refresh", _t(ui, "btn_backup_refresh")),
+    ]
+
+
+def _admin_broadcast_submenu_entries(ui: dict | None = None) -> list[tuple[str, str]]:
+    # Labels must NOT collide with admin hub («🤝 نمایندگان» → adm_resellers).
+    return [
+        ("bc_aud_all", _t(ui, "btn_bc_aud_all")),
+        ("bc_aud_users", _t(ui, "btn_bc_aud_users")),
+        ("bc_aud_resellers", _t(ui, "btn_bc_aud_resellers")),
+        ("bc_aud_admins", _t(ui, "btn_bc_aud_admins")),
+    ]
+
+
+def _admin_plans_submenu_entries(ui: dict | None = None) -> list[tuple[str, str]]:
+    _ = ui
+    return []
+
+
+def _admin_plans_audience_entries(ui: dict | None = None) -> list[tuple[str, str]]:
+    """Labels MUST NOT collide with btn_adm_users («👥 کاربران») or admin resellers hub."""
+    return [
+        (REPLY_ACTION_ADM_PLANS_AUD_USERS, _t(ui, "btn_adm_plans_aud_users")),
+        (REPLY_ACTION_ADM_PLANS_AUD_RESELLERS, _t(ui, "btn_adm_plans_aud_resellers")),
+        (REPLY_ACTION_ADM_PLANS_CATEGORIES, _t(ui, "btn_adm_plans_categories")),
+        (REPLY_ACTION_ADM_PLANS_ADDONS, _t(ui, "btn_adm_plans_addons")),
+    ]
+
+
+def _admin_plans_list_entries(ui: dict | None = None) -> list[tuple[str, str]]:
+    """Reply keyboard on audience list screen — add plan + catalog extras (web parity)."""
+    return [
+        (REPLY_ACTION_ADM_PLANS_ADD, _t(ui, "btn_adm_plans_add")),
+        (REPLY_ACTION_ADM_PLANS_CATEGORIES, _t(ui, "btn_adm_plans_categories")),
+        (REPLY_ACTION_ADM_PLANS_ADDONS, _t(ui, "btn_adm_plans_addons")),
+    ]
+
+
+def _admin_plans_add_type_entries(audience: str, ui: dict | None = None) -> list[tuple[str, str]]:
+    """Plan type picker shown after «افزودن پلن» — mirrors web modal kind step."""
+    if audience == "resellers":
+        return [
+            (REPLY_ACTION_ADM_PLANS_KIND_RES_FIXED, _t(ui, "btn_adm_plans_kind_res_fixed")),
+            (REPLY_ACTION_ADM_PLANS_KIND_RES_PAYG, _t(ui, "btn_adm_plans_kind_res_payg")),
+            (REPLY_ACTION_ADM_PLANS_KIND_RES_ADDON_VOL, _t(ui, "btn_adm_plans_kind_res_addon_vol")),
+            (REPLY_ACTION_ADM_PLANS_KIND_RES_ADDON_USERS, _t(ui, "btn_adm_plans_kind_res_addon_users")),
+        ]
+    wholesale = _t(ui, "btn_wholesale") or "فروش عمده"
+    from app.bot.keyboards import _label_or
+
+    return [
+        (REPLY_ACTION_ADM_PLANS_KIND_USERS_FIXED, _label_or(ui, "btn_shop_kind_fixed", "ثابت")),
+        (REPLY_ACTION_ADM_PLANS_KIND_USERS_CUSTOM, _label_or(ui, "btn_shop_kind_custom", "دلخواه")),
+        (REPLY_ACTION_ADM_PLANS_KIND_USERS_TRIAL, _label_or(ui, "btn_shop_kind_trial", "تست")),
+        (REPLY_ACTION_ADM_PLANS_KIND_USERS_WHOLESALE, wholesale),
+    ]
+
+
+def _admin_plans_kind_entries(audience: str, ui: dict | None = None) -> list[tuple[str, str]]:
+    """Alias kept for nav restore — list screen uses add-only reply keyboard."""
+    return _admin_plans_list_entries(ui)
+
+
+REPLY_ACTION_ADM_PLANS_AUD_USERS = "adm_plans_aud_users"
+REPLY_ACTION_ADM_PLANS_AUD_RESELLERS = "adm_plans_aud_resellers"
+REPLY_ACTION_ADM_PLANS_ADD = "adm_plans_add"
+REPLY_ACTION_ADM_PLANS_CATEGORIES = "adm_plans_categories"
+REPLY_ACTION_ADM_PLANS_ADDONS = "adm_plans_addons"
+REPLY_ACTION_ADM_PLANS_KIND_USERS_FIXED = "adm_plans_kind_users_fixed"
+REPLY_ACTION_ADM_PLANS_KIND_USERS_CUSTOM = "adm_plans_kind_users_custom"
+REPLY_ACTION_ADM_PLANS_KIND_USERS_TRIAL = "adm_plans_kind_users_trial"
+REPLY_ACTION_ADM_PLANS_KIND_USERS_WHOLESALE = "adm_plans_kind_users_wholesale"
+REPLY_ACTION_ADM_PLANS_KIND_RES_FIXED = "adm_plans_kind_res_fixed"
+REPLY_ACTION_ADM_PLANS_KIND_RES_PAYG = "adm_plans_kind_res_payg"
+REPLY_ACTION_ADM_PLANS_KIND_RES_ADDON_VOL = "adm_plans_kind_res_addon_vol"
+REPLY_ACTION_ADM_PLANS_KIND_RES_ADDON_USERS = "adm_plans_kind_res_addon_users"
+REPLY_ACTION_RES_PLAN_CATEGORIES = "res_plan_categories"
+REPLY_ACTION_RES_PLAN_ADDONS = "res_plan_addons"
+
+
+def _reseller_plans_submenu_entries(ui: dict | None = None) -> list[tuple[str, str]]:
+    return [
+        ("res_plan_add", _t(ui, "btn_res_plan_add")),
+        (REPLY_ACTION_RES_PLAN_CATEGORIES, _t(ui, "btn_res_plan_categories")),
+        (REPLY_ACTION_RES_PLAN_ADDONS, _t(ui, "btn_res_plan_addons")),
+    ]
+
+
+def _reseller_settings_submenu_entries(ui: dict | None = None) -> list[tuple[str, str]]:
+    # Labels MUST match reseller_settings.SECTIONS[*]["title"] / HUB_ORDER
+    return [
+        ("res_st_shop", _t(ui, "btn_res_st_shop")),
+        ("res_st_menu", _t(ui, "btn_res_st_menu")),
+        ("res_st_labels", _t(ui, "btn_res_st_labels")),
+        ("res_st_pay", _t(ui, "btn_res_st_pay")),
+        ("res_st_access", _t(ui, "btn_res_st_access")),
+        ("res_st_limits", _t(ui, "btn_res_st_limits")),
+        ("res_st_buy", _t(ui, "btn_res_st_buy")),
+        ("res_st_support", _t(ui, "btn_res_st_support")),
+        ("res_st_guides", _t(ui, "btn_res_st_guides")),
+        ("res_st_notify", _t(ui, "btn_res_st_notify")),
+        ("res_st_bot", _t(ui, "btn_res_st_bot")),
+        (REPLY_ACTION_RES_ST_PANEL, _t(ui, "btn_res_st_panel")),
+    ]
+
+
+def _wallet_submenu_entries(ui: dict | None = None) -> list[tuple[str, str]]:
+    return [
+        (REPLY_ACTION_WALLET_TOPUP, _t(ui, "btn_wallet_topup") or "🟢➕ شارژ کیف پول"),
+        (REPLY_ACTION_WALLET_TX, _t(ui, "btn_wallet_tx") or "🟡📜 تراکنش‌ها"),
+    ]
+
+
+def _support_submenu_entries(ui: dict | None = None) -> list[tuple[str, str]]:
+    return [
+        (REPLY_ACTION_SUPPORT_NEW, _t(ui, "btn_support_new") or "🟣✉️ تیکت جدید"),
+        (REPLY_ACTION_SUPPORT_LIST, _t(ui, "btn_support_list") or "📋 تیکت‌های من"),
+    ]
+
+
+def _loyalty_submenu_entries(ui: dict | None = None) -> list[tuple[str, str]]:
+    """Customer club main subsets on reply keyboard (invite is one subset).
+
+    Secondary actions (share link, redeem, pagination, my-discounts) stay inline.
+    Order from loyalty_submenu_order CSV; club button position uses main menu_order.
+    Wheel is omitted when ``lucky_wheel_enabled`` is off (toggle beats CSV).
+    """
+    catalog = {
+        REPLY_ACTION_LOY_REFERRAL: _t(ui, "btn_referral") or "👥 دعوت دوستان",
+        REPLY_ACTION_LOY_POINTS: _t(ui, "btn_loy_points") or "⭐ امتیاز من",
+        REPLY_ACTION_LOY_REWARDS: _t(ui, "btn_loy_rewards") or "🎁 جوایز",
+        REPLY_ACTION_LOY_WHEEL: _t(ui, "btn_loy_wheel") or "🎡 چرخ شانس",
+        REPLY_ACTION_LOY_HISTORY: _t(ui, "btn_loy_history") or "📜 تاریخچه",
+    }
+    from app.services.lucky_wheel import parse_submenu_order
+
+    order = parse_submenu_order(_t(ui, "loyalty_submenu_order"), fill_missing=False)
+    wheel_on = on(_t(ui, "lucky_wheel_enabled"))
+    return [
+        (key, catalog[key])
+        for key in order
+        if key in catalog and (key != REPLY_ACTION_LOY_WHEEL or wheel_on)
+    ]
+
+
+def _admin_loyalty_submenu_entries(ui: dict | None = None, *, include_tiers: bool = True) -> list[tuple[str, str]]:
+    """Staff club management subsets (platform admin / reseller with loyalty perm)."""
+    entries = [
+        (REPLY_ACTION_ADM_LOY_OVERVIEW, _t(ui, "btn_adm_loy_overview")),
+        (REPLY_ACTION_ADM_LOY_RULES, _t(ui, "btn_adm_loy_rules")),
+        (REPLY_ACTION_ADM_LOY_REWARDS, _t(ui, "btn_adm_loy_rewards")),
+    ]
+    if include_tiers:
+        entries.append((REPLY_ACTION_ADM_LOY_TIERS, _t(ui, "btn_adm_loy_tiers")))
+    entries.extend(
+        [
+            (REPLY_ACTION_ADM_LOY_SETTINGS, _t(ui, "btn_adm_loy_settings")),
+            (REPLY_ACTION_ADM_LOY_REF_TEXT, _t(ui, "btn_adm_loy_ref_text")),
+        ]
+    )
+    return entries
+
+
+def _reseller_capacity_entries(profile=None, ui: dict | None = None) -> list[tuple[str, str]]:
+    """Renew + unified volume/user packs hub — shop bot and main-bot shop owner.
+
+    Unit buy-extra (GB/users) and catalog addon packs share one reply button
+    («بسته‌های حجم/کاربر») so the hub is not cluttered with three similar entries.
+    """
+    if profile is None:
+        return []
+    entries: list[tuple[str, str]] = []
+    try:
+        from app.services.pg_admin_subscription import is_subscription_plan
+        from app.services.reseller_capacity import plan_allows_buy_extra
+
+        plan = getattr(profile, "plan", None)
+        if plan is not None and is_subscription_plan(plan):
+            # One hub: catalog packs + unit buy-extra (when plan allows).
+            entries.append(("res_addon_packs", _t(ui, "btn_res_addon_packs")))
+            entries.append(("res_renew", _t(ui, "btn_res_renew")))
+        elif plan is not None and plan_allows_buy_extra(plan):
+            # Subscription check failed closed above; still expose unit extras
+            # only when allow_buy_extra is set (rare non-subscription edge).
+            entries.append(("res_addon_packs", _t(ui, "btn_res_addon_packs")))
+    except Exception:
+        # Fail closed — do not expose capacity without a verified subscription plan
+        pass
+    return entries
+
+
+def _reseller_submenu_entries(
+    profile=None, *, can_add_representative: bool = False, ui: dict | None = None
+) -> list[tuple[str, str]]:
+    from app.services.authz import shop_feature_allowed
+
+    # Fail closed: without a live profile show nothing (matches reply_action_map)
+    if profile is None:
+        return []
+    entries: list[tuple[str, str]] = []
+    if shop_feature_allowed(key="dashboard", profile=profile):
+        entries.append(("res_dash", _t(ui, "btn_res_dash")))
+        entries.append(("res_users", _t(ui, "btn_res_users")))
+    if can_add_representative:
+        entries.append((REPLY_ACTION_RES_ADD_REP, _t(ui, "btn_res_add_rep")))
+    # PAYG billing wallet — only when mode is payg
+    try:
+        from app.services.billing import is_payg
+
+        if is_payg(profile):
+            entries.append(("res_billing", _t(ui, "btn_res_billing")))
+    except Exception:
+        logger.debug("_reseller_submenu_entries: ignored failure", exc_info=True)
+    entries.extend(_reseller_capacity_entries(profile, ui))
+    if shop_feature_allowed(key="orders", profile=profile) or shop_feature_allowed(
+        key="payments", profile=profile
+    ):
+        entries.append(("res_reports", _t(ui, "btn_res_reports")))
+    if shop_feature_allowed(key="stats", profile=profile):
+        entries.append(("res_stats", _t(ui, "btn_res_stats")))
+    if shop_feature_allowed(key="plans", profile=profile):
+        entries.append(("res_plans", _t(ui, "btn_res_plans")))
+    if shop_feature_allowed(key="orders", profile=profile):
+        entries.append(("res_orders", _t(ui, "btn_res_orders")))
+    if shop_feature_allowed(key="payments", profile=profile):
+        entries.append(("res_payments", _t(ui, "btn_res_payments")))
+    if shop_feature_allowed(key="tickets", profile=profile):
+        entries.append(("res_tickets", _t(ui, "btn_res_tickets")))
+    if shop_feature_allowed(key="loyalty", profile=profile):
+        entries.append(("res_loyalty", _t(ui, "btn_res_loyalty")))
+    if shop_feature_allowed(key="shop_settings", profile=profile):
+        entries.append(("res_settings", _t(ui, "btn_res_settings")))
+    # Preview lives on thin reply KB (reseller_hub_main_keyboard), not manage hub.
+    return entries
+
+
+def reseller_hub_main_keyboard(
+    profile=None,
+    ui: dict | None = None,
+    *,
+    can_add_representative: bool = False,
+) -> ReplyKeyboardMarkup:
+    """Thin level-0 reply KB for shop owner/staff (Option B).
+
+    Nested manage leaves live on the edited inline hub.
+    """
+    _ = (profile, can_add_representative)  # ACL applied inside inline hub
+    entries = [
+        (REPLY_ACTION_RESELLER, _t(ui, "btn_reseller") or "🤝 پنل نماینده"),
+        (REPLY_ACTION_RES_PREVIEW, _t(ui, "btn_adm_preview")),
+    ]
+    rows = _pack_reply_rows(entries, ui, footer=_restart_footer(ui))
+    return register_main_keyboard(
+        _reply_markup(
+            rows or [[_kb(_home_label(ui), action=REPLY_ACTION_HOME, ui=ui)]],
+            placeholder="از منوی پایین انتخاب کنید…",
+            persistent=is_menu_keyboard_persistent(ui),
+        )
+    )
+
+
+def _pay_method_entries(ui: dict | None = None) -> list[tuple[str, str]]:
+    entries: list[tuple[str, str]] = []
+    if on(_t(ui, "pay_wallet_enabled")):
+        entries.append((REPLY_ACTION_PAY_WALLET, _t(ui, "btn_pay_wallet")))
+    if on(_t(ui, "pay_card_enabled")):
+        entries.append((REPLY_ACTION_PAY_CARD, _t(ui, "btn_pay_card")))
+    if on(_t(ui, "pay_gateway_enabled")):
+        entries.append((REPLY_ACTION_PAY_GATEWAY, _t(ui, "btn_pay_gateway")))
+    if on(_t(ui, "pay_psp_enabled")):
+        entries.append((REPLY_ACTION_PAY_PSP, _t(ui, "btn_pay_psp")))
+    if on(_t(ui, "pay_bbc_enabled")):
+        entries.append((REPLY_ACTION_PAY_BBC, _t(ui, "btn_pay_bbc")))
+    if on(_t(ui, "pay_crypto_enabled")):
+        entries.append((REPLY_ACTION_PAY_CRYPTO, _t(ui, "btn_pay_crypto")))
+    if on(_t(ui, "pay_stars_enabled")):
+        entries.append((REPLY_ACTION_PAY_STARS, _t(ui, "btn_pay_stars")))
+    if on(_t(ui, "pay_discount_enabled")):
+        entries.append((REPLY_ACTION_PAY_DISCOUNT, _t(ui, "btn_pay_discount")))
+    return entries
+
+
+def _topup_method_entries(ui: dict | None = None) -> list[tuple[str, str]]:
+    entries: list[tuple[str, str]] = []
+    if on(_t(ui, "pay_card_enabled")):
+        entries.append((REPLY_ACTION_TOPUP_CARD, _t(ui, "btn_pay_card")))
+    if on(_t(ui, "pay_gateway_enabled")):
+        entries.append((REPLY_ACTION_TOPUP_GATEWAY, _t(ui, "btn_pay_gateway")))
+    if on(_t(ui, "pay_psp_enabled")):
+        entries.append((REPLY_ACTION_TOPUP_PSP, _t(ui, "btn_pay_psp")))
+    if on(_t(ui, "pay_bbc_enabled")):
+        entries.append((REPLY_ACTION_TOPUP_BBC, _t(ui, "btn_pay_bbc")))
+    if on(_t(ui, "pay_crypto_enabled")):
+        entries.append((REPLY_ACTION_TOPUP_CRYPTO, _t(ui, "btn_pay_crypto")))
+    return entries
+
+
+def _pack_reply_button(action: str, text: str, ui: dict | None) -> KeyboardButton | None:
+    """Build one reply button (miniapp is MenuButton Open only — never on ReplyKeyboard)."""
+    if action in {"miniapp", getattr(_k, "REPLY_ACTION_MINIAPP", "miniapp")}:
+        return None
+    if not (text or "").strip():
+        return None
+    return _kb(text, action=action, ui=ui)
+
+
+def _pack_reply_rows(
+    entries: list[tuple[str, str]],
+    ui: dict | None,
+    *,
+    footer: list[str | tuple[str, ...]] | None = None,
+    footer_row: list[str | tuple[str, ...]] | None = None,
+) -> list[list[KeyboardButton]]:
+    layout = _menu_layout(ui)
+    items = [(a, t) for a, t in entries if (t or "").strip()]
+    rows: list[list[KeyboardButton]] = []
+    if layout == "compact":
+        for i in range(0, len(items), 2):
+            chunk = items[i : i + 2]
+            btns = [b for a, t in chunk if (b := _pack_reply_button(a, t, ui)) is not None]
+            if btns:
+                rows.append(btns)
+    else:
+        for a, t in items:
+            btn = _pack_reply_button(a, t, ui)
+            if btn is not None:
+                rows.append([btn])
+
+    def _footer_btns(items_in: list[str | tuple[str, ...]]) -> list[KeyboardButton]:
+        out: list[KeyboardButton] = []
+        for item in items_in:
+            label_key = None
+            if isinstance(item, tuple):
+                action, text = item[0], item[1]
+                label_key = item[2] if len(item) > 2 else None
+            else:
+                action, text = None, item
+            if (text or "").strip():
+                out.append(_kb(text, action=action, ui=ui, label_key=label_key))
+        return out
+
+    if footer_row:
+        row = _footer_btns(list(footer_row))
+        if row:
+            rows.append(row)
+    for item in footer or []:
+        row = _footer_btns([item])
+        if row:
+            rows.append(row)
+    return rows
+
+
+def _submenu_footer(ui: dict | None = None) -> list[tuple[str, str]]:
+    """Back (one level) + Main menu — always on submenu keyboards."""
+    return [
+        (REPLY_ACTION_BACK, _back_label(ui)),
+        (REPLY_ACTION_HOME, _home_label(ui)),
+    ]
+
+
+def main_reply_keyboard(
+    role: str,
+    *,
+    has_services: bool = False,
+    ui: dict | None = None,
+    as_user: bool = False,
+    show_reseller_creds: bool = False,
+    show_reseller_apply: bool | None = None,
+    profile=None,
+    pg_features: frozenset[str] | set[str] | None = None,
+    can_manage_representatives: bool = True,
+    preview_exit_action: str | None = None,
+) -> ReplyKeyboardMarkup:
+    """Primary navigation reply keyboard (level 0, Option B).
+
+    Admin gets the customer menu + «پنل ادمین» (groups live on the inline panel).
+    ``as_user`` preview appends ``btn_adm_exit_preview`` when
+    ``preview_exit_action`` is set (admin or reseller escape).
+
+    ``show_reseller_apply``: ``None`` → infer from settings/menu_order (safe
+    default for forgotten callers). Shop bots must pass ``False`` explicitly
+    via ``build_main_reply_keyboard``.
+    """
+    _ = (pg_features, can_manage_representatives)  # ACL applied inside inline hubs
+    if show_reseller_apply is None:
+        show_reseller_apply = (
+            on((ui or {}).get("show_reseller_apply"))
+            and "reseller_apply" in set(_menu_order(ui))
+        )
+    map_role = Role.USER.value if as_user else role
+    # Never offer apply on a real staff keyboard (preview/as_user is fine).
+    if not as_user and map_role != Role.USER.value:
+        show_reseller_apply = False
+    entries = _reply_user_entries(
+        map_role,
+        has_services=has_services,
+        ui=ui,
+        show_reseller_creds=False if as_user else show_reseller_creds,
+        show_reseller_apply=bool(show_reseller_apply),
+        profile=None if as_user else profile,
+    )
+    if as_user and preview_exit_action:
+        exit_label = (
+            _t(ui, "btn_adm_exit_preview") or "🛠 بازگشت به پنل ادمین"
+        ).strip()
+        entries.append((preview_exit_action, exit_label))
+    # Only the staff preview (which has its own exit row) drops «شروع مجدد»; the
+    # customer keyboard rebuilt after a purchase or receipt keeps it.
+    rows = _pack_reply_rows(
+        entries, ui, footer=[] if preview_exit_action else _restart_footer(ui)
+    )
+    return register_main_keyboard(
+        _reply_markup(rows, placeholder="از منوی پایین انتخاب کنید…", persistent=is_menu_keyboard_persistent(ui))
+    )
+
+
+def admin_reply_keyboard(
+    ui: dict | None = None,
+    *,
+    pg_features: frozenset[str] | set[str] | None = None,
+    can_manage_representatives: bool = True,
+) -> ReplyKeyboardMarkup:
+    """Admin hub groups as an explicit submenu (with back + home)."""
+    _ = (pg_features, can_manage_representatives)  # ACL applied inside groups
+    rows = _pack_reply_rows(
+        _reply_admin_hub_entries(ui),
+        ui,
+        footer_row=_submenu_footer(ui),
+    )
+    return _reply_markup(rows, placeholder="پنل ادمین…")
+
+
+def admin_ops_reply_keyboard(ui: dict | None = None) -> ReplyKeyboardMarkup:
+    rows = _pack_reply_rows(
+        _reply_admin_ops_entries(ui),
+        ui,
+        footer_row=_submenu_footer(ui),
+    )
+    return _reply_markup(rows, placeholder="عملیات روزانه…")
+
+
+def admin_people_reply_keyboard(
+    ui: dict | None = None,
+    *,
+    can_manage_representatives: bool = True,
+) -> ReplyKeyboardMarkup:
+    rows = _pack_reply_rows(
+        _reply_admin_people_entries(
+            ui, can_manage_representatives=can_manage_representatives
+        ),
+        ui,
+        footer_row=_submenu_footer(ui),
+    )
+    return _reply_markup(rows, placeholder="افراد…")
+
+
+def admin_product_reply_keyboard(
+    ui: dict | None = None,
+    *,
+    pg_features: frozenset[str] | set[str] | None = None,
+) -> ReplyKeyboardMarkup:
+    rows = _pack_reply_rows(
+        _reply_admin_product_entries(ui, pg_features=pg_features),
+        ui,
+        footer_row=_submenu_footer(ui),
+    )
+    return _reply_markup(rows, placeholder="محصول و پاسارگارد…")
+
+
+def admin_marketing_reply_keyboard(ui: dict | None = None) -> ReplyKeyboardMarkup:
+    rows = _pack_reply_rows(
+        _reply_admin_marketing_entries(ui),
+        ui,
+        footer_row=_submenu_footer(ui),
+    )
+    return _reply_markup(rows, placeholder="بازاریابی…")
+
+
+def admin_system_reply_keyboard(ui: dict | None = None) -> ReplyKeyboardMarkup:
+    rows = _pack_reply_rows(
+        _reply_admin_system_entries(ui),
+        ui,
+        footer_row=_submenu_footer(ui),
+    )
+    return _reply_markup(rows, placeholder="سیستم…")
+
+
+def wallet_reply_keyboard(ui: dict | None = None) -> ReplyKeyboardMarkup:
+    rows = _pack_reply_rows(
+        _wallet_submenu_entries(ui),
+        ui,
+        footer_row=_submenu_footer(ui),
+    )
+    return _reply_markup(rows, placeholder="کیف پول — یک گزینه را انتخاب کنید…")
+
+
+def support_reply_keyboard(ui: dict | None = None) -> ReplyKeyboardMarkup:
+    rows = _pack_reply_rows(
+        _support_submenu_entries(ui),
+        ui,
+        footer_row=_submenu_footer(ui),
+    )
+    return _reply_markup(rows, placeholder="پشتیبانی — یک گزینه را انتخاب کنید…")
+
+
+def loyalty_reply_keyboard(ui: dict | None = None) -> ReplyKeyboardMarkup:
+    rows = _pack_reply_rows(
+        _loyalty_submenu_entries(ui),
+        ui,
+        footer_row=_submenu_footer(ui),
+    )
+    return _reply_markup(rows, placeholder="باشگاه مشتریان — یک گزینه را انتخاب کنید…")
+
+
+def admin_loyalty_reply_keyboard(
+    ui: dict | None = None, *, include_tiers: bool = True
+) -> ReplyKeyboardMarkup:
+    rows = _pack_reply_rows(
+        _admin_loyalty_submenu_entries(ui, include_tiers=include_tiers),
+        ui,
+        footer_row=_submenu_footer(ui),
+    )
+    return _reply_markup(rows, placeholder="مدیریت باشگاه مشتریان…")
+
+
+def reseller_reply_keyboard(profile=None, ui: dict | None = None) -> ReplyKeyboardMarkup:
+    """Reply-keyboard mirror of reseller panel sections."""
+    entries = _reseller_submenu_entries(profile, ui=ui)
+    rows = _pack_reply_rows(entries, ui, footer_row=_submenu_footer(ui))
+    return _reply_markup(
+        rows or [[_kb(_home_label(ui), action=REPLY_ACTION_HOME, ui=ui)]],
+        placeholder="پنل نماینده…",
+    )
+
+
+def pay_reply_keyboard(order_id: int, ui: dict | None = None) -> ReplyKeyboardMarkup:
+    """Order payment methods on reply keyboard (order_id kept in FSM)."""
+    _ = order_id  # identity reserved for callers / future per-order labels
+    rows = _pack_reply_rows(_pay_method_entries(ui), ui, footer_row=_submenu_footer(ui))
+    return _reply_markup(rows, placeholder="روش پرداخت را انتخاب کنید…")
+
+
+def topup_pay_reply_keyboard(ui: dict | None = None) -> ReplyKeyboardMarkup:
+    rows = _pack_reply_rows(_topup_method_entries(ui), ui, footer_row=_submenu_footer(ui))
+    return _reply_markup(rows, placeholder="روش شارژ را انتخاب کنید…")
+
+
+def pg_reply_keyboard(
+    ui: dict | None = None,
+    *,
+    features: frozenset[str] | set[str] | None = None,
+    can_create_user: bool = True,
+) -> ReplyKeyboardMarkup:
+    rows = _pack_reply_rows(
+        _pg_submenu_entries(ui, features=features, can_create_user=can_create_user),
+        ui,
+        footer_row=_submenu_footer(ui),
+    )
+    return _reply_markup(rows, placeholder="پاسارگارد — یک گزینه را انتخاب کنید…")
+
+
+def admin_users_reply_keyboard(ui: dict | None = None) -> ReplyKeyboardMarkup:
+    rows = _pack_reply_rows(_admin_users_submenu_entries(ui), ui, footer_row=_submenu_footer(ui))
+    return _reply_markup(rows, placeholder="کاربران ربات…")
+
+
+def admin_resellers_reply_keyboard(ui: dict | None = None) -> ReplyKeyboardMarkup:
+    rows = _pack_reply_rows(
+        _admin_resellers_submenu_entries(ui), ui, footer_row=_submenu_footer(ui)
+    )
+    return _reply_markup(rows, placeholder="نمایندگان…")
+
+
+def admin_settings_reply_keyboard(ui: dict | None = None) -> ReplyKeyboardMarkup:
+    rows = _pack_reply_rows(
+        _admin_settings_submenu_entries(ui), ui, footer_row=_submenu_footer(ui)
+    )
+    return _reply_markup(rows, placeholder="تنظیمات…")
+
+
+def admin_backup_reply_keyboard(ui: dict | None = None) -> ReplyKeyboardMarkup:
+    rows = _pack_reply_rows(
+        _admin_backup_submenu_entries(ui), ui, footer_row=_submenu_footer(ui)
+    )
+    return _reply_markup(rows, placeholder="بکاپ / ریستور…")
+
+
+def admin_broadcast_reply_keyboard(ui: dict | None = None) -> ReplyKeyboardMarkup:
+    rows = _pack_reply_rows(
+        _admin_broadcast_submenu_entries(ui), ui, footer_row=_submenu_footer(ui)
+    )
+    return _reply_markup(rows, placeholder="مخاطب پیام گروهی…")
+
+
+def admin_plans_audience_reply_keyboard(ui: dict | None = None) -> ReplyKeyboardMarkup:
+    rows = _pack_reply_rows(
+        _admin_plans_audience_entries(ui),
+        ui,
+        footer_row=_submenu_footer(ui),
+    )
+    return _reply_markup(rows, placeholder="مخاطب پلن را انتخاب کنید…")
+
+
+def admin_plans_kind_reply_keyboard(
+    audience: str,
+    ui: dict | None = None,
+) -> ReplyKeyboardMarkup:
+    """List screen reply keyboard — «افزودن پلن» + back/home (audience kept for API compat)."""
+    _ = audience
+    rows = _pack_reply_rows(
+        _admin_plans_list_entries(ui),
+        ui,
+        footer_row=_submenu_footer(ui),
+    )
+    return _reply_markup(rows, placeholder="پلن را از پیام انتخاب کنید یا افزودن…")
+
+
+def admin_plans_add_type_reply_keyboard(
+    audience: str,
+    ui: dict | None = None,
+) -> ReplyKeyboardMarkup:
+    """Type picker on reply keyboard after «افزودن پلن»."""
+    rows = _pack_reply_rows(
+        _admin_plans_add_type_entries(audience, ui),
+        ui,
+        footer_row=_submenu_footer(ui),
+    )
+    return _reply_markup(rows, placeholder="نوع پلن را انتخاب کنید…")
+
+
+def admin_plans_reply_keyboard(
+    ui: dict | None = None,
+    *,
+    audience: str | None = None,
+) -> ReplyKeyboardMarkup:
+    """Plans hub: audience or kind step on reply keyboard."""
+    if audience in {"users", "resellers"}:
+        return admin_plans_kind_reply_keyboard(audience, ui)
+    return admin_plans_audience_reply_keyboard(ui)
+
+
+def reseller_settings_reply_keyboard(ui: dict | None = None) -> ReplyKeyboardMarkup:
+    rows = _pack_reply_rows(
+        _reseller_settings_submenu_entries(ui), ui, footer_row=_submenu_footer(ui)
+    )
+    return _reply_markup(rows, placeholder="تنظیمات فروشگاه نماینده…")
+
+
+def reseller_plans_reply_keyboard(ui: dict | None = None) -> ReplyKeyboardMarkup:
+    """Static chrome for reseller plans (list stays inline under the message)."""
+    rows = _pack_reply_rows(
+        _reseller_plans_submenu_entries(ui), ui, footer_row=_submenu_footer(ui)
+    )
+    return _reply_markup(rows, placeholder="پلن‌های فروشگاه…")
+
+def reply_action_map(
+    role: str,
+    *,
+    has_services: bool = False,
+    ui: dict | None = None,
+    as_user: bool = False,
+    show_reseller_creds: bool = False,
+    include_submenus: bool = True,
+    is_reseller_bot: bool = False,
+    profile=None,
+    can_add_representative: bool = False,
+) -> dict[str, str]:
+    """Map button label → action key for the current role/bot.
+
+    Security: admin/PG labels are never registered on reseller bots or for
+    non-admin roles. Reseller panel labels only for reseller actors on shop bots,
+    and only for permissions the profile actually has (no forgeable restricted
+    labels).
+    """
+    home_label = _home_label(ui)
+    back_label = _back_label(ui)
+    mapping: dict[str, str] = {
+        home_label: REPLY_ACTION_HOME,
+        back_label: REPLY_ACTION_BACK,
+        BTN_BACK: REPLY_ACTION_BACK,
+    }
+    restart_label = (_t(ui, "btn_restart") or "").strip()
+    if restart_label:
+        mapping[restart_label] = REPLY_ACTION_HOME
+    # Legacy aliases
+    mapping[BTN_RESTART] = REPLY_ACTION_HOME
+    mapping["شروع مجدد"] = REPLY_ACTION_HOME
+    mapping["🏠 شروع مجدد"] = REPLY_ACTION_HOME
+
+    # Platform admin tools only on the main (non-reseller) bot
+    platform_admin = (
+        role == Role.ADMIN.value and not as_user and not is_reseller_bot
+    )
+    reseller_actor = role == Role.RESELLER.value and is_reseller_bot
+
+    # Platform bot only — shop bots never expose reseller-apply CTA.
+    apply_on_main = (
+        not is_reseller_bot
+        and on(ui.get("show_reseller_apply") if ui else None)
+        and "reseller_apply" in set(_k._menu_order(ui))
+    )
+    if platform_admin:
+        # Option B: main KB is customer menu + پنل ادمین
+        for key, text in _reply_user_entries(
+            role,
+            has_services=has_services,
+            ui=ui,
+            show_reseller_creds=show_reseller_creds,
+            show_reseller_apply=apply_on_main,
+            profile=profile if show_reseller_creds else None,
+        ):
+            mapping[(text or "").strip()] = key
+        admin_label = (_t(ui, "btn_admin") or "").strip()
+        if admin_label:
+            mapping[admin_label] = REPLY_ACTION_ADMIN
+        # Legacy: stale ReplyKeyboard «مینی‌اپ» → Open hint (no web_app row)
+        mini_label = (_t(ui, "btn_miniapp") or "").strip()
+        if mini_label:
+            mapping.setdefault(mini_label, REPLY_ACTION_MINIAPP)
+        # Stale / inline-hub labels (leaves then hub groups)
+        for key, text in _reply_admin_entries(ui):
+            mapping.setdefault((text or "").strip(), key)
+        for key, text in _reply_admin_hub_entries(ui):
+            mapping[(text or "").strip()] = key
+    else:
+        # On reseller bots, never expose platform-admin entry even if role string is admin
+        map_role = Role.USER.value if (is_reseller_bot and role == Role.ADMIN.value) else role
+        for key, text in _reply_user_entries(
+            map_role,
+            has_services=has_services,
+            ui=ui,
+            show_reseller_creds=show_reseller_creds,
+            show_reseller_apply=apply_on_main and map_role == Role.USER.value,
+            profile=profile if (show_reseller_creds and not is_reseller_bot) else None,
+        ):
+            mapping[(text or "").strip()] = key
+        # Legacy: stale ReplyKeyboard «مینی‌اپ» → Open hint (no web_app row)
+        if not is_reseller_bot:
+            mini_label = (_t(ui, "btn_miniapp") or "").strip()
+            if mini_label:
+                mapping.setdefault(mini_label, REPLY_ACTION_MINIAPP)
+        # Legacy: reseller-apply label stays mapped even when omitted from main KB
+        if map_role == Role.USER.value and not show_reseller_creds:
+            apply_label = (_t(ui, "btn_reseller_apply") or "").strip()
+            if apply_label:
+                mapping.setdefault(apply_label, REPLY_ACTION_RESELLER_APPLY)
+        # L1 on the platform bot: register migrated PG submenu labels (not overview).
+        if show_reseller_creds and not is_reseller_bot:
+            # Stale reply keyboards still carry the pre-hub entry labels.
+            for legacy_key, legacy_label in (
+                (REPLY_ACTION_CREDS, _t(ui, "btn_reseller_creds")),
+                (REPLY_ACTION_ADMIN_PG, _t(ui, "btn_adm_pg")),
+            ):
+                if (legacy_label or "").strip():
+                    mapping.setdefault(legacy_label.strip(), legacy_key)
+            l1_pg = frozenset(
+                {"pg_users", "pg_nodes", "pg_templates", "pg_groups"}
+            )
+            for key, text in _pg_submenu_entries(ui, features=l1_pg):
+                mapping[(text or "").strip()] = key
+            # Capacity labels (renew / extras) — also registered via _reply_user_entries
+            for key, text in _reseller_capacity_entries(profile, ui):
+                mapping[(text or "").strip()] = key
+        # Preview escape — custom exit label (and legacy admin/reseller labels).
+        # ``as_user`` may be called with role="user" when merging preview labels
+        # into an admin/reseller filter map — still register the exit button.
+        if as_user:
+            exit_label = (
+                _t(ui, "btn_adm_exit_preview") or "🛠 بازگشت به پنل ادمین"
+            ).strip()
+            if is_reseller_bot:
+                mapping[exit_label] = REPLY_ACTION_RESELLER
+                res_label = (_t(ui, "btn_reseller") or "").strip()
+                if res_label:
+                    mapping[res_label] = REPLY_ACTION_RESELLER
+            else:
+                mapping[exit_label] = REPLY_ACTION_ADMIN
+                admin_label = (_t(ui, "btn_admin") or "").strip()
+                if admin_label:
+                    mapping[admin_label] = REPLY_ACTION_ADMIN
+
+    if include_submenus:
+        # Customer surfaces (wallet/support/loyalty/pay) — everyone except pure admin hub
+        if not platform_admin:
+            for key, text in _wallet_submenu_entries(ui):
+                mapping[(text or "").strip()] = key
+            for key, text in _support_submenu_entries(ui):
+                mapping[(text or "").strip()] = key
+            for key, text in _loyalty_submenu_entries(ui):
+                mapping[(text or "").strip()] = key
+            for key, text in _pay_method_entries(ui):
+                mapping[(text or "").strip()] = key
+            for key, text in _topup_method_entries(ui):
+                mapping[(text or "").strip()] = key
+            # Legacy service-action reply labels (stale keyboards after Wave B)
+            for key, text in _service_action_entries(ui):
+                mapping.setdefault((text or "").strip(), key)
+
+        if platform_admin:
+            for key, text in _wallet_submenu_entries(ui):
+                mapping[(text or "").strip()] = key
+            for key, text in _support_submenu_entries(ui):
+                mapping[(text or "").strip()] = key
+            for key, text in _loyalty_submenu_entries(ui):
+                mapping[(text or "").strip()] = key
+            for key, text in _admin_loyalty_submenu_entries(ui, include_tiers=True):
+                mapping[(text or "").strip()] = key
+            for key, text in _pay_method_entries(ui):
+                mapping[(text or "").strip()] = key
+            for key, text in _topup_method_entries(ui):
+                mapping[(text or "").strip()] = key
+            for key, text in _pg_submenu_entries(ui):
+                mapping[(text or "").strip()] = key
+            for key, text in _admin_users_submenu_entries(ui):
+                mapping[(text or "").strip()] = key
+            for key, text in _admin_resellers_submenu_entries(ui):
+                mapping[(text or "").strip()] = key
+            for key, text in _admin_settings_submenu_entries(ui):
+                mapping[(text or "").strip()] = key
+            for key, text in _admin_backup_submenu_entries(ui):
+                mapping[(text or "").strip()] = key
+            for key, text in _admin_broadcast_submenu_entries(ui):
+                mapping[(text or "").strip()] = key
+            for key, text in _admin_plans_submenu_entries(ui):
+                mapping[(text or "").strip()] = key
+            # Leaves then hub groups — hub labels win collisions
+            for key, text in _reply_admin_entries(ui):
+                mapping[(text or "").strip()] = key
+            for key, text in _reply_admin_hub_entries(ui):
+                mapping[(text or "").strip()] = key
+
+        # Legacy shop custom/wholesale labels (old reply keyboards) — route to kind flow
+        for key, text in _shop_submenu_entries(
+            ui, custom_enabled=True, wholesale_enabled=True
+        ):
+            mapping.setdefault((text or "").strip(), key)
+        if platform_admin:
+            for key, text in _admin_plans_audience_entries(ui):
+                mapping.setdefault((text or "").strip(), key)
+            for aud in ("users", "resellers"):
+                for key, text in _admin_plans_list_entries(ui):
+                    mapping.setdefault((text or "").strip(), key)
+                for key, text in _admin_plans_add_type_entries(aud, ui):
+                    mapping.setdefault((text or "").strip(), key)
+
+        if reseller_actor:
+            from app.services.authz import shop_feature_allowed
+
+            # Thin reply entry labels from settings (always, even without profile)
+            manage_label = (_t(ui, "btn_reseller") or "🤝 پنل نماینده").strip()
+            if manage_label:
+                mapping[manage_label] = REPLY_ACTION_RESELLER
+            # Legacy thin label from pre-settings keyboards
+            mapping.setdefault("🤝 پنل مدیریت", REPLY_ACTION_RESELLER)
+            preview_label = (_t(ui, "btn_adm_preview") or "").strip()
+            if preview_label:
+                mapping[preview_label] = REPLY_ACTION_RES_PREVIEW
+            mapping.setdefault("👁 پیش‌نمایش منوی کاربر", REPLY_ACTION_RES_PREVIEW)
+            # Fail closed: without a live profile, register no reseller panel leaves
+            if profile is not None:
+                for key, text in _reseller_submenu_entries(
+                    profile, can_add_representative=can_add_representative, ui=ui
+                ):
+                    # Thin entry owns the manage label; skip duplicate res_dash
+                    if key == "res_dash":
+                        continue
+                    mapping[(text or "").strip()] = key
+                if shop_feature_allowed(key="shop_settings", profile=profile):
+                    for key, text in _reseller_settings_submenu_entries(ui):
+                        mapping[(text or "").strip()] = key
+                if shop_feature_allowed(key="plans", profile=profile):
+                    for key, text in _reseller_plans_submenu_entries(ui):
+                        mapping[(text or "").strip()] = key
+                if shop_feature_allowed(key="loyalty", profile=profile):
+                    # Resellers manage shop-scoped club; tiers stay platform-global
+                    for key, text in _admin_loyalty_submenu_entries(ui, include_tiers=False):
+                        mapping[(text or "").strip()] = key
+
+    # Stale ReplyKeyboard labels after btn_* renames (setdefault: live labels win).
+    from app.services.reply_label_aliases import register_aliases_on_mapping
+
+    register_aliases_on_mapping(mapping, ui)
+    return {k: v for k, v in mapping.items() if k}
+
+def _shop_submenu_entries(
+    ui: dict | None = None,
+    *,
+    custom_enabled: bool = False,
+    wholesale_enabled: bool = False,
+) -> list[tuple[str, str]]:
+    """Legacy labels for stale reply keyboards — not shown on new shop KB."""
+    entries: list[tuple[str, str]] = []
+    if custom_enabled:
+        entries.append((REPLY_ACTION_SHOP_CUSTOM, "✨ پلن دلخواه"))
+    if wholesale_enabled:
+        entries.append(
+            (REPLY_ACTION_SHOP_WHOLESALE, _t(ui, "btn_wholesale") or "📦 فروش عمده")
+        )
+    return entries
+
+def submenu_chrome_reply_keyboard(
+    ui: dict | None = None,
+    *,
+    placeholder: str = "از کیبورد پایین بازگردید…",
+) -> ReplyKeyboardMarkup:
+    """Back + Home only — for screens whose choices live on inline keyboards."""
+    rows = _pack_reply_rows([], ui, footer_row=_submenu_footer(ui))
+    return _reply_markup(rows, placeholder=placeholder)
+
+
+def shop_reply_keyboard(ui: dict | None = None) -> ReplyKeyboardMarkup:
+    """Shop nav chrome — plan kind + lists are inline under the message."""
+    return submenu_chrome_reply_keyboard(
+        ui,
+        placeholder="فروشگاه — نوع پلن را از زیر پیام انتخاب کنید…",
+    )
+
+
+def reseller_apply_reply_keyboard(ui: dict | None = None) -> ReplyKeyboardMarkup:
+    """Reseller-apply chrome — plan mode/list are inline under the message."""
+    return submenu_chrome_reply_keyboard(
+        ui,
+        placeholder="درخواست نمایندگی — نوع پلن را از زیر پیام انتخاب کنید…",
+    )
+
+
+def _service_action_entries(ui: dict | None = None) -> list[tuple[str, str]]:
+    return [
+        (REPLY_ACTION_SVC_LINK, _t(ui, "btn_sub_link")),
+        (REPLY_ACTION_SVC_GUIDE, _t(ui, "btn_guides") or "📘 آموزش اتصال"),
+        (REPLY_ACTION_SVC_CANCEL, "📝 درخواست لغو سرویس"),
+        (REPLY_ACTION_SVC_RENEW, _t(ui, "btn_renew")),
+        (REPLY_ACTION_SVC_ADDON, _t(ui, "btn_svc_addon") or "➕ حجم / زمان"),
+        (REPLY_ACTION_SVC_AUTO, "⚙️ تنظیمات خودکار"),
+        (REPLY_ACTION_SVC_REFRESH, "♻️ رفرش وضعیت"),
+        (REPLY_ACTION_SVC_DELETE, "🗑 حذف سرویس"),
+    ]
+
+
+def service_actions_reply_keyboard(ui: dict | None = None) -> ReplyKeyboardMarkup:
+    rows = _pack_reply_rows(_service_action_entries(ui), ui, footer_row=_submenu_footer(ui))
+    return _reply_markup(rows, placeholder="عملیات سرویس…")
+
+def _review_submenu_entries(ui: dict | None = None) -> list[tuple[str, str]]:
+    _ = ui
+    return [
+        (REPLY_ACTION_REV_OK, BTN_REV_OK),
+        (REPLY_ACTION_REV_NO, BTN_REV_NO),
+    ]
+
+
+def review_reply_keyboard(ui: dict | None = None) -> ReplyKeyboardMarkup:
+    """Approve / reject on reply KB (entity already selected via FSM)."""
+    rows = _pack_reply_rows(_review_submenu_entries(ui), ui, footer_row=_submenu_footer(ui))
+    return _reply_markup(rows, placeholder="تأیید یا رد…")
+
+def cancel_reply(ui: dict | None = None) -> ReplyKeyboardMarkup:
+    """Thin cancel keyboard during text input — does not include home/restart."""
+    label = (_t(ui, "btn_cancel") or "").strip()
+    cancel_label = BTN_CANCEL
+    if label and "انصراف" in label and label != BTN_CANCEL:
+        cancel_label = BTN_CANCEL
+    return _reply_markup(
+        [[_kb(cancel_label, style=_style(ui, "cancel", fallback="danger"), ui=ui, label_key="btn_cancel")]],
+        placeholder="مقدار را بفرستید یا انصراف بزنید…",
+    )
+
+
+def persistent_reply_keyboard(ui: dict | None = None) -> ReplyKeyboardMarkup:
+    """Fallback reply keyboard (home only) when role context is unavailable."""
+    home = _home_label(ui)
+    return register_main_keyboard(
+        _reply_markup([[_kb(home, action=REPLY_ACTION_HOME, ui=ui)]], persistent=is_menu_keyboard_persistent(ui))
+    )

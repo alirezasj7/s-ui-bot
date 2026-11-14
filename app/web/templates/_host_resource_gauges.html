@@ -1,0 +1,99 @@
+{# Shared CPU/RAM rings — same chrome as the former home dashboard gauges.
+   Expects: host (gauge dict), metrics_url (poll endpoint), optional aria_label. #}
+{% set _aria = aria_label|default('وضعیت سرور') %}
+{% set _url = metrics_url|default('') %}
+<section class="home-top" aria-label="{{ _aria }}" data-host-gauges{% if _url %} data-metrics-url="{{ _url }}"{% endif %}>
+  <div class="home-gauges">
+    <article class="home-gauge home-gauge-{{ host.cpu_tone or 'neutral' }}" data-metric="cpu">
+      <div class="home-gauge-ring" style="--p: {{ host.cpu_percent or 0 }}">
+        <svg viewBox="0 0 120 120" aria-hidden="true">
+          <circle class="home-gauge-track" cx="60" cy="60" r="52" />
+          <circle class="home-gauge-val" cx="60" cy="60" r="52" pathLength="100" />
+        </svg>
+        <div class="home-gauge-center">
+          <strong data-host-cpu-val>{% if host.cpu_percent is number %}{{ '%.0f'|format(host.cpu_percent) }}٪{% else %}—{% endif %}</strong>
+          <span>CPU</span>
+        </div>
+      </div>
+      <div class="home-gauge-meta">
+        <span class="home-gauge-label">پردازنده</span>
+        {% if host.cpu_cores %}
+        <span class="muted" data-host-cpu-cores>{{ host.cpu_cores }} هسته</span>
+        {% else %}
+        <span class="muted" data-host-cpu-cores hidden></span>
+        {% endif %}
+      </div>
+    </article>
+
+    <article class="home-gauge home-gauge-{{ host.mem_tone or 'neutral' }}" data-metric="mem">
+      <div class="home-gauge-ring" style="--p: {{ host.memory_percent or 0 }}">
+        <svg viewBox="0 0 120 120" aria-hidden="true">
+          <circle class="home-gauge-track" cx="60" cy="60" r="52" />
+          <circle class="home-gauge-val" cx="60" cy="60" r="52" pathLength="100" />
+        </svg>
+        <div class="home-gauge-center">
+          <strong data-host-mem-val>{% if host.memory_percent is number %}{{ '%.0f'|format(host.memory_percent) }}٪{% else %}—{% endif %}</strong>
+          <span>RAM</span>
+        </div>
+      </div>
+      <div class="home-gauge-meta">
+        <span class="home-gauge-label">حافظه</span>
+        <span class="muted num-ratio" data-host-mem-hint>{{ host.memory_ratio_text or (host.memory_used_text ~ ' / ' ~ host.memory_total_text) }}</span>
+      </div>
+    </article>
+  </div>
+</section>
+{% if _url %}
+<script>
+(function () {
+  var root = document.querySelector('[data-host-gauges][data-metrics-url="{{ _url }}"]');
+  if (!root) return;
+  var url = root.getAttribute('data-metrics-url');
+  if (!url) return;
+  var cpuEl = root.querySelector('[data-host-cpu-val]');
+  var memEl = root.querySelector('[data-host-mem-val]');
+  var memHint = root.querySelector('[data-host-mem-hint]');
+  var coresEl = root.querySelector('[data-host-cpu-cores]');
+  var cpuGauge = root.querySelector('[data-metric="cpu"]');
+  var memGauge = root.querySelector('[data-metric="mem"]');
+
+  function setGauge(article, pct, tone) {
+    if (!article) return;
+    var ring = article.querySelector('.home-gauge-ring');
+    if (ring && pct != null) ring.style.setProperty('--p', String(pct));
+    article.className = 'home-gauge home-gauge-' + (tone || 'neutral');
+  }
+  function fmtPct(n) {
+    if (n == null || isNaN(n)) return '—';
+    return Math.round(n) + '٪';
+  }
+  async function tick() {
+    if (document.hidden) return;
+    try {
+      var r = await fetch(url + (url.indexOf('?') >= 0 ? '&' : '?') + '_=' + Date.now(), {
+        cache: 'no-store',
+        credentials: 'same-origin'
+      });
+      if (!r.ok) return;
+      var d = await r.json();
+      if (cpuEl) cpuEl.textContent = fmtPct(d.cpu_percent);
+      if (memEl) memEl.textContent = fmtPct(d.memory_percent);
+      if (memHint && (d.memory_ratio_text || (d.memory_used_text && d.memory_total_text))) {
+        memHint.textContent = d.memory_ratio_text || (d.memory_used_text + ' / ' + d.memory_total_text);
+      }
+      if (coresEl && d.cpu_cores) {
+        coresEl.hidden = false;
+        coresEl.textContent = d.cpu_cores + ' هسته';
+      }
+      setGauge(cpuGauge, d.cpu_percent, d.cpu_tone);
+      setGauge(memGauge, d.memory_percent, d.mem_tone);
+    } catch (e) {}
+  }
+  setInterval(tick, 5000);
+  setTimeout(tick, 2500);
+  document.addEventListener('visibilitychange', function () {
+    if (!document.hidden) tick();
+  });
+})();
+</script>
+{% endif %}

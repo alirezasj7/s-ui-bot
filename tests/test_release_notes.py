@@ -1,0 +1,312 @@
+"""Release notes / changelog for the update page."""
+
+from __future__ import annotations
+
+import unittest
+from pathlib import Path
+
+
+def _version_key(version: str) -> tuple[int, ...]:
+    return tuple(int(part) for part in version.split("."))
+
+
+class ReleaseNotesTests(unittest.TestCase):
+    def test_demo_customer_notes_explain_previous_transactions_and_reversibility(self) -> None:
+        from app.services.release_notes import latest_notes_block, notes_for_version
+        from app.version import __version__
+
+        notes = notes_for_version("0.2.32")
+        self.assertTrue(any("قبلی و جدید" in note for note in notes))
+        self.assertTrue(any("عادی کردن کاربر" in note for note in notes))
+        self.assertEqual(latest_notes_block()["version"], __version__)
+
+    def test_current_version_has_single_block(self):
+        from app.services.release_notes import changelog_for_update_page
+        from app.version import __version__
+
+        cl = changelog_for_update_page(local=__version__, remote=__version__)
+        self.assertTrue(cl["has_notes"])
+        self.assertEqual(len(cl["blocks"]), 1)
+        self.assertTrue(cl["title"])
+
+    def test_upgrade_shows_all_versions_in_range(self):
+        from app.services.release_notes import changelog_for_update_page
+
+        remote_notes = {
+            "0.1.2": ["پچ ۲"],
+            "0.1.1": ["پچ ۱"],
+            "0.1.0": ["پایه"],
+        }
+        cl = changelog_for_update_page(
+            local="0.1.0",
+            remote="0.1.2",
+            remote_notes=remote_notes,
+        )
+        self.assertTrue(cl["has_notes"])
+        versions = [b["version"] for b in cl["blocks"]]
+        self.assertEqual(versions, ["0.1.2", "0.1.1"])
+        self.assertIn("از 0.1.0 تا 0.1.2", cl["title"])
+
+    def test_upgrade_example_3_0_1_to_3_0_4(self):
+        from app.services.release_notes import changelog_for_update_page
+
+        remote_notes = {
+            "3.0.4": ["هدف"],
+            "3.0.3": ["میانی ۳"],
+            "3.0.2": ["میانی ۲"],
+            "3.0.1": ["نصب‌شده — نباید بیاید"],
+        }
+        cl = changelog_for_update_page(
+            local="3.0.1",
+            remote="3.0.4",
+            remote_notes=remote_notes,
+        )
+        versions = [b["version"] for b in cl["blocks"]]
+        self.assertEqual(versions, ["3.0.4", "3.0.3", "3.0.2"])
+        self.assertNotIn("3.0.1", versions)
+
+    def test_upgrade_uses_remote_notes_not_local_fallback(self):
+        """Installed panel may not yet contain notes for the target version."""
+        from app.services.release_notes import changelog_for_update_page
+
+        remote_notes = {
+            "1.9.0": ["ویژگی جدید از ریموت"],
+            "1.8.3": ["نسخه قدیمی‌تر"],
+        }
+        cl = changelog_for_update_page(
+            local="1.8.3",
+            remote="1.9.0",
+            remote_notes=remote_notes,
+        )
+        self.assertEqual(cl["blocks"][0]["version"], "1.9.0")
+        self.assertIn("ویژگی جدید از ریموت", cl["blocks"][0]["notes"])
+
+    def test_parse_release_notes_source(self):
+        from app.services.release_notes import parse_release_notes_source
+
+        src = Path("app/services/release_notes.py").read_text(encoding="utf-8")
+        parsed = parse_release_notes_source(src)
+        from app.version import __version__
+
+        versions = list(parsed)
+        self.assertEqual(versions[0], __version__)
+        self.assertIn("0.1.0", parsed)
+        self.assertEqual(versions, sorted(versions, key=_version_key, reverse=True))
+        for version, notes in parsed.items():
+            self.assertRegex(version, r"^\d+\.\d+\.\d+$")
+            self.assertTrue(notes, version)
+            self.assertTrue(all(isinstance(n, str) and n.strip() for n in notes), version)
+        self.assertTrue(parsed["0.2.21"])
+        self.assertTrue(
+            any("اشتراک" in n or "پاسارگارد" in n or "کیف پول" in n for n in parsed["0.2.21"])
+        )
+        self.assertTrue(parsed["0.2.20"])
+        self.assertTrue(any("معرف اجباری" in n or "پرداخت" in n for n in parsed["0.2.20"]))
+        self.assertTrue(parsed["0.2.19"])
+        self.assertTrue(any("on_hold" in n for n in parsed["0.2.19"]))
+        self.assertTrue(parsed["0.2.18"])
+        self.assertTrue(
+            any("هدر" in n or "topbar" in n or "سایدبار" in n or "اکاردئون" in n or "مودال" in n for n in parsed["0.2.18"])
+        )
+        self.assertTrue(parsed["0.2.17"])
+        self.assertTrue(
+            any("لودینگ" in n or "سایدبار" in n or "confirm" in n for n in parsed["0.2.17"])
+        )
+        self.assertTrue(parsed["0.2.16"])
+        self.assertTrue(
+            any("greenlet" in n or "مینی‌اپ" in n or "تأیید" in n for n in parsed["0.2.16"])
+        )
+        self.assertTrue(parsed["0.2.15"])
+        self.assertTrue(
+            any("مدیریت مالی" in n or "500" in n or "سفارشات" in n for n in parsed["0.2.15"])
+        )
+        self.assertTrue(parsed["0.2.14"])
+        self.assertTrue(
+            any("پرداخت" in n or "بکاپ" in n or "اندروید" in n for n in parsed["0.2.14"])
+        )
+        self.assertTrue(parsed["0.2.13"])
+        self.assertTrue(
+            any("تأیید" in n or "تحویل" in n or "APPROVED" in n for n in parsed["0.2.13"])
+        )
+        self.assertTrue(parsed["0.2.12"])
+        self.assertTrue(
+            any("باشگاه" in n or "بکاپ" in n or "دو‌کیبورد" in n for n in parsed["0.2.12"])
+        )
+        self.assertTrue(parsed["0.2.11"])
+        self.assertTrue(
+            any("نمایندگی" in n or "دو‌کیبورد" in n or "سرویس" in n for n in parsed["0.2.11"])
+        )
+        self.assertTrue(parsed["0.2.10"])
+        self.assertTrue(
+            any("منوی اصلی" in n or "مینی" in n or "خانه" in n for n in parsed["0.2.10"])
+        )
+        self.assertTrue(parsed["0.2.9"])
+        self.assertTrue(
+            any("کیبورد" in n or "چهار" in n or "iOS" in n for n in parsed["0.2.9"])
+        )
+        self.assertTrue(parsed["0.2.8"])
+        self.assertTrue(
+            any("فروشگاه" in n or "حباب" in n or "پلن" in n for n in parsed["0.2.8"])
+        )
+        self.assertTrue(parsed["0.2.6"])
+        self.assertTrue(
+            any("دسته" in n or "می‌چسب" in n or "visualViewport" in n or "PAYG" in n for n in parsed["0.2.6"])
+        )
+        self.assertTrue(parsed["0.2.4"])
+        self.assertTrue(
+            any("on_hold" in n or "تحویل" in n or "برچسب" in n for n in parsed["0.2.4"])
+        )
+        self.assertTrue(parsed["0.2.3"])
+        self.assertTrue(
+            any("تگ" in n or "کپسول" in n for n in parsed["0.2.3"])
+        )
+        self.assertTrue(parsed["0.2.2"])
+        self.assertTrue(
+            any("افزونه" in n or "fulfill" in n or "حجم" in n for n in parsed["0.2.2"])
+        )
+        self.assertTrue(parsed["0.2.1"])
+        self.assertTrue(
+            any("0031" in n or "PostgreSQL" in n or "۰٫۲٫۰" in n for n in parsed["0.2.1"])
+        )
+        self.assertTrue(parsed["0.2.0"])
+        self.assertTrue(
+            any("دسته" in n or "افزونه" in n or "تمدید" in n or "اشتراک" in n for n in parsed["0.2.0"])
+        )
+        self.assertTrue(parsed["0.1.14"])
+        self.assertTrue(
+            any("فارسی" in n or "خطا" in n or "پاسارگارد" in n for n in parsed["0.1.14"])
+        )
+        self.assertTrue(parsed["0.1.4"])
+        self.assertTrue(any("مودال" in n or "گوشه" in n for n in parsed["0.1.4"]))
+        self.assertTrue(parsed["0.1.3"])
+        self.assertTrue(any("CSRF" in n or "ذخیره" in n or "SSL" in n for n in parsed["0.1.3"]))
+        self.assertTrue(parsed["0.1.2"])
+        self.assertTrue(parsed["0.1.1"])
+
+    def test_unknown_local_falls_back_to_newest(self):
+        from app.services.release_notes import changelog_for_update_page, RELEASE_NOTES_FA
+
+        cl = changelog_for_update_page(local="9.9.9", remote=None)
+        self.assertTrue(cl["has_notes"])
+        self.assertEqual(len(cl["blocks"]), 1)
+        newest = next(iter(RELEASE_NOTES_FA))
+        self.assertEqual(cl["blocks"][0]["version"], newest)
+
+    def test_update_template_simplified(self):
+        src = Path("app/web/templates/_settings_update.html").read_text(encoding="utf-8")
+        self.assertIn("update-changelog", src)
+        self.assertNotIn("rollback", src)
+        self.assertIn("settings-card", src)
+        self.assertIn("upd-start", src)
+        self.assertNotIn("update-details", src)
+        self.assertNotIn("جزئیات عملیات", src)
+        self.assertNotIn("upd-log", src)
+        self.assertNotIn("upd-steps", src)
+        self.assertNotIn("روش جایگزین", src)
+        self.assertNotIn("get.sh", src)
+
+    def test_parse_includes_latest_notes(self):
+        from app.services.release_notes import parse_release_notes_source
+
+        src = Path("app/services/release_notes.py").read_text(encoding="utf-8")
+        parsed = parse_release_notes_source(src)
+        from app.services.release_notes import RELEASE_NOTES_FA
+        from app.version import __version__
+
+        self.assertEqual(parsed, RELEASE_NOTES_FA)
+        self.assertIn(__version__, parsed)
+        # Notes of shipped versions are never dropped; new releases only add keys.
+        shipped = {f"0.2.{n}" for n in range(22)} | {f"0.1.{n}" for n in range(15)}
+        self.assertLessEqual(shipped, set(parsed))
+        self.assertTrue(
+            any("هدر" in n or "topbar" in n or "سایدبار" in n or "اکاردئون" in n or "مودال" in n for n in parsed["0.2.18"])
+        )
+        self.assertTrue(
+            any("لودینگ" in n or "سایدبار" in n or "confirm" in n for n in parsed["0.2.17"])
+        )
+        self.assertTrue(
+            any("greenlet" in n or "مینی‌اپ" in n or "تأیید" in n for n in parsed["0.2.16"])
+        )
+        self.assertTrue(
+            any("مدیریت مالی" in n or "500" in n or "سفارشات" in n for n in parsed["0.2.15"])
+        )
+        self.assertTrue(
+            any("پرداخت" in n or "بکاپ" in n or "اندروید" in n for n in parsed["0.2.14"])
+        )
+        self.assertTrue(
+            any("تأیید" in n or "تحویل" in n or "APPROVED" in n for n in parsed["0.2.13"])
+        )
+        self.assertTrue(
+            any("باشگاه" in n or "بکاپ" in n or "دو‌کیبورد" in n for n in parsed["0.2.12"])
+        )
+        self.assertTrue(
+            any("نمایندگی" in n or "دو‌کیبورد" in n or "سرویس" in n for n in parsed["0.2.11"])
+        )
+        self.assertTrue(
+            any("منوی اصلی" in n or "مینی" in n or "خانه" in n for n in parsed["0.2.10"])
+        )
+        self.assertTrue(
+            any("کیبورد" in n or "چهار" in n or "iOS" in n for n in parsed["0.2.9"])
+        )
+        self.assertTrue(
+            any("فروشگاه" in n or "حباب" in n or "پلن" in n for n in parsed["0.2.8"])
+        )
+        self.assertTrue(
+            any("دسته" in n or "می‌چسب" in n or "visualViewport" in n or "PAYG" in n for n in parsed["0.2.6"])
+        )
+        self.assertTrue(
+            any("on_hold" in n or "تحویل" in n or "برچسب" in n for n in parsed["0.2.4"])
+        )
+        self.assertTrue(
+            any("تگ" in n or "کپسول" in n for n in parsed["0.2.3"])
+        )
+        self.assertTrue(
+            any("افزونه" in n or "fulfill" in n or "حجم" in n for n in parsed["0.2.2"])
+        )
+        self.assertTrue(
+            any("0031" in n or "PostgreSQL" in n or "۰٫۲٫۰" in n for n in parsed["0.2.1"])
+        )
+        self.assertTrue(
+            any("دسته" in n or "افزونه" in n or "تمدید" in n or "اشتراک" in n for n in parsed["0.2.0"])
+        )
+        self.assertTrue(
+            any("فارسی" in n or "خطا" in n or "پاسارگارد" in n for n in parsed["0.1.14"])
+        )
+        self.assertTrue(
+            any("تکراری" in n or "تمپلیت" in n or "ساخت" in n for n in parsed["0.1.13"])
+        )
+        self.assertTrue(
+            any("گروه" in n or "اجازه" in n or "نماینده" in n for n in parsed["0.1.12"])
+        )
+        self.assertTrue(
+            any("گروه" in n or "راه‌اندازی" in n or "۴۰۴" in n for n in parsed["0.1.11"])
+        )
+        self.assertTrue(
+            any("نماینده" in n or "Principal" in n or "کارت به کارت" in n for n in parsed["0.1.10"])
+        )
+        self.assertTrue(any("عنوان" in n or "فروشگاه" in n or "ایموجی" in n for n in parsed["0.1.9"]))
+        self.assertTrue(any("کیف پول" in n or "امنیت" in n for n in parsed["0.1.2"]))
+        self.assertTrue(any("راه‌اندازی" in n or "۰٫۱٫۱" in n for n in parsed["0.1.1"]))
+
+    def test_home_no_manual_refresh(self):
+        src = Path("app/web/templates/home.html").read_text(encoding="utf-8")
+        self.assertNotIn(">بروزرسانی</a>", src)
+
+    def test_pg_home_no_update_button(self):
+        src = Path("app/web/templates/pg_home.html").read_text(encoding="utf-8")
+        self.assertNotIn(">بروزرسانی</a>", src)
+        self.assertNotIn('href="/pg">بروزرسانی', src)
+
+    def test_sidebar_web_panel_label(self):
+        src = Path("app/web/templates/base.html").read_text(encoding="utf-8")
+        self.assertIn("وب پنل", src)
+        self.assertIn("nav-label-home", src)
+
+    def test_update_context_fetches_remote_notes(self):
+        src = Path("app/services/panel_update.py").read_text(encoding="utf-8")
+        self.assertIn("fetch_remote_release_notes", src)
+        self.assertIn("remote_notes=", src)
+
+
+if __name__ == "__main__":
+    unittest.main()
